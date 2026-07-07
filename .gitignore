@@ -1,0 +1,13 @@
+# Never push real / seed data or generated outputs
+sdg/seed/
+reports/
+*.csv
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Jupyter
+.ipynb_checkpoints/
