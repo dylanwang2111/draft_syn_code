@@ -17,6 +17,18 @@
   --pass:#1a8f5a; --warn:#cf8a12; --fail:#e31837;
   --disp:"Bricolage Grotesque",sans-serif; --sans:"Spline Sans",sans-serif; --mono:"Spline Sans Mono",monospace;
   --tool-h:60px;
+  --shadow:0 6px 18px rgba(1,58,99,.05); --shadow-lg:0 8px 24px rgba(1,58,99,.09);
+  --err-bg:#fff7e8; --fig-bg:#ffffff;
+}
+:root[data-theme="dark"]{
+  --bg:#0c141d; --panel:#141e2a; --panel-2:#101a25; --tint:#16283a;
+  --line:#243444; --line-soft:#1a2836;
+  --ink:#e6eef6; --muted:#93a6ba; --faint:#5f7488;
+  --blue:#3f9fe0; --blue-deep:#6fbdf0; --navy:#a9cde8; --sky:#2f6f9c;
+  --red:#f2586e; --red-deep:#ff8195;
+  --pass:#4cc584; --warn:#e6b24a; --fail:#f2586e;
+  --shadow:0 6px 18px rgba(0,0,0,.35); --shadow-lg:0 10px 28px rgba(0,0,0,.5);
+  --err-bg:#2a2410; --fig-bg:#f4f8fc;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%}
@@ -43,6 +55,7 @@ button{font-family:var(--mono); cursor:pointer; border-radius:8px; transition:.1
 .tbtn.primary:hover{background:#0a86cf}
 .tbtn.primary:disabled{opacity:.45; cursor:not-allowed; box-shadow:none}
 .tbtn input{display:none}
+.tbtn.icon{padding:9px 11px; font-size:15px; line-height:1}
 .status-dot{width:8px;height:8px;border-radius:50%;background:var(--faint);margin-left:4px}
 .status-dot.run{background:var(--warn); animation:pulse 1s infinite}
 .status-dot.done{background:var(--pass)} .status-dot.err{background:var(--fail)}
@@ -139,7 +152,7 @@ table.grid tr:hover td{background:var(--panel-2)}
 td.mono,.mono{font-family:var(--mono); font-size:12px} td.dim{color:var(--muted)}
 td.num{text-align:right; font-family:var(--mono); font-size:12px}
 table.grid select{width:auto; min-width:120px}
-select.changed{border-color:var(--red); color:var(--red-deep); background:#fdeef0}
+select.changed{border-color:var(--red); color:var(--red-deep); background:var(--err-bg)}
 .pk-row{display:flex; align-items:center; gap:10px; margin-top:12px; font-family:var(--mono);
   font-size:11.5px; color:var(--muted)} .pk-row select{width:auto; min-width:160px}
 .preview-scroll{overflow-x:auto; margin-top:12px; border:1px solid var(--line-soft); border-radius:9px}
@@ -155,7 +168,7 @@ h4.block-title:first-child{margin-top:0}
 .note{font-size:12.5px; color:var(--muted); max-width:820px; margin-bottom:12px}
 .podium{display:grid; grid-template-columns:repeat(auto-fit,minmax(215px,1fr)); gap:14px; margin-bottom:22px}
 .lb-card{position:relative; overflow:hidden; background:var(--panel); border:1px solid var(--line);
-  border-radius:14px; padding:18px; box-shadow:0 6px 18px rgba(1,58,99,.05)}
+  border-radius:14px; padding:18px; box-shadow:var(--shadow)}
 .lb-card .rank{position:absolute; top:-10px; right:12px; font-family:var(--disp); font-size:52px;
   font-weight:700; color:var(--line); line-height:1}
 .lb-card.first{border-color:var(--blue)} .lb-card.first .rank{color:var(--sky)}
@@ -182,9 +195,11 @@ table.rep tr:hover td{background:var(--panel-2)}
 .pill.FAIL{color:var(--fail); border-color:rgba(227,24,55,.4); background:rgba(227,24,55,.1)}
 .pill.SKIP{color:var(--faint); border-color:var(--line); background:var(--panel-2)}
 .fig{margin:18px 0; text-align:center}
-.fig img{max-width:100%; border:1px solid var(--line); border-radius:11px; background:#fff}
+.fig img{max-width:100%; border:1px solid var(--line); border-radius:11px; background:var(--fig-bg);
+  padding:0}
+:root[data-theme="dark"] .fig img{padding:8px}
 .fig figcaption{font-family:var(--mono); font-size:10.5px; color:var(--faint); margin-top:7px; letter-spacing:.05em}
-.efflog{font-family:var(--mono); font-size:11px; color:var(--warn); background:#fff7e8;
+.efflog{font-family:var(--mono); font-size:11px; color:var(--warn); background:var(--err-bg);
   border:1px solid rgba(207,138,18,.35); border-radius:8px; padding:8px 12px; margin:2px 0 14px;
   white-space:pre-wrap; word-break:break-word}
 .score-cell.err{color:var(--fail)}
@@ -218,6 +233,7 @@ table.rep tr:hover td{background:var(--panel-2)}
     <button class="tbtn" id="btn-sample">Load Sample</button>
     <button class="tbtn primary" id="btn-run" disabled>▶ Synthesize</button>
     <span class="status-dot" id="status-dot" title="idle"></span>
+    <button class="tbtn icon" id="btn-theme" title="Toggle dark mode" aria-label="Toggle dark mode"></button>
   </div>
 </div>
 
@@ -302,6 +318,24 @@ const meterColor=v=>`hsl(${Math.max(0,Math.min(1,v))*105},58%,45%)`;
 const pill=s=>`<span class="pill ${s}">${s}</span>`;
 const esc=s=>String(s).replace(/</g,"&lt;");
 const setStatus=(c,t)=>{const d=$("#status-dot");d.className="status-dot"+(c?" "+c:"");d.title=t||c||"idle";};
+
+/* ---------------- theme ---------------- */
+function applyTheme(t){
+  document.documentElement.setAttribute("data-theme",t);
+  $("#btn-theme").textContent = t==="dark" ? "☀" : "☾";
+  $("#btn-theme").title = t==="dark" ? "Switch to light mode" : "Switch to dark mode";
+}
+(function initTheme(){
+  let t=null;
+  try{ t=localStorage.getItem("synthlab-theme"); }catch(e){}
+  if(!t && window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches) t="dark";
+  applyTheme(t||"light");
+})();
+$("#btn-theme").addEventListener("click",()=>{
+  const next=document.documentElement.getAttribute("data-theme")==="dark"?"light":"dark";
+  applyTheme(next);
+  try{ localStorage.setItem("synthlab-theme",next); }catch(e){}
+});
 
 const BACKEND_HELP="Can't reach the backend.\n\nOpen this dashboard THROUGH the server, not as a file:\n\n"
   +"    uvicorn server:app --port 8000\n\nthen visit http://localhost:8000 (address must start with http://).";
