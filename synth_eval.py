@@ -678,13 +678,30 @@ def sdmetrics_privacy(
     roles: ColumnRoles,
     metadata=None,
     table_name: str = "",
+    holdout: Optional[pd.DataFrame] = None,
 ) -> Dict[str, object]:
-    """Run sdmetrics single-table privacy metrics that apply generically."""
+    """Run sdmetrics single-table privacy metrics that apply generically.
+
+    ``real`` is the training split; ``holdout`` (if given) is the pre-fit
+    validation split, which lets us run sdmetrics' DCROverfittingProtection --
+    the official parallel to our custom MIA/DCR memorisation checks.
+    """
     out: Dict[str, object] = {}
-    single_meta = _single_table_metadata(metadata, table_name)
+    # DCR metrics need a single-table metadata dict WITH a top-level 'columns'
+    # key -- that is metadata.to_dict()['tables'][table], not the object's
+    # own .to_dict() (which nests differently).  Resolve both forms.
     meta_dict = None
     try:
-        meta_dict = single_meta.to_dict() if hasattr(single_meta, "to_dict") else single_meta
+        if metadata is not None and hasattr(metadata, "to_dict"):
+            full = metadata.to_dict()
+            if isinstance(full, dict) and "tables" in full and table_name in full["tables"]:
+                meta_dict = full["tables"][table_name]
+            elif isinstance(full, dict) and "columns" in full:
+                meta_dict = full
+        if meta_dict is None:
+            single_meta = _single_table_metadata(metadata, table_name)
+            md = single_meta.to_dict() if hasattr(single_meta, "to_dict") else single_meta
+            meta_dict = md.get("tables", {}).get(table_name, md) if isinstance(md, dict) else md
     except Exception:
         meta_dict = None
 
@@ -717,6 +734,42 @@ def sdmetrics_privacy(
         except Exception as e:  # pragma: no cover
             out["CategoricalCAP"] = None
             out["CategoricalCAP_error"] = str(e)[:200]
+
+    # DCROverfittingProtection: sdmetrics' official parallel to our MIA/DCR.
+    # Compares how close synthetic rows sit to the TRAINING data vs the
+    # (pre-fit) VALIDATION holdout.  1.0 => synthetic is no closer to training
+    # than to unseen data (no memorisation); lower => overfit / leakage.
+    if holdout is not None and meta_dict is not None and len(holdout) >= 2:
+        try:
+            from sdmetrics.single_table import DCROverfittingProtection
+
+            sub = int(min(len(real), len(synth), len(holdout)))
+            score = DCROverfittingProtection.compute(
+                real_training_data=real, synthetic_data=synth,
+                real_validation_data=holdout, metadata=meta_dict,
+                num_rows_subsample=sub if sub > 0 else None,
+            )
+            out["DCROverfittingProtection"] = float(score)
+        except Exception as e:  # pragma: no cover
+            out["DCROverfittingProtection"] = None
+            out["DCROverfittingProtection_error"] = str(e)[:200]
+
+    # DCRBaselineProtection: synthetic-vs-real DCR against a random-data
+    # baseline.  Fragile on Excel-mangled numeric ids (huge ranges overflow its
+    # uniform sampler), so it is best-effort and skipped on failure.
+    if meta_dict is not None:
+        try:
+            from sdmetrics.single_table import DCRBaselineProtection
+
+            sub = int(min(len(real), len(synth)))
+            score = DCRBaselineProtection.compute(
+                real_data=real, synthetic_data=synth, metadata=meta_dict,
+                num_rows_subsample=sub if sub > 0 else None,
+            )
+            out["DCRBaselineProtection"] = float(score)
+        except Exception as e:  # pragma: no cover
+            out["DCRBaselineProtection"] = None
+            out["DCRBaselineProtection_error"] = str(e)[:200]
     return out
 
 
@@ -738,7 +791,7 @@ def privacy_report(
     # DCR / exact-match compare the *training* real data with synthetic.
     dcr = dcr_distributions(train_real, synth, roles, os.path.join(fig_dir, "dcr.png"))
     exact = exact_match_rate(train_real, synth, roles)
-    sdm = sdmetrics_privacy(train_real, synth, roles, metadata, table_name)
+    sdm = sdmetrics_privacy(train_real, synth, roles, metadata, table_name, holdout=holdout_real)
 
     verdicts = {}
     # MIA AUC close to 0.5 is good.
@@ -772,6 +825,29 @@ def privacy_report(
         verdicts["new_row_synthesis"] = (
             "PASS" if nrs >= 0.9 else "WARN" if nrs >= 0.7 else "FAIL",
             f"NewRowSynthesis={nrs:.3f} (fraction of novel synthetic rows)",
+        )
+
+    dop = sdm.get("DCROverfittingProtection")
+    if dop is not None:
+        verdicts["dcr_overfitting_protection"] = (
+            "PASS" if dop >= 0.9 else "WARN" if dop >= 0.5 else "FAIL",
+            f"DCROverfittingProtection={dop:.3f} (sdmetrics; 1.0 => synthetic no "
+            f"closer to training than to holdout)",
+        )
+
+    dbp = sdm.get("DCRBaselineProtection")
+    if dbp is not None:
+        verdicts["dcr_baseline_protection"] = (
+            "PASS" if dbp >= 0.9 else "WARN" if dbp >= 0.5 else "FAIL",
+            f"DCRBaselineProtection={dbp:.3f} (sdmetrics; DCR vs random-data baseline)",
+        )
+
+    cap = sdm.get("CategoricalCAP")
+    if cap is not None:
+        verdicts["categorical_cap"] = (
+            "PASS" if cap >= 0.5 else "WARN" if cap >= 0.3 else "FAIL",
+            f"CategoricalCAP={cap:.3f} (sdmetrics; 1.0 => sensitive field not "
+            f"inferable from key fields)",
         )
 
     return {
@@ -1558,7 +1634,8 @@ def compute_leaderboard(
 
     * fidelity  = mean QualityReport overall score across tables
     * privacy   = mean of [1-2|AUC-0.5| (MIA), min(1, DCR ratio),
-                  NewRowSynthesis, 1-exact_match_rate]
+                  NewRowSynthesis, DCROverfittingProtection (sdmetrics),
+                  1-exact_match_rate]
     * utility   = mean over tables of clip(synth_score / real_score, 0, 1)
                   using the RandomForest TSTR metric (accuracy or R²)
     """
@@ -1579,6 +1656,10 @@ def compute_leaderboard(
             nrs = rep.get("sdmetrics", {}).get("NewRowSynthesis")
             if nrs is not None:
                 parts.append(float(nrs))
+            # sdmetrics DCROverfittingProtection: already a 0-1 protection score
+            dop = rep.get("sdmetrics", {}).get("DCROverfittingProtection")
+            if dop is not None:
+                parts.append(float(min(1.0, max(0.0, dop))))
             emr = rep.get("exact_match", {}).get("exact_match_rate")
             if emr is not None:
                 parts.append(float(max(0.0, 1.0 - emr)))

@@ -56,6 +56,8 @@ per-column real-vs-synthetic distribution plots; correlation heatmaps; SDV
 | **CategoricalCAP** | sdmetrics (`sdmetrics.single_table.CategoricalCAP`) | Correct Attribution Probability attack: risk that an attacker knowing key categorical fields infers a sensitive categorical field. Score is privacy protection (1 = safe). Run when ≥ 2 categorical columns exist | 0–1, higher better |
 | **Membership Inference Attack (MIA)** | custom (`synth_eval.membership_inference_attack`) | Hold out 25% of real rows *before* fitting; features = distances to the k=5 nearest synthetic records; a RandomForest attacker tries to distinguish training members from holdouts. Reports attack **AUC** and accuracy | AUC ≈ 0.5 = no leakage. **PASS \|AUC−0.5\| ≤ 0.10**, WARN ≤ 0.20, else FAIL |
 | **DCR (Distance to Closest Record)** | custom (`synth_eval.dcr_distributions`) | Nearest-neighbour distance real→synthetic vs a real→real baseline, in the mixed-encoded feature space. Ratio = median(real→synth) / median(real→real) | ratio ≥ 1 means synthetic rows sit no closer than real rows do to each other. **PASS ≥ 0.9**, WARN ≥ 0.5 |
+| **DCROverfittingProtection** | sdmetrics (`sdmetrics.single_table.DCROverfittingProtection`) | Official sdmetrics parallel to MIA/DCR: compares whether synthetic rows sit closer to the **training** split than to the pre-fit **validation holdout**. 1.0 = no closer to training than to unseen data (no memorization); lower = overfitting/leakage. Reuses the same 25% holdout | 0–1, higher better. **PASS ≥ 0.9**, WARN ≥ 0.5. Also folded into the leaderboard privacy score |
+| **DCRBaselineProtection** | sdmetrics (`sdmetrics.single_table.DCRBaselineProtection`) | Synthetic-vs-real DCR compared against a random-data baseline. Best-effort: skipped (with a note) when Excel-mangled numeric IDs overflow its random sampler | 0–1, higher better. **PASS ≥ 0.9**, WARN ≥ 0.5 |
 | **Exact-match rate** | custom | % of synthetic rows identical to a real row on all modelable columns | **PASS ≤ 0.1%**, WARN ≤ 1% |
 
 Visuals: 3-panel dashboard (MIA AUC with 0.5 safe band, DCR ratio with ideal-≥1 line,
@@ -109,7 +111,7 @@ One 0–1 score per synthesizer per axis, averaged over tables:
 | Dimension | Formula |
 |---|---|
 | **fidelity** | mean QualityReport overall score |
-| **privacy** | mean of [ 1 − 2·\|MIA AUC − 0.5\| , min(1, DCR ratio) , NewRowSynthesis , 1 − exact-match rate ] |
+| **privacy** | mean of [ 1 − 2·\|MIA AUC − 0.5\| , min(1, DCR ratio) , NewRowSynthesis , DCROverfittingProtection , 1 − exact-match rate ] |
 | **utility_tstr** | mean over (table × metric) of clip(TSTR score / TRTR score, 0, 1) |
 | **overall** | mean of the three dimensions |
 
