@@ -1,0 +1,614 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Synth/Lab — synthetic data studio</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400..700&family=Spline+Sans:wght@300..700&family=Spline+Sans+Mono:ital,wght@0,400..600;1,400..600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#eaf1f8; --panel:#ffffff; --panel-2:#f1f6fc; --tint:#e7f0fa;
+  --line:#d5e2f0; --line-soft:#e7eef7;
+  --ink:#122c42; --muted:#5b7288; --faint:#93a6ba;
+  --blue:#0079c1; --blue-deep:#005a94; --navy:#013a63; --sky:#4aa3dd;
+  --red:#e31837; --red-deep:#bd1430;
+  --pass:#1a8f5a; --warn:#cf8a12; --fail:#e31837;
+  --disp:"Bricolage Grotesque",sans-serif; --sans:"Spline Sans",sans-serif; --mono:"Spline Sans Mono",monospace;
+  --tool-h:60px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{background:var(--bg); color:var(--ink); font-family:var(--sans); font-weight:380;
+  font-size:14px; line-height:1.5; overflow:hidden}
+button{font-family:var(--mono); cursor:pointer; border-radius:8px; transition:.15s}
+::-webkit-scrollbar{height:9px;width:9px} ::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:var(--sky); border-radius:9px; border:2px solid var(--bg)}
+
+/* ---------------- toolbar ---------------- */
+.toolbar{height:var(--tool-h); display:flex; align-items:center; gap:16px; padding:0 20px;
+  background:var(--panel); border-bottom:1px solid var(--line); position:relative; z-index:20}
+.brand{display:flex; align-items:center; gap:12px}
+.logo{width:34px; height:34px; border-radius:9px; box-shadow:0 3px 9px rgba(0,121,193,.3)}
+.wordmark{font-family:var(--disp); font-weight:700; font-size:24px; letter-spacing:-.02em; color:var(--ink)}
+.wordmark .slash{color:var(--sky); font-weight:400} .wordmark em{font-style:normal; color:var(--blue)}
+.tools{display:flex; align-items:center; gap:10px; margin-left:auto}
+.tbtn{background:var(--panel); border:1px solid var(--line); color:var(--navy); font-size:12.5px;
+  font-weight:500; padding:9px 16px; letter-spacing:.03em; display:inline-flex; align-items:center; gap:7px}
+.tbtn:hover{border-color:var(--blue); color:var(--blue)}
+.tbtn svg{width:15px; height:15px}
+.tbtn.primary{background:var(--blue); border-color:var(--blue); color:#fff;
+  box-shadow:0 4px 12px rgba(0,121,193,.32)}
+.tbtn.primary:hover{background:#0a86cf}
+.tbtn.primary:disabled{opacity:.45; cursor:not-allowed; box-shadow:none}
+.tbtn input{display:none}
+.status-dot{width:8px;height:8px;border-radius:50%;background:var(--faint);margin-left:4px}
+.status-dot.run{background:var(--warn); animation:pulse 1s infinite}
+.status-dot.done{background:var(--pass)} .status-dot.err{background:var(--fail)}
+@keyframes pulse{50%{opacity:.35}}
+
+/* ---------------- app split ---------------- */
+.app{display:flex; height:calc(100vh - var(--tool-h))}
+.left{width:404px; flex:none; border-right:1px solid var(--line); background:var(--panel);
+  overflow-y:auto; padding:18px}
+.right{flex:1; display:flex; flex-direction:column; min-width:0}
+
+/* left panels */
+.panel{margin-bottom:22px}
+.panel-h{display:flex; align-items:center; gap:9px; margin-bottom:10px}
+.panel-h h2{font-family:var(--disp); font-weight:600; font-size:15px; color:var(--ink)}
+.panel-h .count{font-family:var(--mono); font-size:10.5px; color:#fff; background:var(--sky);
+  border-radius:999px; padding:1px 8px; font-weight:500}
+.panel-h .count.zero{background:var(--line); color:var(--muted)}
+.empty{font-size:12.5px; color:var(--faint); font-style:italic; padding:8px 2px}
+
+/* file tables */
+.ftable{width:100%; border-collapse:collapse; font-size:12.5px}
+.ftable th{font-family:var(--mono); font-size:9.5px; letter-spacing:.1em; text-transform:uppercase;
+  color:var(--muted); text-align:left; padding:7px 10px; background:var(--panel-2);
+  border:1px solid var(--line); font-weight:600}
+.ftable th:last-child{text-align:right}
+.ftable td{padding:8px 10px; border:1px solid var(--line); vertical-align:middle}
+.ftable tr{cursor:pointer}
+.ftable tr:hover td{background:var(--tint)}
+.ftable tr.sel td{background:var(--tint); box-shadow:inset 3px 0 0 var(--blue)}
+.fname{font-family:var(--mono); color:var(--ink); font-weight:500}
+.fmeta{font-family:var(--mono); font-size:10.5px; color:var(--muted)}
+.fact{text-align:right; white-space:nowrap}
+.iact{background:none; border:none; color:var(--muted); padding:3px 5px; font-size:13px; border-radius:6px}
+.iact:hover{color:var(--blue)} .iact.del:hover{color:var(--red)}
+a.iact{text-decoration:none; display:inline-block}
+
+/* settings controls */
+.field{margin-bottom:14px}
+.field label{display:flex; justify-content:space-between; font-family:var(--mono); font-size:10px;
+  letter-spacing:.08em; text-transform:uppercase; color:var(--muted); margin-bottom:6px; font-weight:500}
+.field label output{color:var(--blue-deep); font-weight:600}
+input[type=range]{width:100%; accent-color:var(--blue)}
+.chips{display:flex; gap:7px; flex-wrap:wrap}
+.chip{display:flex; align-items:center; gap:7px; font-family:var(--mono); font-size:11.5px; font-weight:500;
+  border:1px solid var(--line); border-radius:999px; padding:6px 12px; background:var(--panel);
+  color:var(--muted); cursor:pointer; user-select:none; transition:.15s}
+.chip .dot{width:9px; height:9px; border-radius:50%; opacity:.4}
+.chip.on{border-color:var(--blue); color:var(--ink); background:var(--tint)} .chip.on .dot{opacity:1}
+.hint{font-size:11px; color:var(--faint); margin-top:5px; line-height:1.4}
+select{background:var(--panel); color:var(--ink); border:1px solid var(--line); border-radius:7px;
+  font-family:var(--mono); font-size:11.5px; padding:5px 8px; cursor:pointer; width:100%}
+select:hover{border-color:var(--sky)} select:focus{outline:none; border-color:var(--blue)}
+.rel-row{display:grid; grid-template-columns:1fr 18px 1fr 26px; gap:6px; align-items:center; margin-bottom:7px}
+.rel-row .arrow-lbl{text-align:center; color:var(--blue); font-weight:700; font-size:13px}
+.rel-del{background:var(--panel); border:1px solid var(--line); color:var(--faint); border-radius:6px; height:30px}
+.rel-del:hover{color:#fff; background:var(--red); border-color:var(--red)}
+.mini-btn{background:var(--panel); border:1px solid var(--line); color:var(--navy); font-size:11px;
+  font-weight:500; padding:7px 13px; letter-spacing:.03em; margin-top:4px}
+.mini-btn:hover{border-color:var(--blue); color:var(--blue)}
+.tgt-row{display:grid; grid-template-columns:96px 1fr; gap:8px; align-items:center; margin-bottom:8px}
+.tgt-row span{font-family:var(--mono); font-size:11px; color:var(--muted); overflow:hidden; text-overflow:ellipsis}
+
+/* ---------------- right: tabs + panes ---------------- */
+.tabbar{display:flex; gap:2px; padding:0 18px; background:var(--panel); border-bottom:1px solid var(--line);
+  overflow-x:auto; flex:none}
+.tab{background:none; border:none; border-bottom:3px solid transparent; border-radius:0; color:var(--muted);
+  font-family:var(--disp); font-weight:500; font-size:13.5px; padding:13px 15px; white-space:nowrap}
+.tab:hover:not(.locked){color:var(--ink)}
+.tab.active{color:var(--blue); border-bottom-color:var(--blue)}
+.tab.locked{opacity:.4; cursor:not-allowed}
+.panes{flex:1; overflow-y:auto; padding:24px 28px; position:relative}
+.pane{display:none} .pane.active{display:block; animation:fade .35s ease}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+
+/* welcome / empty state */
+.welcome{height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center;
+  text-align:center; border:2px dashed #b6d2ea; border-radius:18px; color:var(--muted); transition:.2s}
+.welcome.over{border-color:var(--blue); background:var(--tint)}
+.welcome .up{width:54px;height:54px;color:var(--blue);margin-bottom:16px}
+.welcome h3{font-family:var(--disp); font-weight:600; font-size:23px; color:var(--ink); margin-bottom:6px}
+.welcome p{font-size:13.5px; max-width:420px}
+
+/* schema editor pane */
+.schema-block{display:none} .schema-block.show{display:block}
+.blk-head{display:flex; align-items:center; gap:12px; margin-bottom:14px}
+.blk-head h3{font-family:var(--disp); font-weight:600; font-size:19px}
+.blk-head .dim{font-family:var(--mono); font-size:12px; color:var(--muted); margin-left:auto}
+table.grid{width:100%; border-collapse:collapse; font-size:13px}
+table.grid th{font-family:var(--mono); font-size:10px; letter-spacing:.1em; text-transform:uppercase;
+  color:var(--blue); text-align:left; padding:9px 11px; border-bottom:1px solid var(--line); font-weight:600}
+table.grid td{padding:6px 11px; border-bottom:1px solid var(--line-soft)}
+table.grid tr:hover td{background:var(--panel-2)}
+td.mono,.mono{font-family:var(--mono); font-size:12px} td.dim{color:var(--muted)}
+td.num{text-align:right; font-family:var(--mono); font-size:12px}
+table.grid select{width:auto; min-width:120px}
+select.changed{border-color:var(--red); color:var(--red-deep); background:#fdeef0}
+.pk-row{display:flex; align-items:center; gap:10px; margin-top:12px; font-family:var(--mono);
+  font-size:11.5px; color:var(--muted)} .pk-row select{width:auto; min-width:160px}
+.preview-scroll{overflow-x:auto; margin-top:12px; border:1px solid var(--line-soft); border-radius:9px}
+.preview-scroll table{width:100%; border-collapse:collapse; font-size:11px; white-space:nowrap}
+.preview-scroll th{font-family:var(--mono); font-size:9.5px; color:var(--muted); text-transform:uppercase;
+  padding:7px 9px; background:var(--panel-2); border:1px solid var(--line-soft)}
+.preview-scroll td{font-family:var(--mono); color:var(--muted); font-size:10.5px; padding:5px 9px;
+  border:1px solid var(--line-soft)}
+
+/* report bits */
+h4.block-title{font-family:var(--disp); font-weight:600; font-size:18px; margin:26px 0 10px; color:var(--ink)}
+h4.block-title:first-child{margin-top:0}
+.note{font-size:12.5px; color:var(--muted); max-width:820px; margin-bottom:12px}
+.podium{display:grid; grid-template-columns:repeat(auto-fit,minmax(215px,1fr)); gap:14px; margin-bottom:22px}
+.lb-card{position:relative; overflow:hidden; background:var(--panel); border:1px solid var(--line);
+  border-radius:14px; padding:18px; box-shadow:0 6px 18px rgba(1,58,99,.05)}
+.lb-card .rank{position:absolute; top:-10px; right:12px; font-family:var(--disp); font-size:52px;
+  font-weight:700; color:var(--line); line-height:1}
+.lb-card.first{border-color:var(--blue)} .lb-card.first .rank{color:var(--sky)}
+.lb-name{font-family:var(--disp); font-weight:600; font-size:16px; display:flex; align-items:center; gap:8px; margin-bottom:12px}
+.lb-name .dot{width:11px; height:11px; border-radius:50%}
+.big-score{font-family:var(--disp); font-size:34px; font-weight:700; margin:2px 0 12px}
+.big-score small{font-size:13px; color:var(--faint); font-family:var(--mono); font-weight:400}
+.meter{margin-bottom:9px}
+.meter .m-label{display:flex; justify-content:space-between; font-family:var(--mono); font-size:10px;
+  letter-spacing:.05em; text-transform:uppercase; color:var(--faint); margin-bottom:3px}
+.meter .m-label b{color:var(--ink); font-weight:600}
+.m-track{height:6px; background:var(--line-soft); border-radius:99px; overflow:hidden}
+.m-fill{height:100%; border-radius:99px; width:0; transition:width .9s cubic-bezier(.2,.7,.2,1)}
+table.rep{width:100%; border-collapse:collapse; font-size:12.5px; margin-bottom:6px}
+table.rep th{font-family:var(--mono); font-size:10px; letter-spacing:.1em; text-transform:uppercase;
+  color:var(--blue); text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); font-weight:600}
+table.rep td{padding:6px 10px; border-bottom:1px solid var(--line-soft)}
+table.rep tr:hover td{background:var(--panel-2)}
+.score-cell{font-family:var(--mono); font-size:12px; text-align:right}
+.pill{display:inline-block; font-family:var(--mono); font-size:10px; font-weight:600; letter-spacing:.06em;
+  padding:2px 10px; border-radius:999px; border:1px solid}
+.pill.PASS{color:var(--pass); border-color:rgba(26,143,90,.4); background:rgba(26,143,90,.1)}
+.pill.WARN{color:var(--warn); border-color:rgba(207,138,18,.4); background:rgba(207,138,18,.1)}
+.pill.FAIL{color:var(--fail); border-color:rgba(227,24,55,.4); background:rgba(227,24,55,.1)}
+.pill.SKIP{color:var(--faint); border-color:var(--line); background:var(--panel-2)}
+.fig{margin:18px 0; text-align:center}
+.fig img{max-width:100%; border:1px solid var(--line); border-radius:11px; background:#fff}
+.fig figcaption{font-family:var(--mono); font-size:10.5px; color:var(--faint); margin-top:7px; letter-spacing:.05em}
+.efflog{font-family:var(--mono); font-size:11px; color:var(--warn); background:#fff7e8;
+  border:1px solid rgba(207,138,18,.35); border-radius:8px; padding:8px 12px; margin:2px 0 14px;
+  white-space:pre-wrap; word-break:break-word}
+.score-cell.err{color:var(--fail)}
+
+/* console drawer */
+.console{flex:none; max-height:0; overflow:hidden; background:#04283f; color:#9ec7e4;
+  font-family:var(--mono); font-size:12px; transition:max-height .25s; border-top:1px solid var(--navy)}
+.console.show{max-height:190px; overflow-y:auto; padding:14px 20px}
+.console .ln{padding:1.5px 0} .console .ln.warn{color:#f2c14e} .console .ln.err{color:#ff8f9e}
+.console .ln.ok{color:#7fe0a6}
+.cursor::after{content:"▮"; color:var(--sky); animation:blink 1s steps(1) infinite; margin-left:2px}
+@keyframes blink{50%{opacity:0}}
+</style>
+</head>
+<body>
+
+<div class="toolbar">
+  <div class="brand">
+    <svg class="logo" viewBox="0 0 48 48" aria-hidden="true">
+      <rect width="48" height="48" rx="12" fill="#0079c1"/>
+      <rect x="10" y="27" width="7" height="10" rx="2.2" fill="#fff"/>
+      <rect x="20.5" y="19" width="7" height="18" rx="2.2" fill="#fff"/>
+      <rect x="31" y="11" width="7" height="26" rx="2.2" fill="#e31837"/></svg>
+    <div class="wordmark">Synth<span class="slash">/</span><em>Lab</em></div>
+  </div>
+  <div class="tools">
+    <label class="tbtn" id="btn-upload">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+      Upload<input type="file" id="file-input" multiple accept=".csv"></label>
+    <button class="tbtn" id="btn-sample">Load Sample</button>
+    <button class="tbtn primary" id="btn-run" disabled>▶ Synthesize</button>
+    <span class="status-dot" id="status-dot" title="idle"></span>
+  </div>
+</div>
+
+<div class="app">
+  <!-- ============ LEFT ============ -->
+  <aside class="left">
+    <div class="panel">
+      <div class="panel-h"><h2>Seed Data</h2><span class="count zero" id="seed-count">0</span></div>
+      <div id="seed-list"><div class="empty">No tables yet — Upload or Load Sample.</div></div>
+    </div>
+
+    <div class="panel" id="rel-panel" style="display:none">
+      <div class="panel-h"><h2>Relationships</h2></div>
+      <div id="rel-rows"></div>
+      <button class="mini-btn" id="btn-add-rel">+ add relationship</button>
+      <p class="hint">parent key → child FK. Empty = independent tables.</p>
+    </div>
+
+    <div class="panel" id="settings-panel" style="display:none">
+      <div class="panel-h"><h2>Run Settings</h2></div>
+      <div class="field"><label>Synthesizers</label><div class="chips" id="synth-chips"></div></div>
+      <div class="field" id="field-epochs" style="display:none">
+        <label>GAN epochs <output id="out-epochs">60</output></label>
+        <input type="range" id="in-epochs" min="10" max="600" step="10" value="60"></div>
+      <div class="field"><label>Sample scale ×rows <output id="out-scale">1.0</output></label>
+        <input type="range" id="in-scale" min="0.25" max="2" step="0.25" value="1"></div>
+      <div class="field"><label>Holdout frac <output id="out-holdout">0.25</output></label>
+        <input type="range" id="in-holdout" min="0.10" max="0.40" step="0.05" value="0.25"></div>
+      <div class="field"><label>ML-efficacy target / table</label><div id="target-fields"></div></div>
+    </div>
+
+    <div class="panel" id="synthetic-panel" style="display:none">
+      <div class="panel-h"><h2>Synthetic Data</h2><span class="count zero" id="synth-count">0</span></div>
+      <div id="synth-list"></div>
+    </div>
+  </aside>
+
+  <!-- ============ RIGHT ============ -->
+  <main class="right">
+    <div class="tabbar" id="tabbar">
+      <button class="tab active" data-pane="pane-schema">Schema</button>
+      <button class="tab locked" data-pane="pane-lb">Leaderboard</button>
+      <button class="tab locked" data-pane="pane-quality">Quality</button>
+      <button class="tab locked" data-pane="pane-ri">Referential</button>
+      <button class="tab locked" data-pane="pane-privacy">Privacy</button>
+      <button class="tab locked" data-pane="pane-ml">ML efficacy</button>
+    </div>
+    <div class="panes">
+      <div class="pane active" id="pane-schema">
+        <div class="welcome" id="welcome">
+          <svg class="up" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          <h3>Drop CSV files here</h3>
+          <p>or use <b>Upload</b> / <b>Load Sample</b> above. Then review the auto-detected schema,
+             set relationships and run settings on the left, and hit <b>Synthesize</b>.</p>
+        </div>
+        <div id="schema-blocks"></div>
+      </div>
+      <div class="pane" id="pane-lb"></div>
+      <div class="pane" id="pane-quality"></div>
+      <div class="pane" id="pane-ri"></div>
+      <div class="pane" id="pane-privacy"></div>
+      <div class="pane" id="pane-ml"></div>
+    </div>
+    <div class="console" id="console"></div>
+  </main>
+</div>
+
+<script>
+"use strict";
+const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
+const SDTYPES=["categorical","numerical","datetime","boolean","id","unknown"];
+const SYNTHS=["HMA","GaussianCopula","CTGAN","TVAE","CopulaGAN"];
+const GAN_SYNTHS=new Set(["CTGAN","TVAE","CopulaGAN"]);
+const PALETTE={real:"#555f5c",HMA:"#1f77b4",GaussianCopula:"#2ca02c",CTGAN:"#d62728",TVAE:"#9467bd",CopulaGAN:"#ff7f0e"};
+let DATA=null, detected={}, selectedTable=null;
+let selectedSynths=new Set(["HMA","GaussianCopula"]);
+
+const fmt=(v,d=3)=>(v==null||Number.isNaN(v))?"—":(+v).toFixed(d);
+const pct=v=>(v==null)?"—":(100*v).toFixed(1)+"%";
+const meterColor=v=>`hsl(${Math.max(0,Math.min(1,v))*105},58%,45%)`;
+const pill=s=>`<span class="pill ${s}">${s}</span>`;
+const esc=s=>String(s).replace(/</g,"&lt;");
+const setStatus=(c,t)=>{const d=$("#status-dot");d.className="status-dot"+(c?" "+c:"");d.title=t||c||"idle";};
+
+const BACKEND_HELP="Can't reach the backend.\n\nOpen this dashboard THROUGH the server, not as a file:\n\n"
+  +"    uvicorn server:app --port 8000\n\nthen visit http://localhost:8000 (address must start with http://).";
+if(location.protocol==="file:") setTimeout(()=>alert(BACKEND_HELP),300);
+
+/* ---------------- load data ---------------- */
+$("#file-input").addEventListener("change",e=>sendFiles(e.target.files));
+$("#btn-sample").addEventListener("click",async()=>{
+  $("#btn-sample").textContent="Detecting…";
+  try{const r=await fetch("/api/sample",{method:"POST"});
+    if(r.ok) init(await r.json());
+    else alert("No sample data in sdg/seed/ — start the server from the project root.");
+  }catch(e){alert(BACKEND_HELP);}
+  finally{$("#btn-sample").textContent="Load Sample";}
+});
+const welcome=$("#welcome");
+["dragover","dragenter"].forEach(ev=>welcome.addEventListener(ev,e=>{e.preventDefault();welcome.classList.add("over");}));
+["dragleave","drop"].forEach(ev=>welcome.addEventListener(ev,e=>{e.preventDefault();welcome.classList.remove("over");}));
+welcome.addEventListener("drop",e=>sendFiles(e.dataTransfer.files));
+async function sendFiles(files){
+  if(!files||!files.length) return;
+  const fd=new FormData(); [...files].forEach(f=>fd.append("files",f));
+  $("#welcome").querySelector("h3").textContent="Detecting schema…";
+  try{const r=await fetch("/api/upload",{method:"POST",body:fd});
+    if(r.ok) init(await r.json()); else alert("Upload failed ("+r.status+").");
+  }catch(e){alert(BACKEND_HELP);}
+  finally{$("#welcome").querySelector("h3").textContent="Drop CSV files here";}
+}
+
+function init(payload){
+  DATA=payload; detected={};
+  $("#rel-panel").style.display=$("#settings-panel").style.display="block";
+  $("#synthetic-panel").style.display="none"; $("#synth-list").innerHTML="";
+  $("#synth-count").textContent="0"; $("#synth-count").className="count zero";
+  lockReportTabs(true);
+  renderSeedList(); renderSchemaBlocks(); renderRels(payload.relationships); renderRecipe();
+  selectTable(Object.keys(DATA.tables)[0]);
+  activateTab("pane-schema");
+}
+
+/* ---------------- left: seed list ---------------- */
+function renderSeedList(){
+  const rows=Object.entries(DATA.tables).map(([t,v])=>`
+    <tr data-t="${t}"><td><div class="fname">${t}.csv</div>
+      <div class="fmeta">${v.rows.toLocaleString()} rows · ${v.columns.length} cols</div></td>
+      <td class="fact"><button class="iact" data-act="view" title="edit schema">✎</button>
+        <button class="iact del" data-act="del" title="remove">✕</button></td></tr>`).join("");
+  $("#seed-list").innerHTML=`<table class="ftable"><thead><tr><th>File Name</th><th>Action</th></tr></thead><tbody>${rows}</tbody></table>`;
+  const n=Object.keys(DATA.tables).length;
+  $("#seed-count").textContent=n; $("#seed-count").className="count"+(n?"":" zero");
+  $$("#seed-list tr[data-t]").forEach(tr=>tr.addEventListener("click",e=>{
+    const act=e.target.dataset.act, t=tr.dataset.t;
+    if(act==="del"){ e.stopPropagation(); removeTable(t); }
+    else selectTable(t);
+  }));
+}
+function removeTable(t){
+  delete DATA.tables[t];
+  if(!Object.keys(DATA.tables).length){ location.reload(); return; }
+  renderSeedList(); renderSchemaBlocks(); renderRecipe();
+  if(selectedTable===t) selectTable(Object.keys(DATA.tables)[0]);
+}
+function selectTable(t){
+  selectedTable=t;
+  $$("#seed-list tr[data-t]").forEach(tr=>tr.classList.toggle("sel",tr.dataset.t===t));
+  $("#welcome").style.display="none";
+  $$(".schema-block").forEach(b=>b.classList.toggle("show",b.dataset.t===t));
+  activateTab("pane-schema");
+}
+
+/* ---------------- schema editor (right) ---------------- */
+function renderSchemaBlocks(){
+  const host=$("#schema-blocks"); host.innerHTML="";
+  for(const [t,info] of Object.entries(DATA.tables)){
+    detected[t]={}; info.columns.forEach(c=>detected[t][c.name]=c.sdtype);
+    const rows=info.columns.map(c=>`
+      <tr><td class="mono">${c.name}</td>
+        <td><select data-table="${t}" data-col="${c.name}" class="sdtype-sel">
+          ${SDTYPES.map(s=>`<option ${s===c.sdtype?"selected":""}>${s}</option>`).join("")}</select></td>
+        <td class="num">${c.distinct.toLocaleString()}</td><td class="num">${c.missing_pct}%</td>
+        <td class="dim mono">${esc(c.example)}</td></tr>`).join("");
+    const p=info.preview;
+    const prev=`<div class="preview-scroll"><table><thead><tr>${p.columns.map(c=>`<th>${esc(c)}</th>`).join("")}</tr></thead>
+      <tbody>${p.data.map(r=>`<tr>${r.map(v=>`<td>${esc(String(v).slice(0,22))}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+    const el=document.createElement("div");
+    el.className="schema-block"; el.dataset.t=t;
+    el.innerHTML=`<div class="blk-head"><h3>${t}</h3>
+        <span class="dim">${info.rows.toLocaleString()} rows · ${info.columns.length} columns</span></div>
+      <p class="note">Auto-detected sdtypes — fix any wrong call with the dropdown
+        (<span style="color:var(--red)">red</span> = your override). id / datetime / unknown are excluded from privacy &amp; ML metrics.</p>
+      <table class="grid"><thead><tr><th>column</th><th>sdtype</th><th>distinct</th><th>missing</th><th>example</th></tr></thead>
+      <tbody>${rows}</tbody></table>
+      <div class="pk-row">PRIMARY KEY <select id="pk-${t}"><option value="">(none)</option>
+        ${info.columns.map(c=>`<option ${c.name===info.primary_key?"selected":""}>${c.name}</option>`).join("")}</select></div>
+      ${prev}`;
+    host.appendChild(el);
+  }
+  host.addEventListener("change",e=>{
+    if(e.target.classList.contains("sdtype-sel")){
+      const {table,col}=e.target.dataset;
+      e.target.classList.toggle("changed", e.target.value!==detected[table][col]);
+    }
+  });
+}
+
+/* ---------------- relationships ---------------- */
+function allCols(){return Object.entries(DATA.tables).flatMap(([t,v])=>v.columns.map(c=>`${t}.${c.name}`));}
+function relRow(parent="",child=""){
+  const opts=sel=>['<option value=""></option>',...allCols().map(c=>`<option ${c===sel?"selected":""}>${c}</option>`)].join("");
+  const div=document.createElement("div"); div.className="rel-row";
+  div.innerHTML=`<select class="rel-parent">${opts(parent)}</select><span class="arrow-lbl">→</span>
+    <select class="rel-child">${opts(child)}</select><button class="rel-del" title="remove">✕</button>`;
+  div.querySelector(".rel-del").addEventListener("click",()=>div.remove());
+  return div;
+}
+function renderRels(rels){
+  const host=$("#rel-rows"); host.innerHTML="";
+  (rels||[]).forEach(r=>host.appendChild(relRow(
+    `${r.parent_table_name}.${r.parent_primary_key}`,`${r.child_table_name}.${r.child_foreign_key}`)));
+}
+$("#btn-add-rel").addEventListener("click",()=>$("#rel-rows").appendChild(relRow()));
+
+/* ---------------- recipe ---------------- */
+function renderRecipe(){
+  $("#synth-chips").innerHTML=SYNTHS.map(s=>`<span class="chip ${selectedSynths.has(s)?"on":""}" data-s="${s}">
+    <span class="dot" style="background:${PALETTE[s]}"></span>${s}</span>`).join("");
+  $$("#synth-chips .chip").forEach(ch=>ch.addEventListener("click",()=>{
+    const s=ch.dataset.s;
+    selectedSynths.has(s)?selectedSynths.delete(s):selectedSynths.add(s);
+    ch.classList.toggle("on"); $("#btn-run").disabled=!selectedSynths.size; updateEpochsVisibility();
+  }));
+  updateEpochsVisibility();
+  $("#target-fields").innerHTML=Object.entries(DATA.tables).map(([t,v])=>`
+    <div class="tgt-row"><span title="${t}">${t}</span>
+      <select id="target-${t}"><option value="auto">(auto)</option>
+        ${v.targets.map(c=>`<option>${c}</option>`).join("")}</select></div>`).join("");
+  $("#btn-run").disabled=!selectedSynths.size;
+}
+function updateEpochsVisibility(){
+  $("#field-epochs").style.display=[...selectedSynths].some(s=>GAN_SYNTHS.has(s))?"block":"none";
+}
+[["epochs",v=>v],["scale",v=>(+v).toFixed(2).replace(/0$/,"")],["holdout",v=>v]].forEach(([k,f])=>{
+  $(`#in-${k}`).addEventListener("input",e=>$(`#out-${k}`).textContent=f(e.target.value));
+});
+
+/* ---------------- tabs ---------------- */
+function lockReportTabs(lock){
+  $$('.tab[data-pane]').forEach(t=>{ if(t.dataset.pane!=="pane-schema") t.classList.toggle("locked",lock); });
+}
+function activateTab(pane){
+  $$(".tab").forEach(t=>t.classList.toggle("active",t.dataset.pane===pane));
+  $$(".pane").forEach(p=>p.classList.toggle("active",p.id===pane));
+}
+$("#tabbar").addEventListener("click",e=>{
+  const b=e.target.closest(".tab"); if(!b||b.classList.contains("locked")) return;
+  activateTab(b.dataset.pane);
+});
+
+/* ---------------- run + poll ---------------- */
+$("#btn-run").addEventListener("click",async()=>{
+  if(!DATA) return;
+  const schema={};
+  for(const t of Object.keys(DATA.tables)){
+    const sdtypes={};
+    $$(`.sdtype-sel[data-table="${t}"]`).forEach(s=>{ if(s.value!==detected[t][s.dataset.col]) sdtypes[s.dataset.col]=s.value; });
+    schema[t]={sdtypes, primary_key:$(`#pk-${t}`).value||null};
+  }
+  const rels=[...$$(".rel-row")].map(r=>{
+    const p=r.querySelector(".rel-parent").value, c=r.querySelector(".rel-child").value;
+    if(!p||!c) return null;
+    const [pt,pk]=p.split(/\.(.*)/s), [ct,fk]=c.split(/\.(.*)/s);
+    return {parent_table_name:pt,parent_primary_key:pk,child_table_name:ct,child_foreign_key:fk};
+  }).filter(Boolean);
+  const targets={}; Object.keys(DATA.tables).forEach(t=>targets[t]=$(`#target-${t}`).value);
+  const cfg={schema, relationships:rels, targets, synths:[...selectedSynths],
+    epochs:+$("#in-epochs").value, scale:+$("#in-scale").value, holdout:+$("#in-holdout").value};
+  let r;
+  try{ r=await fetch("/api/synthesize",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(cfg)}); }
+  catch(e){ alert(BACKEND_HELP); return; }
+  if(!r.ok){ alert((await r.json()).error||"failed to start"); return; }
+  $("#btn-run").disabled=true; setStatus("run","synthesizing");
+  $("#console").classList.add("show"); $("#console").innerHTML="";
+  poll();
+});
+async function poll(){
+  let j; try{ j=await (await fetch("/api/progress")).json(); }catch(e){ setStatus("err","lost backend"); return; }
+  const con=$("#console");
+  con.innerHTML=j.log.map((l,i)=>{
+    const cls=l.startsWith("⚠")?"warn":l.startsWith("✗")?"err":l.startsWith("Done")?"ok":"";
+    const cur=(i===j.log.length-1&&j.status==="running")?' cursor':'';
+    return `<div class="ln ${cls}${cur}">${esc(l)}</div>`;
+  }).join("");
+  con.scrollTop=con.scrollHeight;
+  if(j.status==="running"){ setTimeout(poll,2000); return; }
+  $("#btn-run").disabled=false;
+  if(j.status==="done"){ setStatus("done","complete"); renderReport(await (await fetch("/api/results")).json());
+    setTimeout(()=>$("#console").classList.remove("show"),1200); }
+  else setStatus("err","failed — see log");
+}
+
+/* ---------------- report ---------------- */
+const fig=(b64,cap="")=>b64?`<figure class="fig"><img src="data:image/png;base64,${b64}">${cap?`<figcaption>${esc(cap)}</figcaption>`:""}</figure>`:"";
+const meter=(label,v)=>`<div class="meter"><div class="m-label"><span>${label}</span><b>${fmt(v)}</b></div>
+  <div class="m-track"><div class="m-fill" data-w="${Math.max(0,Math.min(1,v||0))*100}" style="background:${meterColor(v||0)}"></div></div></div>`;
+
+function renderReport(res){
+  lockReportTabs(false);
+  const P=n=>res.palette[n]||PALETTE[n]||"#888";
+
+  /* synthetic data list (left) */
+  let sl=`<table class="ftable"><thead><tr><th>File Name</th><th>Action</th></tr></thead><tbody>`;
+  let count=0;
+  for(const s of res.synths) for(const t of res.tables){
+    sl+=`<tr><td><div class="fname">${s}·${t}.csv</div><div class="fmeta">synthetic</div></td>
+      <td class="fact"><a class="iact" href="/api/download/${s}/${t}" title="download">↓</a></td></tr>`; count++;
+  }
+  sl+=`</tbody></table>`;
+  $("#synth-list").innerHTML=sl; $("#synthetic-panel").style.display="block";
+  $("#synth-count").textContent=count; $("#synth-count").className="count";
+
+  /* leaderboard */
+  const lb=[...res.leaderboard].sort((a,b)=>(b.overall??0)-(a.overall??0));
+  $("#pane-lb").innerHTML=`<div class="podium">${lb.map((r,i)=>`
+    <div class="lb-card ${i===0?"first":""}"><div class="rank">${i+1}</div>
+      <div class="lb-name"><span class="dot" style="background:${P(r.synthesizer)}"></span>${r.synthesizer}</div>
+      <div class="big-score">${fmt(r.overall)}<small> /1 overall</small></div>
+      ${meter("fidelity",r.fidelity)}${meter("privacy",r.privacy)}${meter("utility · TSTR",r.utility_tstr)}</div>`).join("")}</div>
+    <p class="note">fidelity = mean sdmetrics QualityReport · privacy = MIA ⊕ DCR ⊕ novelty ⊕ exact-match ·
+      utility = TSTR/TRTR ratio (see METRICS.md).</p>`;
+  requestAnimationFrame(()=>$$("#pane-lb .m-fill").forEach(m=>m.style.width=m.dataset.w+"%"));
+
+  /* quality */
+  let q=`<h4 class="block-title">sdmetrics QualityReport</h4>
+    <table class="rep"><thead><tr><th>synthesizer</th><th>table</th><th style="text-align:right">column shapes</th>
+    <th style="text-align:right">column pair trends</th><th style="text-align:right">overall</th></tr></thead><tbody>`;
+  for(const s of res.synths) for(const [t,v] of Object.entries(res.quality[s]||{}))
+    q+=`<tr><td class="mono"><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${P(s)};margin-right:7px"></span>${s}</td>
+      <td class="mono dim">${t}</td><td class="score-cell">${fmt(v.column_shapes)}</td>
+      <td class="score-cell">${fmt(v.column_pair_trends)}</td>
+      <td class="score-cell" style="color:${meterColor(v.overall)}">${fmt(v.overall)}</td></tr>`;
+  q+=`</tbody></table>`+fig(res.figures.quality,"QualityReport scores per synthesizer per table");
+  q+=`<h4 class="block-title">Column Shapes — per column</h4>
+    <p class="note">Marginal-distribution match per column (KS complement numeric, TV complement categorical).</p>`;
+  for(const [t,b64] of Object.entries(res.figures.shapes||{})) q+=fig(b64,t);
+  const pairs=res.figures.pairs||{};
+  if(Object.values(pairs).some(Boolean)){
+    q+=`<h4 class="block-title">Column Pair Trends — per column pair</h4>
+      <p class="note">Relationship preservation per pair (correlation similarity numeric, contingency similarity categorical/mixed).
+      1 = identical trend; blank = a pair sdmetrics couldn't score. Shown for ${res.synths[0]}.</p>`;
+    for(const [t,b64] of Object.entries(pairs)) if(b64) q+=fig(b64,t);
+  }
+  $("#pane-quality").innerHTML=q;
+
+  /* referential */
+  if(!res.referential.length){
+    $("#pane-ri").innerHTML=`<p class="note">No relationships defined — add parent→child links on the left to check foreign-key coverage.</p>`;
+  }else{
+    $("#pane-ri").innerHTML=`<p class="note">fk_coverage = share of child foreign-key values present among parent primary keys.
+      ${res.relationships_modeled?"HMA was fitted <b>with</b> these relationships.":"Tables synthesized independently — near-zero coverage is expected for single-table synthesizers."}</p>
+      <table class="rep"><thead><tr><th>relationship</th><th>source</th><th style="text-align:right">fk coverage</th><th>status</th></tr></thead>
+      <tbody>${res.referential.map(r=>`<tr><td class="mono">${r.relationship}</td><td class="mono dim">${r.source}</td>
+        <td class="score-cell">${pct(r.fk_coverage)}</td><td>${pill(r.status)}</td></tr>`).join("")}</tbody></table>`;
+  }
+
+  /* privacy */
+  let pv=fig(res.figures.privacy,"MIA AUC (ideal 0.5) · DCR ratio (ideal ≥ 1) · exact-match %");
+  pv+=`<table class="rep"><thead><tr><th>synthesizer</th><th>table</th><th>check</th><th>status</th><th>detail</th></tr></thead><tbody>`;
+  for(const [s,tabs] of Object.entries(res.privacy)) for(const [t,rep] of Object.entries(tabs))
+    for(const [chk,v] of Object.entries(rep.verdicts||{}))
+      pv+=`<tr><td class="mono">${s}</td><td class="mono dim">${t}</td><td class="mono">${chk}</td>
+        <td>${pill(v.status)}</td><td class="dim" style="font-size:11.5px">${esc(v.detail)}</td></tr>`;
+  pv+=`</tbody></table><h4 class="block-title">Distance to Closest Record</h4>
+    <p class="note">Synthetic rows should sit no closer to real records than real records sit to each other (grey baseline).</p>`;
+  for(const [t,b64] of Object.entries(res.figures.dcr||{})) pv+=fig(b64,t);
+  $("#pane-privacy").innerHTML=pv;
+
+  /* ml efficacy */
+  if(!res.efficacy.length){ $("#pane-ml").innerHTML=`<p class="note">No usable modelling target found.</p>`; }
+  else{
+    let ml=`<p class="note">TSTR — each model trained on real (reference) and on every synthesizer's output, tested on the
+      <b>same real holdout</b>. gap(real−synth) ≈ 0 means synthetic trains as well as real.</p>`;
+    for(const t of [...new Set(res.efficacy.map(r=>r.table))]){
+      const rows=res.efficacy.filter(r=>r.table===t);
+      const metrics=[...new Set(rows.map(r=>r.metric))], sources=[...new Set(rows.map(r=>r.train_on))];
+      ml+=`<h4 class="block-title">${t} <span style="font-family:var(--mono);font-size:12px;color:var(--faint);font-weight:400">target ${rows[0].target} · ${rows[0].task}</span></h4>
+        <table class="rep"><thead><tr><th>metric</th>${sources.map(s=>`<th style="text-align:right">${s}</th>`).join("")}</tr></thead><tbody>`;
+      const notes=new Set();
+      for(const m of metrics){
+        ml+=`<tr><td class="mono">${m}</td>`+sources.map(s=>{
+          const row=rows.find(r=>r.metric===m&&r.train_on===s), v=row?row.score:null;
+          const note=row&&row.note?row.note:"";
+          if(v==null&&note) notes.add(note);
+          const errCls=(v==null&&note)?" err":"";
+          const tip=note?` title="${esc(note)}"`:"";
+          const col=s.startsWith("gap(")?(v!=null&&Math.abs(v)<=0.05?"var(--pass)":v!=null&&Math.abs(v)<=0.15?"var(--warn)":"var(--fail)"):"inherit";
+          const cell=(v==null&&note)?"error":fmt(v);
+          return `<td class="score-cell${errCls}" style="color:${col}"${tip}>${cell}</td>`;}).join("")+"</tr>";
+      }
+      ml+=`</tbody></table>`;
+      if(notes.size) ml+=`<div class="efflog">`+[...notes].map(n=>"⚠ "+esc(n)).join("\n")+`</div>`;
+    }
+    ml+=fig(res.figures.efficacy,"TSTR scores per training source");
+    $("#pane-ml").innerHTML=ml;
+  }
+
+  activateTab("pane-lb");
+}
+</script>
+</body>
+</html>

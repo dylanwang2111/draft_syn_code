@@ -51,13 +51,13 @@ except Exception:  # pragma: no cover - seaborn is optional at import time
 # Substrings that mark a column as an identifier or free-text name.  Such
 # columns are excluded from distributions, correlations, MIA/DCR features and
 # ML modelling because they carry no distributional signal and hurt privacy
-# distance metrics.
+# distance metrics.  NOTE: "code" is intentionally NOT here — in this schema
+# *_CODE / *_TP_CD columns are type codes, i.e. genuine categoricals.
 ID_NAME_TOKENS = (
     "id",
     "guid",
     "uuid",
     "key",
-    "code",
     "name",
     "fname",
     "lname",
@@ -68,6 +68,15 @@ ID_NAME_TOKENS = (
     "uri",
     "url",
 )
+
+# Schema naming conventions (CONTACT / PERSON / PERSONNAME warehouse tables):
+#   *_TP_CD, *_TP_CODE, *_CD, *_CODE -> type codes            => categorical
+#   *_IND                            -> Y/N indicator flags   => categorical
+#   *_ID, *_TX_ID                    -> identifiers           => skip
+#   *_DT, *_DATE                     -> dates (often Excel-mangled) => skip
+#   *_NAME, *_DESC, *_USER           -> names / free text / audit  => skip
+SUFFIX_CATEGORICAL = ("_tp_cd", "_tp_code", "_cd", "_code", "_ind")
+SUFFIX_SKIP = ("_id", "_dt", "_date", "_name", "_desc", "_user")
 
 
 def _looks_like_id_or_name(col: str) -> bool:
@@ -125,15 +134,31 @@ def classify_columns(
     """Split a table's columns into numeric / categorical / skipped.
 
     Priority order for each column:
-        1. SDV metadata sdtype ('id' -> skip, 'numerical' -> numeric,
+        1. Schema suffix conventions (``*_ID``/``*_DT``/``*_NAME`` -> skip,
+           ``*_TP_CD``/``*_CODE``/``*_IND`` -> categorical, with a
+           cardinality guard).
+        2. SDV metadata sdtype ('id' -> skip, 'numerical' -> numeric,
            'categorical'/'boolean' -> categorical, 'datetime' -> skip).
-        2. Name heuristic (looks like an id / name -> skip).
-        3. pandas dtype + cardinality.
+        3. Name heuristic (looks like an id / name -> skip).
+        4. pandas dtype + cardinality.
     """
     sdtypes = _metadata_sdtypes(metadata, table_name)
     roles = ColumnRoles()
 
     for col in df.columns:
+        cl = str(col).lower()
+        # 1. schema suffix conventions win over everything else
+        if cl.endswith(SUFFIX_SKIP):
+            roles.skipped.append(col)
+            continue
+        if cl.endswith(SUFFIX_CATEGORICAL):
+            # a "code" with an id-like number of distinct values is id-like
+            if df[col].nunique(dropna=True) > max_categorical_card:
+                roles.skipped.append(col)
+            else:
+                roles.categorical.append(col)
+            continue
+
         sdt = sdtypes.get(col)
         if sdt in {"id", "datetime", "unknown"}:
             roles.skipped.append(col)
@@ -141,8 +166,18 @@ def classify_columns(
         if sdt == "numerical":
             roles.numeric.append(col)
             continue
-        if sdt in {"categorical", "boolean"}:
+        if sdt == "boolean":
             roles.categorical.append(col)
+            continue
+        if sdt == "categorical":
+            # SDV labels free-text name/id columns 'categorical'.  As one-hot
+            # features they add no signal and break TSTR (holdout categories
+            # unseen in training), so skip them if they look like a name/id or
+            # are high-cardinality -- matching the suffix-skip path.
+            if _looks_like_id_or_name(col) or df[col].nunique(dropna=True) > max_categorical_card:
+                roles.skipped.append(col)
+            else:
+                roles.categorical.append(col)
             continue
 
         # No usable metadata -> fall back to heuristics.
@@ -892,6 +927,134 @@ def ml_efficacy_tstr(
     return df
 
 
+def sdmetrics_ml_efficacy(
+    train_real: pd.DataFrame,
+    holdout_real: pd.DataFrame,
+    synth,
+    roles: ColumnRoles,
+    target: str,
+    task: str,
+    table_name: str = "",
+    max_train_rows: int = 20000,
+) -> pd.DataFrame:
+    """Condensed TSTR using **sdmetrics** ML-efficacy metrics.
+
+    Metric selection (kept deliberately small):
+        binary target      -> BinaryDecisionTreeClassifier + BinaryLogisticRegression (F1)
+        multiclass target  -> MulticlassDecisionTreeClassifier (macro F1)
+        numeric target     -> LinearRegression (R^2)
+
+    Each metric's model is trained on (a) the real training split (TRTR
+    reference) and (b) each synthesizer's data (TSTR), and always evaluated
+    on the SAME real holdout via ``Metric.compute(test_data, train_data,
+    target=...)``.  Only modelable columns (id/name/date columns dropped) are
+    passed in.  Returns a tidy frame with ``gap(real-<synth>)`` rows appended.
+    """
+    from sdmetrics import single_table as st
+
+    if isinstance(synth, dict):
+        sources = {"real": train_real, **synth}
+    else:
+        sources = {"real": train_real, "synthetic": synth}
+
+    nun = int(train_real[target].nunique(dropna=True))
+    if task == "classification" and nun == 2:
+        metric_classes = {
+            "BinaryDecisionTreeClassifier (F1)": st.BinaryDecisionTreeClassifier,
+            "BinaryLogisticRegression (F1)": st.BinaryLogisticRegression,
+        }
+    elif task == "classification":
+        metric_classes = {
+            "MulticlassDecisionTreeClassifier (macro F1)": st.MulticlassDecisionTreeClassifier,
+        }
+    else:
+        metric_classes = {"LinearRegression (R2)": st.LinearRegression}
+
+    cols = [c for c in roles.modelable if c in holdout_real.columns]
+    if target not in cols:
+        cols.append(target)
+    test = holdout_real[cols].dropna(subset=[target]).copy()
+
+    cat_cols = [c for c in cols if c in roles.categorical]
+
+    def _align_categories(tr, te):
+        """Make ``te`` safe for a model trained on ``tr``.
+
+        sdmetrics' ML-efficacy metrics one-hot encode with handle_unknown=
+        'error', so any category present in the real holdout but absent from the
+        training data (common in TSTR when a synthesizer never generated a rare
+        value) raises "Found unknown categories".  We map such test-only
+        categories to the training column's most frequent value so the metric
+        computes; returns the aligned test frame and how many columns changed.
+        """
+        te = te.copy()
+        n_aligned = 0
+        for c in cat_cols:
+            if c == target or c not in tr.columns:
+                continue
+            known = set(tr[c].dropna().astype(str).unique())
+            col_str = te[c].astype(str)
+            mask = ~col_str.isin(known) & te[c].notna()
+            if mask.any():
+                mode = tr[c].dropna().astype(str).mode()
+                fill = mode.iloc[0] if len(mode) else next(iter(known), "")
+                te.loc[mask, c] = fill
+                n_aligned += 1
+        return te, n_aligned
+
+    rows = []
+    for mname, M in metric_classes.items():
+        for src, df in sources.items():
+            if target not in df.columns:
+                continue
+            tr = df[[c for c in cols if c in df.columns]].dropna(subset=[target]).copy()
+            if len(tr) > max_train_rows:
+                tr = tr.sample(max_train_rows, random_state=0)
+            if len(tr) < 10 or len(test) < 5:
+                continue
+            # drop test rows whose TARGET class was never seen in training
+            # (an unseen label cannot be predicted and would crash scoring)
+            train_labels = set(tr[target].dropna().astype(str).unique())
+            test_src = test[test[target].astype(str).isin(train_labels)].copy()
+            test_src, n_aligned = _align_categories(tr, test_src)
+            note = ""
+            if len(test_src) < len(test):
+                note = f"dropped {len(test)-len(test_src)} holdout rows with unseen target class"
+            if n_aligned:
+                note = (note + "; " if note else "") + \
+                    f"aligned {n_aligned} feature col(s) with unseen categories to train mode"
+            try:
+                if len(test_src) < 5:
+                    raise ValueError("too few holdout rows share the training classes")
+                score = float(M.compute(test_data=test_src, train_data=tr, target=target))
+            except Exception as e:  # pragma: no cover - defensive
+                score = float("nan")
+                note = (note + "; " if note else "") + str(e)[:140]
+            rows.append({
+                "table": table_name, "target": target, "task": task,
+                "metric": mname, "train_on": src, "score": score, "note": note,
+            })
+    out = pd.DataFrame(rows)
+
+    # gap(real - synth) per metric x synthetic source
+    gaps = []
+    if not out.empty:
+        for mname in metric_classes:
+            sub = out[out["metric"] == mname]
+            r = sub[sub["train_on"] == "real"]["score"]
+            for sname in [k for k in sources if k != "real"]:
+                s = sub[sub["train_on"] == sname]["score"]
+                if len(r) and len(s) and pd.notna(r.iloc[0]) and pd.notna(s.iloc[0]):
+                    gaps.append({
+                        "table": table_name, "target": target, "task": task,
+                        "metric": mname, "train_on": f"gap(real-{sname})",
+                        "score": float(r.iloc[0] - s.iloc[0]), "note": "",
+                    })
+    if gaps:
+        out = pd.concat([out, pd.DataFrame(gaps)], ignore_index=True)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # 5. MULTI-SYNTHESIZER SUITE (HMA + CTGAN + TVAE + copulas)
 # ---------------------------------------------------------------------------
@@ -1060,6 +1223,62 @@ def plot_column_shapes_heatmap(
     return _save_fig(fig, out_png)
 
 
+def plot_pair_trends_heatmap(
+    details: Sequence[dict], out_png: str, table_name: str = "", synth_name: str = ""
+) -> Optional[str]:
+    """Column Pair Trends as a column x column similarity matrix.
+
+    ``details`` = records from ``QualityReport.get_details('Column Pair Trends')``
+    with keys 'Column 1', 'Column 2', 'Score'.  Cell (i, j) is how well the
+    relationship between columns i and j is preserved (1 = identical trend).
+    Pairs sdmetrics could not score (constant / near-empty columns) are left
+    blank.  Columns that have no scored pair at all are dropped so the plot
+    focuses on the relationships that actually exist.
+    """
+    if not details:
+        return None
+    scores: Dict[tuple, float] = {}
+    cols: List[str] = []
+    for rec in details:
+        c1, c2, sc = rec.get("Column 1"), rec.get("Column 2"), rec.get("Score")
+        if c1 is None or c2 is None:
+            continue
+        for c in (c1, c2):
+            if c not in cols:
+                cols.append(c)
+        if sc is not None and not (isinstance(sc, float) and np.isnan(sc)):
+            scores[(c1, c2)] = float(sc)
+            scores[(c2, c1)] = float(sc)
+    # keep only columns that participate in at least one scored pair
+    scored_cols = [c for c in cols if any((c, o) in scores for o in cols)]
+    if len(scored_cols) < 2:
+        return None
+    mat = pd.DataFrame(np.nan, index=scored_cols, columns=scored_cols, dtype=float)
+    for (a, b), v in scores.items():
+        if a in mat.index and b in mat.columns:
+            mat.loc[a, b] = v
+    np.fill_diagonal(mat.values, 1.0)
+
+    n = len(scored_cols)
+    annot = n <= 18
+    fig, ax = plt.subplots(figsize=(1.5 + 0.55 * n, 1.2 + 0.5 * n))
+    if _HAS_SNS:
+        sns.heatmap(mat, ax=ax, vmin=0, vmax=1, cmap="RdYlGn", annot=annot, fmt=".2f",
+                    cbar_kws={"label": "pair-trend similarity"}, linewidths=0.5,
+                    square=True, mask=mat.isna())
+    else:
+        im = ax.imshow(np.ma.masked_invalid(mat.values), vmin=0, vmax=1, cmap="RdYlGn")
+        ax.set_xticks(range(n)); ax.set_xticklabels(scored_cols, rotation=90, fontsize=7)
+        ax.set_yticks(range(n)); ax.set_yticklabels(scored_cols, fontsize=7)
+        fig.colorbar(im, ax=ax, label="pair-trend similarity")
+    title = f"{table_name}: column pair trends"
+    if synth_name:
+        title += f" ({synth_name})"
+    ax.set_title(title)
+    fig.tight_layout()
+    return _save_fig(fig, out_png)
+
+
 def plot_privacy_comparison(
     privacy_all: Dict[str, Dict[str, Dict]], out_png: str
 ) -> Optional[str]:
@@ -1208,6 +1427,46 @@ def plot_efficacy_comparison(efficacy_table: pd.DataFrame, out_png: str) -> Opti
     return _save_fig(fig, out_png)
 
 
+def plot_efficacy_scores(efficacy_table: pd.DataFrame, out_png: str) -> Optional[str]:
+    """Grouped bars for the sdmetrics ML-efficacy frame (one panel per
+    table x metric): score per training source, dashed train-on-real line.
+    """
+    if efficacy_table is None or efficacy_table.empty or "score" not in efficacy_table.columns:
+        return None
+    df = efficacy_table[~efficacy_table["train_on"].astype(str).str.startswith("gap(")].copy()
+    df = df[pd.notna(df["score"])]
+    if df.empty:
+        return None
+    panels = list(df.groupby(["table", "metric"]).groups)
+    n = len(panels)
+    ncols = min(3, n)
+    nrows = int(np.ceil(n / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(5.6 * ncols, 4.2 * nrows), squeeze=False)
+    for ax in axes.ravel()[n:]:
+        ax.axis("off")
+    for ax, (t, mname) in zip(axes.ravel(), panels):
+        sub = df[(df["table"] == t) & (df["metric"] == mname)]
+        sources = list(sub["train_on"])
+        vals = list(sub["score"])
+        ax.bar(range(len(sources)), vals,
+               color=[_color_for(s, i) for i, s in enumerate(sources)])
+        ref = sub[sub["train_on"] == "real"]["score"]
+        if len(ref):
+            ax.axhline(float(ref.iloc[0]), color="black", ls="--", lw=1,
+                       label="train-on-real reference")
+            ax.legend(fontsize=7)
+        _annotate_bars(ax)
+        ax.set_xticks(range(len(sources)))
+        ax.set_xticklabels(sources, rotation=25, ha="right", fontsize=8)
+        ax.set_title(f"{t}\n{mname} · target={sub['target'].iloc[0]}", fontsize=9)
+        if "F1" in mname:
+            ax.set_ylim(0, 1.05)
+    fig.suptitle("sdmetrics ML efficacy (TSTR): trained per source, tested on the same real holdout",
+                 y=1.02)
+    fig.tight_layout()
+    return _save_fig(fig, out_png)
+
+
 def compute_leaderboard(
     quality_scores: Dict[str, Dict[str, Dict[str, float]]],
     privacy_all: Dict[str, Dict[str, Dict]],
@@ -1245,18 +1504,28 @@ def compute_leaderboard(
 
         utils: List[float] = []
         if efficacy_table is not None and not efficacy_table.empty and "train_on" in efficacy_table.columns:
-            for t in efficacy_table["table"].dropna().unique():
-                sub = efficacy_table[(efficacy_table["table"] == t)
-                                     & (efficacy_table["model"] == "RandomForest")]
-                if sub.empty:
-                    continue
-                metric = "accuracy" if sub["task"].iloc[0] == "classification" else "r2"
-                if metric not in sub.columns:
-                    continue
-                r = sub[sub["train_on"] == "real"][metric]
-                sv = sub[sub["train_on"] == s][metric]
-                if len(r) and len(sv) and pd.notna(r.iloc[0]) and pd.notna(sv.iloc[0]) and float(r.iloc[0]) > 0:
-                    utils.append(float(np.clip(float(sv.iloc[0]) / float(r.iloc[0]), 0.0, 1.0)))
+            if "score" in efficacy_table.columns and "metric" in efficacy_table.columns:
+                # sdmetrics-efficacy frame: one score column, panels = table x metric
+                base = efficacy_table[~efficacy_table["train_on"].astype(str).str.startswith("gap(")]
+                for (_, _), sub in base.groupby(["table", "metric"]):
+                    r = sub[sub["train_on"] == "real"]["score"]
+                    sv = sub[sub["train_on"] == s]["score"]
+                    if len(r) and len(sv) and pd.notna(r.iloc[0]) and pd.notna(sv.iloc[0]) and float(r.iloc[0]) > 0:
+                        utils.append(float(np.clip(float(sv.iloc[0]) / float(r.iloc[0]), 0.0, 1.0)))
+            else:
+                # legacy custom-TSTR frame (accuracy / r2 columns)
+                for t in efficacy_table["table"].dropna().unique():
+                    sub = efficacy_table[(efficacy_table["table"] == t)
+                                         & (efficacy_table["model"] == "RandomForest")]
+                    if sub.empty:
+                        continue
+                    metric = "accuracy" if sub["task"].iloc[0] == "classification" else "r2"
+                    if metric not in sub.columns:
+                        continue
+                    r = sub[sub["train_on"] == "real"][metric]
+                    sv = sub[sub["train_on"] == s][metric]
+                    if len(r) and len(sv) and pd.notna(r.iloc[0]) and pd.notna(sv.iloc[0]) and float(r.iloc[0]) > 0:
+                        utils.append(float(np.clip(float(sv.iloc[0]) / float(r.iloc[0]), 0.0, 1.0)))
         row["utility_tstr"] = float(np.mean(utils)) if utils else np.nan
 
         dims = [row["fidelity"], row["privacy"], row["utility_tstr"]]
