@@ -944,6 +944,11 @@ def sdmetrics_ml_efficacy(
         multiclass target  -> MulticlassDecisionTreeClassifier (macro F1)
         numeric target     -> LinearRegression (R^2)
 
+    For classification we also report accuracy / precision (macro) / recall
+    (macro) / F1 (macro), which sdmetrics does not expose, computed from a
+    single sklearn DecisionTree fit (rows prefixed ``DecisionTree ·``) so the
+    four are mutually consistent and comparable.
+
     Each metric's model is trained on (a) the real training split (TRTR
     reference) and (b) each synthesizer's data (TSTR), and always evaluated
     on the SAME real holdout via ``Metric.compute(test_data, train_data,
@@ -1002,44 +1007,89 @@ def sdmetrics_ml_efficacy(
                 n_aligned += 1
         return te, n_aligned
 
+    # Extra classification metrics sdmetrics does not expose (accuracy /
+    # precision / recall / F1), all from ONE DecisionTree fit so they are
+    # mutually consistent.  Uses the shared mixed encoder (one-hot with
+    # handle_unknown='ignore'), matching sdmetrics' decision-tree family.
+    EXTRA_CLS = ["accuracy", "precision (macro)", "recall (macro)", "F1 (macro)"]
+
+    def _extra_scores(tr, te):
+        from sklearn.tree import DecisionTreeClassifier
+        from sklearn.metrics import (accuracy_score, precision_score,
+                                     recall_score, f1_score)
+        feat_roles = ColumnRoles(
+            numeric=[c for c in roles.numeric if c != target and c in tr.columns and c in te.columns],
+            categorical=[c for c in roles.categorical if c != target and c in tr.columns and c in te.columns],
+        )
+        if not feat_roles.modelable:
+            return {}
+        enc, use = _fit_mixed_encoder(tr, feat_roles)
+        Xtr = np.nan_to_num(_encode(enc, tr, use))
+        Xte = np.nan_to_num(_encode(enc, te, use))
+        clf = DecisionTreeClassifier(random_state=0)
+        clf.fit(Xtr, tr[target].astype(str))
+        pred = clf.predict(Xte)
+        yt = te[target].astype(str)
+        return {
+            "accuracy": float(accuracy_score(yt, pred)),
+            "precision (macro)": float(precision_score(yt, pred, average="macro", zero_division=0)),
+            "recall (macro)": float(recall_score(yt, pred, average="macro", zero_division=0)),
+            "F1 (macro)": float(f1_score(yt, pred, average="macro", zero_division=0)),
+        }
+
     rows = []
-    for mname, M in metric_classes.items():
-        for src, df in sources.items():
-            if target not in df.columns:
-                continue
-            tr = df[[c for c in cols if c in df.columns]].dropna(subset=[target]).copy()
-            if len(tr) > max_train_rows:
-                tr = tr.sample(max_train_rows, random_state=0)
-            if len(tr) < 10 or len(test) < 5:
-                continue
-            # drop test rows whose TARGET class was never seen in training
-            # (an unseen label cannot be predicted and would crash scoring)
-            train_labels = set(tr[target].dropna().astype(str).unique())
-            test_src = test[test[target].astype(str).isin(train_labels)].copy()
-            test_src, n_aligned = _align_categories(tr, test_src)
-            note = ""
-            if len(test_src) < len(test):
-                note = f"dropped {len(test)-len(test_src)} holdout rows with unseen target class"
-            if n_aligned:
-                note = (note + "; " if note else "") + \
-                    f"aligned {n_aligned} feature col(s) with unseen categories to train mode"
+    for src, df in sources.items():
+        if target not in df.columns:
+            continue
+        tr = df[[c for c in cols if c in df.columns]].dropna(subset=[target]).copy()
+        if len(tr) > max_train_rows:
+            tr = tr.sample(max_train_rows, random_state=0)
+        if len(tr) < 10 or len(test) < 5:
+            continue
+        # drop test rows whose TARGET class was never seen in training
+        # (an unseen label cannot be predicted and would crash scoring)
+        train_labels = set(tr[target].dropna().astype(str).unique())
+        test_src = test[test[target].astype(str).isin(train_labels)].copy()
+        test_src, n_aligned = _align_categories(tr, test_src)
+        base_note = ""
+        if len(test_src) < len(test):
+            base_note = f"dropped {len(test)-len(test_src)} holdout rows with unseen target class"
+        if n_aligned:
+            base_note = (base_note + "; " if base_note else "") + \
+                f"aligned {n_aligned} feature col(s) with unseen categories to train mode"
+        enough = len(test_src) >= 5
+
+        def _add(metric, score, note):
+            rows.append({"table": table_name, "target": target, "task": task,
+                         "metric": metric, "train_on": src, "score": score, "note": note})
+
+        # sdmetrics metric(s) — the "official" score(s)
+        for mname, M in metric_classes.items():
             try:
-                if len(test_src) < 5:
+                if not enough:
                     raise ValueError("too few holdout rows share the training classes")
-                score = float(M.compute(test_data=test_src, train_data=tr, target=target))
+                _add(mname, float(M.compute(test_data=test_src, train_data=tr, target=target)), base_note)
             except Exception as e:  # pragma: no cover - defensive
-                score = float("nan")
-                note = (note + "; " if note else "") + str(e)[:140]
-            rows.append({
-                "table": table_name, "target": target, "task": task,
-                "metric": mname, "train_on": src, "score": score, "note": note,
-            })
+                _add(mname, float("nan"), (base_note + "; " if base_note else "") + str(e)[:140])
+
+        # extra sklearn classification metrics (accuracy / precision / recall / F1)
+        if task == "classification":
+            try:
+                if not enough:
+                    raise ValueError("too few holdout rows share the training classes")
+                extra = _extra_scores(tr, test_src)
+                for m in EXTRA_CLS:
+                    _add(f"DecisionTree · {m}", extra.get(m, float("nan")), base_note)
+            except Exception as e:  # pragma: no cover - defensive
+                for m in EXTRA_CLS:
+                    _add(f"DecisionTree · {m}", float("nan"),
+                         (base_note + "; " if base_note else "") + str(e)[:140])
     out = pd.DataFrame(rows)
 
     # gap(real - synth) per metric x synthetic source
     gaps = []
     if not out.empty:
-        for mname in metric_classes:
+        for mname in out["metric"].unique():
             sub = out[out["metric"] == mname]
             r = sub[sub["train_on"] == "real"]["score"]
             for sname in [k for k in sources if k != "real"]:

@@ -76,6 +76,21 @@ via the `TARGETS` dict in the notebook.
 | multiclass (3–20 classes) | `MulticlassDecisionTreeClassifier` | macro F1 |
 | numeric | `LinearRegression` | R² |
 
+**Additional classification metrics** (sdmetrics only reports F1). For every
+classification target we also report **accuracy**, **precision (macro)**,
+**recall (macro)** and **F1 (macro)** — rows prefixed `DecisionTree ·`. All four
+come from a *single* scikit-learn `DecisionTreeClassifier` fit (matching
+sdmetrics' decision-tree family) on the shared mixed encoder
+(median-impute + scale numeric; mode-impute + one-hot `handle_unknown='ignore'`
+categorical), so they are mutually consistent and directly comparable across
+training sources.
+
+Robustness: before scoring, holdout rows whose **target class** never appeared
+in the training split are dropped (an unseen label can't be predicted), and any
+**feature** category present in the holdout but absent from training is mapped to
+the training column's mode. Both adjustments are recorded in the row's `note`
+and surfaced in the dashboard instead of a blank cell.
+
 Protocol (**TSTR — Train on Synthetic, Test on Real**): each metric's model is trained
 twice — (a) on the real training split (TRTR reference) and (b) on each synthesizer's
 data — and always evaluated on the **same real holdout** via
