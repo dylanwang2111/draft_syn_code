@@ -210,13 +210,39 @@ def classify_columns(
 # 1. Mixed-type encoding used by privacy distance metrics & ML models
 # ---------------------------------------------------------------------------
 
+def _coerce_frame(df: pd.DataFrame, num: Sequence[str], cat: Sequence[str]) -> pd.DataFrame:
+    """Force declared numeric cols to numbers and categorical cols to strings.
+
+    Real-world CSVs are messy: a column SDV calls 'numerical' may hold stray
+    text, blanks or Excel artefacts.  We coerce numeric columns with
+    ``pd.to_numeric(errors='coerce')`` (bad values -> NaN, handled downstream by
+    the imputer) and cast categoricals to ``str`` so one-hot encoding is stable.
+    """
+    out = df.copy()
+    for c in num:
+        if c in out.columns:
+            out[c] = pd.to_numeric(out[c], errors="coerce")
+    for c in cat:
+        if c in out.columns:
+            s = out[c]
+            out[c] = s.where(s.isna(), s.astype(str))
+    return out
+
+
 def _fit_mixed_encoder(real: pd.DataFrame, roles: ColumnRoles):
     """Build a fitted sklearn ColumnTransformer for numeric+categorical cols.
 
-    Numeric  -> median impute + standard scale
-    Category -> most-frequent impute + one-hot (dense, ignore unknown)
+    Numeric  -> coerce to number, median impute + standard scale
+    Category -> cast to str, most-frequent impute + one-hot (dense, ignore unknown)
     Returned encoder maps a dataframe to a dense float matrix, so it can be
     reused for real/synthetic/holdout consistently.
+
+    Robust to messy data: numeric columns are coerced to numbers first, and any
+    column with no non-null value after coercion is dropped (otherwise the
+    imputer would silently drop it and hand StandardScaler a 0-width array,
+    raising "Found array with 0 feature(s)").  ``keep_empty_features=True`` keeps
+    the matrix width stable if a column is empty only in some split.  Raises
+    ValueError if nothing usable remains, so callers can skip gracefully.
     """
     from sklearn.compose import ColumnTransformer
     from sklearn.impute import SimpleImputer
@@ -225,6 +251,15 @@ def _fit_mixed_encoder(real: pd.DataFrame, roles: ColumnRoles):
 
     num = [c for c in roles.numeric if c in real.columns]
     cat = [c for c in roles.categorical if c in real.columns]
+    real = _coerce_frame(real, num, cat)
+
+    # Drop columns that are entirely empty after coercion -- these carry no
+    # signal and are what triggers the 0-feature StandardScaler error.
+    num = [c for c in num if real[c].notna().any()]
+    cat = [c for c in cat if real[c].notna().any()]
+    if not num and not cat:
+        raise ValueError("no usable numeric/categorical columns after cleaning "
+                         "(all candidate feature columns were empty or non-coercible)")
 
     # OneHotEncoder arg name changed across sklearn versions.
     try:
@@ -232,40 +267,29 @@ def _fit_mixed_encoder(real: pd.DataFrame, roles: ColumnRoles):
     except TypeError:  # pragma: no cover - old sklearn
         ohe = OneHotEncoder(handle_unknown="ignore", sparse=False)
 
+    # keep_empty_features added in sklearn 1.2; fall back if unavailable.
+    try:
+        num_imp = SimpleImputer(strategy="median", keep_empty_features=True)
+        cat_imp = SimpleImputer(strategy="most_frequent", keep_empty_features=True)
+    except TypeError:  # pragma: no cover - old sklearn
+        num_imp = SimpleImputer(strategy="median")
+        cat_imp = SimpleImputer(strategy="most_frequent")
+
     transformers = []
     if num:
-        transformers.append(
-            (
-                "num",
-                Pipeline(
-                    [
-                        ("impute", SimpleImputer(strategy="median")),
-                        ("scale", StandardScaler()),
-                    ]
-                ),
-                num,
-            )
-        )
+        transformers.append(("num", Pipeline([("impute", num_imp), ("scale", StandardScaler())]), num))
     if cat:
-        transformers.append(
-            (
-                "cat",
-                Pipeline(
-                    [
-                        ("impute", SimpleImputer(strategy="most_frequent")),
-                        ("ohe", ohe),
-                    ]
-                ),
-                cat,
-            )
-        )
+        transformers.append(("cat", Pipeline([("impute", cat_imp), ("ohe", ohe)]), cat))
     enc = ColumnTransformer(transformers, remainder="drop")
-    enc.fit(real[num + cat].copy())
+    enc.fit(real[num + cat])
+    # remember the per-role columns so _encode can coerce identically
+    enc._num_cols, enc._cat_cols = num, cat
     return enc, num + cat
 
 
 def _encode(enc, df: pd.DataFrame, cols: Sequence[str]) -> np.ndarray:
     X = df.reindex(columns=cols).copy()
+    X = _coerce_frame(X, getattr(enc, "_num_cols", []), getattr(enc, "_cat_cols", []))
     mat = enc.transform(X)
     return np.asarray(mat, dtype=float)
 
@@ -536,7 +560,11 @@ def membership_inference_attack(
         result["note"] = "insufficient data / columns for MIA"
         return result
 
-    enc, use_cols = _fit_mixed_encoder(train_real, roles)
+    try:
+        enc, use_cols = _fit_mixed_encoder(train_real, roles)
+    except ValueError as e:
+        result["note"] = str(e)
+        return result
     S = _encode(enc, synth, use_cols)
     kk = int(min(k, len(S)))
     nn = NearestNeighbors(n_neighbors=kk).fit(S)
@@ -585,7 +613,11 @@ def dcr_distributions(
     rng = np.random.default_rng(random_state)
     real_s = real.sample(min(sample, len(real)), random_state=random_state) if len(real) > sample else real
 
-    enc, use_cols = _fit_mixed_encoder(real, roles)
+    try:
+        enc, use_cols = _fit_mixed_encoder(real, roles)
+    except ValueError as e:
+        info["note"] = str(e)
+        return info
     R = np.nan_to_num(_encode(enc, real_s, use_cols))
     S = np.nan_to_num(_encode(enc, synth, use_cols))
     Rall = np.nan_to_num(_encode(enc, real, use_cols))
