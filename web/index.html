@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Synth/Lab — synthetic data studio</title>
+<title>Synth/Lab - synthetic data studio</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400..700&family=Spline+Sans:wght@300..700&family=Spline+Sans+Mono:ital,wght@0,400..600;1,400..600&display=swap" rel="stylesheet">
@@ -308,6 +308,12 @@ table.rep tr:hover td{background:var(--panel-2)}
         <select id="in-entity"><option value="">(none — tables independent)</option></select>
         <p class="hint" id="entity-hint">a business key shared across tables (e.g. CONT_ID) that
           identifies one entity across its versions. Set it and HMA keeps the tables joinable on it.</p></div>
+      <div class="field" id="field-scd" style="display:none">
+        <label>SCD timeline — effective / end / current</label>
+        <div class="tgt-row" style="grid-template-columns:1fr 1fr"><select id="in-scd-eff"></select><select id="in-scd-end"></select></div>
+        <select id="in-scd-cur" style="margin-top:6px"></select>
+        <p class="hint">needs the entity key + real date columns. Rewrites each entity's versions
+          into non-overlapping, contiguous windows and marks one current row.</p></div>
       <div class="field"><label>Synthesizers</label><div class="chips" id="synth-chips"></div></div>
       <div class="field" id="field-epochs" style="display:none">
         <label>GAN epochs <output id="out-epochs">60</output></label>
@@ -623,8 +629,19 @@ function renderRecipe(){
   const sug=(DATA.profile&&DATA.profile.recommendation&&(DATA.profile.recommendation.relationships||[])[0]||{}).parent_primary_key;
   $("#in-entity").innerHTML=`<option value="">(none — tables independent)</option>`+
     cands.map(c=>`<option value="${esc(c)}" ${c===sug?"selected":""}>${esc(c)} (in ${shared[c]} tables)</option>`).join("");
+  // SCD timeline columns: all column names (date-ish first)
+  const allCols=[...new Set(Object.values(DATA.tables).flatMap(v=>v.columns.map(c=>c.name)))];
+  const dateish=c=>/(_dt|_date|eff|end|start|expiry|since|left)/i.test(c);
+  const ordered=allCols.slice().sort((a,b)=>(dateish(b)-dateish(a))||a.localeCompare(b));
+  const opt=(ph)=>`<option value="">${ph}</option>`+ordered.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join("");
+  $("#in-scd-eff").innerHTML=opt("effective-date column…");
+  $("#in-scd-end").innerHTML=opt("end-date column…");
+  $("#in-scd-cur").innerHTML=opt("current-flag column (optional)…");
+  updateScdVisibility();
+  $("#in-entity").addEventListener("change",updateScdVisibility);
   $("#btn-run").disabled=!selectedSynths.size;
 }
+function updateScdVisibility(){ $("#field-scd").style.display=$("#in-entity").value?"block":"none"; }
 function updateEpochsVisibility(){
   $("#field-epochs").style.display=[...selectedSynths].some(s=>GAN_SYNTHS.has(s))?"block":"none";
 }
@@ -663,6 +680,7 @@ $("#btn-run").addEventListener("click",async()=>{
   const targets={}; Object.keys(DATA.tables).forEach(t=>targets[t]=$(`#target-${t}`).value);
   const cfg={schema, relationships:rels, targets, constraints:collectConstraints(),
     entity_key:$("#in-entity").value||"",
+    scd_effective:$("#in-scd-eff").value||"", scd_end:$("#in-scd-end").value||"", scd_current:$("#in-scd-cur").value||"",
     synths:[...selectedSynths],
     epochs:+$("#in-epochs").value, scale:+$("#in-scale").value, holdout:+$("#in-holdout").value};
   let r;

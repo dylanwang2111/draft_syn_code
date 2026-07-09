@@ -123,8 +123,10 @@ def generate_synthetic_suite(
 
                 if verbose:
                     print(f"[{name}] fitting multi-table HMASynthesizer ...")
+                # verbose=True so SDV emits phase/progress on stderr; the server
+                # captures that stream and forwards it to the dashboard console.
                 try:
-                    syn = HMASynthesizer(metadata, verbose=verbose)
+                    syn = HMASynthesizer(metadata, verbose=True)
                 except TypeError:  # older sdv without the verbose kwarg
                     syn = HMASynthesizer(metadata)
                 _apply(syn, build_constraints(constraints, multitable=True), "HMA")

@@ -18,10 +18,57 @@ from __future__ import annotations
 import glob
 import io
 import os
+import re
 import sys
 import threading
 import traceback
 import warnings
+
+
+class _TqdmTee:
+    """Wrap a stderr stream: intercept SDV/tqdm phase-progress lines and forward
+    a compact summary to a callback (the job console), pass everything else
+    through to the real stderr so normal logs still appear."""
+
+    _PAT = re.compile(r"(Preprocess Tables|Learning relationships|Modeling Tables|"
+                      r"Modeling|Sampling|Creating report)\D*?(\d+)\s*%")
+
+    def __init__(self, real, progress_fn):
+        self.real = real
+        self.progress = progress_fn
+        self.buf = ""
+
+    def write(self, s):
+        try:
+            self.buf += s
+        except Exception:
+            return
+        while True:
+            i = -1
+            for ch in ("\r", "\n"):
+                j = self.buf.find(ch)
+                if j >= 0 and (i < 0 or j < i):
+                    i = j
+            if i < 0:
+                break
+            seg, self.buf = self.buf[:i], self.buf[i + 1:]
+            m = self._PAT.search(seg)
+            if m:
+                try:
+                    self.progress(f"{m.group(1)} … {m.group(2)}%")
+                except Exception:
+                    pass
+            elif seg.strip():
+                try:
+                    self.real.write(seg + "\n")
+                except Exception:
+                    pass
+
+    def flush(self):
+        try:
+            self.real.flush()
+        except Exception:
+            pass
 
 import matplotlib
 
@@ -267,6 +314,14 @@ def _run_job(cfg: dict):
     def say(msg):
         log.append(msg)
 
+    def progress(msg):
+        """Update a single live '⏳' line (from captured tqdm) instead of spamming."""
+        line = "⏳ " + msg
+        if log and log[-1].startswith("⏳ "):
+            log[-1] = line
+        else:
+            log.append(line)
+
     try:
         tables = STATE["tables"]
         tables_meta = _metadata_from_request(cfg.get("schema", {}), cfg.get("relationships", []))
@@ -341,12 +396,17 @@ def _run_job(cfg: dict):
             fit_metadata = _build_metadata(_reduce_meta(tables_meta, keep), rels if rels_ok else [])
 
         say(f"Fitting: {', '.join(fit_synths)} (epochs={cfg['epochs']}, scale={cfg['scale']})")
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            suite = se.generate_synthetic_suite(
-                fit_tables, fit_metadata, synthesizers=fit_synths,
-                scale=cfg["scale"], epochs=cfg["epochs"], verbose=False,
-                constraints=cfg.get("constraints") or [])
+        _real_err = sys.stderr
+        sys.stderr = _TqdmTee(_real_err, progress)     # forward fit progress to the console
+        try:
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                suite = se.generate_synthetic_suite(
+                    fit_tables, fit_metadata, synthesizers=fit_synths,
+                    scale=cfg["scale"], epochs=cfg["epochs"], verbose=False,
+                    constraints=cfg.get("constraints") or [])
+        finally:
+            sys.stderr = _real_err
         for w in caught:
             if any(k in str(w.message) for k in ("skipped", "constraints not applied")):
                 say(f"⚠ {w.message}")
@@ -371,6 +431,26 @@ def _run_job(cfg: dict):
                 if fill.get(t):
                     suite[s][t] = _refill(suite[s][t], train[t], fill[t],
                                           list(train[t].columns), seed0)
+
+        # SCD timeline repair: per entity, tile non-overlapping effective/end
+        # windows and mark one current row (needs an entity key + real dates).
+        scd_eff = (cfg.get("scd_effective") or "").strip()
+        scd_end = (cfg.get("scd_end") or "").strip()
+        scd_cur = (cfg.get("scd_current") or "").strip() or None
+        if entity_key and scd_eff and scd_end:
+            noted = set()
+            for s in suite:
+                for t in list(suite[s]):
+                    df = suite[s][t]
+                    if entity_key in df.columns and scd_eff in df.columns and scd_end in df.columns:
+                        rep, note = se.repair_scd_timeline(df, entity_key, scd_eff, scd_end, scd_cur)
+                        suite[s][t] = rep
+                        key = (t, note)
+                        if note and key not in noted:
+                            say(f"⚠ SCD timeline ({t}): {note}"); noted.add(key)
+                        elif not note and t not in noted:
+                            say(f"SCD timeline repaired for {t}: non-overlapping windows per {entity_key}")
+                            noted.add(t)
 
         meta_dict = eval_meta_dict
         from sdmetrics.reports.single_table import QualityReport
