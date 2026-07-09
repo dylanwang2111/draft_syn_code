@@ -69,7 +69,12 @@ button{font-family:var(--mono); cursor:pointer; border-radius:8px; transition:.1
 
 /* left panels */
 .panel{margin-bottom:22px}
-.panel-h{display:flex; align-items:center; gap:9px; margin-bottom:10px}
+.panel-h{display:flex; align-items:center; gap:9px; margin-bottom:10px; cursor:pointer; user-select:none}
+.panel-h::before{content:"▾"; color:var(--sky); font-size:10px; width:11px; flex:none;
+  transition:transform .2s; text-align:center}
+.panel.collapsed .panel-h::before{transform:rotate(-90deg)}
+.panel.collapsed{margin-bottom:12px}
+.panel.collapsed > :not(.panel-h){display:none !important}
 .panel-h h2{font-family:var(--disp); font-weight:600; font-size:15px; color:var(--ink)}
 .panel-h .count{font-family:var(--mono); font-size:10.5px; color:#fff; background:var(--sky);
   border-radius:999px; padding:1px 8px; font-weight:500}
@@ -220,6 +225,10 @@ table.rep tr:hover td{background:var(--panel-2)}
 .fig img{max-width:100%; border:1px solid var(--line); border-radius:11px; background:var(--fig-bg);
   padding:0}
 :root[data-theme="dark"] .fig img{padding:8px}
+/* wide heatmaps: show at natural size and scroll horizontally instead of
+   being squeezed (and collapsing) to fit the pane width */
+.fig.scroll{overflow-x:auto; text-align:left}
+.fig.scroll img{max-width:none}
 .fig figcaption{font-family:var(--mono); font-size:10.5px; color:var(--faint); margin-top:7px; letter-spacing:.05em}
 .efflog{font-family:var(--mono); font-size:11px; color:var(--warn); background:var(--err-bg);
   border:1px solid rgba(207,138,18,.35); border-radius:8px; padding:8px 12px; margin:2px 0 14px;
@@ -374,6 +383,12 @@ $("#btn-theme").addEventListener("click",()=>{
 const BACKEND_HELP="Can't reach the backend.\n\nOpen this dashboard THROUGH the server, not as a file:\n\n"
   +"    uvicorn server:app --port 8000\n\nthen visit http://localhost:8000 (address must start with http://).";
 if(location.protocol==="file:") setTimeout(()=>alert(BACKEND_HELP),300);
+
+/* ---------------- collapsible left panels ---------------- */
+document.querySelector(".left").addEventListener("click",e=>{
+  const h=e.target.closest(".panel-h"); if(!h) return;
+  h.parentElement.classList.toggle("collapsed");
+});
 
 /* ---------------- load data ---------------- */
 $("#file-input").addEventListener("change",e=>sendFiles(e.target.files));
@@ -651,7 +666,7 @@ async function poll(){
 }
 
 /* ---------------- report ---------------- */
-const fig=(b64,cap="")=>b64?`<figure class="fig"><img src="data:image/png;base64,${b64}">${cap?`<figcaption>${esc(cap)}</figcaption>`:""}</figure>`:"";
+const fig=(b64,cap="",cls="")=>b64?`<figure class="fig ${cls}"><img src="data:image/png;base64,${b64}">${cap?`<figcaption>${esc(cap)}</figcaption>`:""}</figure>`:"";
 const meter=(label,v)=>`<div class="meter"><div class="m-label"><span>${label}</span><b>${fmt(v)}</b></div>
   <div class="m-track"><div class="m-fill" data-w="${Math.max(0,Math.min(1,v||0))*100}" style="background:${meterColor(v||0)}"></div></div></div>`;
 
@@ -693,13 +708,13 @@ function renderReport(res){
   q+=`</tbody></table>`+fig(res.figures.quality,"QualityReport scores per synthesizer per table");
   q+=`<h4 class="block-title">Column Shapes — per column</h4>
     <p class="note">Marginal-distribution match per column (KS complement numeric, TV complement categorical).</p>`;
-  for(const [t,b64] of Object.entries(res.figures.shapes||{})) q+=fig(b64,t);
+  for(const [t,b64] of Object.entries(res.figures.shapes||{})) q+=fig(b64,t,"scroll");
   const pairs=res.figures.pairs||{};
   if(Object.values(pairs).some(Boolean)){
     q+=`<h4 class="block-title">Column Pair Trends — per column pair</h4>
       <p class="note">Relationship preservation per pair (correlation similarity numeric, contingency similarity categorical/mixed).
       1 = identical trend; blank = a pair sdmetrics couldn't score. Shown for ${res.synths[0]}.</p>`;
-    for(const [t,b64] of Object.entries(pairs)) if(b64) q+=fig(b64,t);
+    for(const [t,b64] of Object.entries(pairs)) if(b64) q+=fig(b64,t,"scroll");
   }
   $("#pane-quality").innerHTML=q;
 

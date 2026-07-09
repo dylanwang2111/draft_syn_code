@@ -74,20 +74,28 @@ def plot_column_shapes_heatmap(
     """
     if not shape_scores:
         return None
-    mat = pd.DataFrame(shape_scores)
+    # rows = data columns, cols = synthesizers.  Transpose to a WIDE layout
+    # (synthesizers as rows, data columns along the x-axis) so a table with many
+    # columns renders as a wide, horizontally-scrollable band instead of a very
+    # tall, thin strip that collapses when the browser scales it down.
+    mat = pd.DataFrame(shape_scores).T
     if mat.empty:
         return None
-    fig, ax = plt.subplots(figsize=(1.6 + 1.1 * mat.shape[1], 0.8 + 0.42 * mat.shape[0]))
+    n_syn, n_col = mat.shape                       # rows, columns
+    annot = n_col <= 20                            # numbers only when they fit
+    width = max(6.0, 0.42 * n_col + 1.5)
+    height = 1.4 + 0.6 * n_syn
+    fig, ax = plt.subplots(figsize=(width, height))
     if _HAS_SNS:
-        sns.heatmap(mat, ax=ax, vmin=0, vmax=1, cmap="RdYlGn", annot=True, fmt=".2f",
+        sns.heatmap(mat, ax=ax, vmin=0, vmax=1, cmap="RdYlGn", annot=annot, fmt=".2f",
                     cbar_kws={"label": "shape score"}, linewidths=0.5)
+        ax.set_xticklabels(ax.get_xticklabels(), rotation=90, fontsize=7)
+        ax.set_yticklabels(ax.get_yticklabels(), rotation=0)
     else:
         im = ax.imshow(mat.values, vmin=0, vmax=1, cmap="RdYlGn", aspect="auto")
-        ax.set_xticks(range(mat.shape[1]))
-        ax.set_xticklabels(mat.columns, rotation=30, ha="right")
-        ax.set_yticks(range(mat.shape[0]))
-        ax.set_yticklabels(mat.index)
-        fig.colorbar(im, ax=ax)
+        ax.set_xticks(range(n_col)); ax.set_xticklabels(mat.columns, rotation=90, fontsize=7)
+        ax.set_yticks(range(n_syn)); ax.set_yticklabels(mat.index)
+        fig.colorbar(im, ax=ax, label="shape score")
     ax.set_title(f"{table_name}: per-column shape score by synthesizer")
     fig.tight_layout()
     return _save_fig(fig, out_png)
