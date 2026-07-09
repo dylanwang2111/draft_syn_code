@@ -123,7 +123,10 @@ def generate_synthetic_suite(
 
                 if verbose:
                     print(f"[{name}] fitting multi-table HMASynthesizer ...")
-                syn = HMASynthesizer(metadata)
+                try:
+                    syn = HMASynthesizer(metadata, verbose=verbose)
+                except TypeError:  # older sdv without the verbose kwarg
+                    syn = HMASynthesizer(metadata)
                 _apply(syn, build_constraints(constraints, multitable=True), "HMA")
                 syn.fit(train_tables)
                 suite["HMA"] = syn.sample(scale=scale)

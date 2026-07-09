@@ -213,6 +213,36 @@ def _child_pk(df):
     return None
 
 
+def _reduce_meta(tables_meta: dict, keep: dict) -> dict:
+    """A copy of ``tables_meta`` restricted to the kept columns per table."""
+    out = {}
+    for t, tm in tables_meta.items():
+        cols = {c: tm["columns"][c] for c in keep.get(t, []) if c in tm.get("columns", {})}
+        entry = {"columns": cols}
+        pk = tm.get("primary_key")
+        if pk in cols:
+            entry["primary_key"] = pk
+        out[t] = entry
+    return out
+
+
+def _refill(synth: pd.DataFrame, real: pd.DataFrame, fill_cols, order, seed=0) -> pd.DataFrame:
+    """Add ``fill_cols`` back to a synthetic table by resampling each from the
+    real column's values (independent bootstrap, preserving the missing-rate),
+    then reorder to the original column order.  Used for columns the synthesizer
+    did not model (ids / dates / names / audit) so the output keeps all columns."""
+    out = synth.copy()
+    n = len(out)
+    for i, c in enumerate(fill_cols):
+        if c not in real.columns:
+            continue
+        if n == 0:
+            out[c] = pd.Series([], dtype=real[c].dtype)
+        else:
+            out[c] = real[c].sample(n, replace=True, random_state=seed + i + 1).to_numpy()
+    return out[[c for c in order if c in out.columns]]
+
+
 def _referential_integrity(rels, real_tables, suite):
     rows = []
     for r in rels:
@@ -250,26 +280,51 @@ def _run_job(cfg: dict):
         if rels and not rels_ok:
             say("⚠ relationships don't hold in the data — synthesizing independent "
                 "tables (relationships still used for the integrity check)")
-        metadata = _build_metadata(tables_meta, rels if rels_ok else [])
+        # full metadata drives EVALUATION (every column); a reduced schema drives
+        # FITTING (only signal columns) so wide tables stay fast.
+        full_metadata = _build_metadata(tables_meta, [])
+        eval_meta_dict = full_metadata.to_dict()
 
         say("Splitting train / holdout (before any fitting)…")
         train, hold = _relational_split(tables, rels if rels_ok else [],
                                         cfg["holdout"], cfg.get("seed", 42))
-        roles = {t: se.classify_columns(df, metadata, t) for t, df in train.items()}
+        roles = {t: se.classify_columns(df, full_metadata, t) for t, df in train.items()}
 
-        # Entity-key (SCD hub) mode: derive a parent table keyed by the shared
-        # business key (e.g. CONT_ID) so HMA preserves cross-table referential
-        # integrity on it.  Only HMA can use the hub, so other synthesizers are
-        # skipped while this mode is on.
         entity_key = (cfg.get("entity_key") or "").strip()
         entity_children = se.entity_key_tables(tables, entity_key) if entity_key else []
+        child_pks = {t: _child_pk(train[t]) for t in entity_children} if entity_children else {}
+
+        # columns that must survive pruning (keys), then model = keys + modelable
+        keep_keys = {t: set() for t in train}
+        for t in train:
+            pk = tables_meta.get(t, {}).get("primary_key")
+            if pk:
+                keep_keys[t].add(pk)
+        for r in (rels if rels_ok else []):
+            keep_keys.setdefault(r["parent_table_name"], set()).add(r["parent_primary_key"])
+            keep_keys.setdefault(r["child_table_name"], set()).add(r["child_foreign_key"])
+        for t in entity_children:
+            keep_keys[t].add(entity_key)
+            if child_pks.get(t):
+                keep_keys[t].add(child_pks[t])
+        keep = {t: [c for c in train[t].columns
+                    if c in set(roles[t].modelable) | keep_keys[t]] for t in train}
+        fill = {t: [c for c in train[t].columns if c not in keep[t]] for t in train}
+        reduced_train = {t: train[t][keep[t]].copy() for t in train}
+        n_fill = sum(len(v) for v in fill.values())
+        if n_fill:
+            say(f"Modelling {sum(len(v) for v in keep.values())} signal columns; the other "
+                f"{n_fill} id/date/name/audit columns are resampled after fitting "
+                f"(kept in the output, keeps fitting fast).")
+
+        # Entity-key (SCD hub) mode -> HMA on a derived parent so referential
+        # integrity on the shared key is preserved; else fit the reduced tables.
         parent_name, hub_rels = None, []
-        fit_tables, fit_synths = train, cfg["synths"]
+        fit_synths = cfg["synths"]
         if entity_children:
             try:
-                child_pks = {t: _child_pk(train[t]) for t in entity_children}
-                fit_tables, metadata, hub_rels, hub_info = se.build_entity_hub(
-                    train, entity_key, child_primary_keys=child_pks, lift_invariant=False)
+                fit_tables, fit_metadata, hub_rels, hub_info = se.build_entity_hub(
+                    reduced_train, entity_key, child_primary_keys=child_pks, lift_invariant=False)
                 parent_name = hub_info["parent"]
                 fit_synths = ["HMA"]
                 say(f"Entity-key mode: built '{parent_name}' over {len(entity_children)} "
@@ -278,13 +333,18 @@ def _run_job(cfg: dict):
                     f"are skipped in this mode.")
             except Exception as e:
                 say(f"⚠ entity-key mode failed ({e}); falling back to normal synthesis")
-                parent_name, hub_rels, fit_tables, fit_synths = None, [], train, cfg["synths"]
+                parent_name, hub_rels, fit_synths = None, [], cfg["synths"]
+                fit_tables = reduced_train
+                fit_metadata = _build_metadata(_reduce_meta(tables_meta, keep), rels if rels_ok else [])
+        else:
+            fit_tables = reduced_train
+            fit_metadata = _build_metadata(_reduce_meta(tables_meta, keep), rels if rels_ok else [])
 
         say(f"Fitting: {', '.join(fit_synths)} (epochs={cfg['epochs']}, scale={cfg['scale']})")
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             suite = se.generate_synthetic_suite(
-                fit_tables, metadata, synthesizers=fit_synths,
+                fit_tables, fit_metadata, synthesizers=fit_synths,
                 scale=cfg["scale"], epochs=cfg["epochs"], verbose=False,
                 constraints=cfg.get("constraints") or [])
         for w in caught:
@@ -294,16 +354,25 @@ def _run_job(cfg: dict):
             raise RuntimeError("every synthesizer failed — check the schema edits")
         say(f"Synthesis done: {', '.join(suite)}")
 
-        # Referential integrity is measured while the derived parent is still in
-        # the suite; then the parent is dropped so only real tables are evaluated.
+        # Referential integrity is measured while the derived parent is present,
+        # then the parent is dropped so only real tables are evaluated.
         if parent_name:
             ri = _referential_integrity(hub_rels, fit_tables, suite)
             for s in list(suite):
                 suite[s].pop(parent_name, None)
         else:
-            ri = _referential_integrity(rels, train, suite) if rels else []
+            ri = _referential_integrity(rels, reduced_train, suite) if rels else []
 
-        meta_dict = metadata.to_dict()
+        # refill the non-modelled columns from real marginals -> every synthetic
+        # table has all original columns, in the original order.
+        seed0 = cfg.get("seed", 42)
+        for s in suite:
+            for t in list(suite[s]):
+                if fill.get(t):
+                    suite[s][t] = _refill(suite[s][t], train[t], fill[t],
+                                          list(train[t].columns), seed0)
+
+        meta_dict = eval_meta_dict
         from sdmetrics.reports.single_table import QualityReport
 
         os.makedirs(os.path.join(REPORTS_DIR, "figures"), exist_ok=True)
@@ -334,7 +403,7 @@ def _run_job(cfg: dict):
             for t, sdf in tabs.items():
                 say(f"Privacy · {s} · {t}")
                 privacy_all[s][t] = se.privacy_report(
-                    train[t], hold[t], sdf, roles[t], t, REPORTS_DIR, metadata)
+                    train[t], hold[t], sdf, roles[t], t, REPORTS_DIR, full_metadata)
 
         eff_frames = []
         for t in tables:
