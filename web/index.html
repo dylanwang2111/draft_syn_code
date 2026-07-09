@@ -704,16 +704,12 @@ function heatmapBlock(kind,table,data,png){
   }
   return fig(png,table,"scroll");
 }
-/* fidelity QualityReport grouped bars (one chart per metric); PNG fig fallback */
+/* fidelity QualityReport — all three metrics in ONE figure; PNG fig fallback */
 function qualityBlock(data,png){
   if(HAS_PLOTLY && data && data.tables.length){
-    let html="";
-    data.metrics.forEach(([key,label],i)=>{
-      const id=safeId("quality_"+key);
-      PLOT_QUEUE.push({id,type:"quality",data,extra:{key,label}});
-      html+=`<div class="hm-wrap"><div class="hm-cap">${esc(label)}</div><div id="${id}"></div></div>`;
-    });
-    return html;
+    const id=safeId("quality_all");
+    PLOT_QUEUE.push({id,type:"quality",data});
+    return `<div class="hm-wrap"><div id="${id}"></div></div>`;
   }
   return fig(png,"QualityReport scores per synthesizer per table");
 }
@@ -735,17 +731,36 @@ function renderHeatmap(el,kind,data,c){
   window.Plotly.newPlot(el,[trace],layout,{displaylogo:false, responsive:false,
     modeBarButtonsToRemove:["select2d","lasso2d","autoScale2d"]});
 }
-function renderQuality(el,data,extra,c){
-  const {key}=extra, vals=data.values[key];
-  const traces=data.synths.map(s=>({type:"bar", name:s, x:data.tables, y:vals[s],
-    marker:{color:(res_palette(s))}, hovertemplate:s+" · %{x}: %{y:.3f}<extra></extra>"}));
-  const width=Math.max(420, 90*data.tables.length*data.synths.length+120);
-  const layout={barmode:"group", width, height:300, margin:{l:44,r:16,t:10,b:50},
+/* one figure, three side-by-side panels (Overall / Column Shapes / Pair Trends)
+   with a value label on every bar */
+function renderQuality(el,data,c){
+  const metrics=data.metrics;                       // [[key,label],...]
+  const doms=[[0,0.30],[0.36,0.66],[0.72,1.0]];     // x-domain per panel
+  const traces=[];
+  metrics.forEach(([key,label],mi)=>{
+    const sfx=mi===0?"":String(mi+1);
+    data.synths.forEach(s=>{
+      const yv=data.values[key][s]||[];
+      traces.push({type:"bar", name:s, legendgroup:s, showlegend:mi===0,
+        x:data.tables, y:yv, xaxis:"x"+sfx, yaxis:"y"+sfx,
+        marker:{color:res_palette(s)},
+        text:yv.map(v=>v==null?"":(+v).toFixed(2)), texttemplate:"%{text}",
+        textposition:"outside", cliponaxis:false, textfont:{size:9},
+        hovertemplate:s+" · %{x} · "+label+": %{y:.3f}<extra></extra>"});
+    });
+  });
+  const nBars=Math.max(1,data.tables.length*data.synths.length);
+  const width=Math.max(760, 3*(nBars*26+60));
+  const layout={barmode:"group", width, height:360, margin:{l:40,r:12,t:20,b:80},
     paper_bgcolor:"rgba(0,0,0,0)", plot_bgcolor:"rgba(0,0,0,0)",
-    font:{color:c.ink, size:11, family:"Spline Sans Mono, monospace"},
-    yaxis:{range:[0,1.05], gridcolor:c.soft, zeroline:false},
-    xaxis:{gridcolor:c.soft},
-    legend:{orientation:"h", y:1.15, font:{size:10}}};
+    font:{color:c.ink, size:10, family:"Spline Sans Mono, monospace"},
+    legend:{orientation:"h", y:1.14, x:0.5, xanchor:"center", font:{size:10}},
+    xaxis:{domain:doms[0], title:{text:metrics[0][1]}, gridcolor:c.soft, automargin:true},
+    xaxis2:{domain:doms[1], title:{text:metrics[1][1]}, gridcolor:c.soft, automargin:true},
+    xaxis3:{domain:doms[2], title:{text:metrics[2][1]}, gridcolor:c.soft, automargin:true},
+    yaxis:{range:[0,1.18], gridcolor:c.soft, zeroline:false},
+    yaxis2:{range:[0,1.18], gridcolor:c.soft, zeroline:false, anchor:"x2"},
+    yaxis3:{range:[0,1.18], gridcolor:c.soft, zeroline:false, anchor:"x3"}};
   window.Plotly.newPlot(el,traces,layout,{displaylogo:false, responsive:false,
     modeBarButtonsToRemove:["select2d","lasso2d","autoScale2d"]});
 }
@@ -759,7 +774,7 @@ function flushPlots(){
   for(const item of PLOT_QUEUE){
     const el=document.getElementById(item.id); if(!el) continue;
     try{
-      if(item.type==="quality") renderQuality(el,item.data,item.extra,c);
+      if(item.type==="quality") renderQuality(el,item.data,c);
       else renderHeatmap(el,item.type,item.data,c);
       if(!PLOTLY_REG.some(r=>r.id===item.id))
         PLOTLY_REG.push({id:item.id, heatmap:item.type!=="quality"});
@@ -773,9 +788,10 @@ function restylePlotly(){
   const c=themeColors();
   for(const {id,heatmap} of PLOTLY_REG){
     const el=document.getElementById(id); if(!el||!el.data) continue;
-    try{ window.Plotly.relayout(el, {"font.color":c.ink,
-      "plot_bgcolor": heatmap ? c.line : "rgba(0,0,0,0)",
-      "xaxis.gridcolor":c.soft, "yaxis.gridcolor":c.soft}); }catch(e){}
+    const upd={"font.color":c.ink, "plot_bgcolor": heatmap ? c.line : "rgba(0,0,0,0)"};
+    if(heatmap){ upd["xaxis.gridcolor"]=c.soft; upd["yaxis.gridcolor"]=c.soft; }
+    else{ for(const a of ["xaxis","xaxis2","xaxis3","yaxis","yaxis2","yaxis3"]) upd[a+".gridcolor"]=c.soft; }
+    try{ window.Plotly.relayout(el, upd); }catch(e){}
   }
 }
 
