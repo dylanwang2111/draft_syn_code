@@ -30,6 +30,31 @@ def _annotate_bars(ax, fmt="{:.2f}", fontsize=7):
             )
 
 
+def quality_comparison_data(quality_scores) -> Optional[dict]:
+    """Interactive-chart data for the fidelity QualityReport grouped bars.
+
+    Returns {tables, synths, metrics:[[key,label]], values:{key:{synth:[per table]}}}
+    or None.  Consumed by the dashboard's Plotly renderer; the PNG stays a fallback.
+    """
+    synths = list(quality_scores)
+    tables = sorted({t for s in quality_scores.values() for t in s})
+    if not synths or not tables:
+        return None
+    metrics = [("overall", "Overall quality"),
+               ("column_shapes", "Column Shapes"),
+               ("column_pair_trends", "Column Pair Trends")]
+
+    def _v(x):
+        return None if (x is None or (isinstance(x, float) and np.isnan(x))) else float(x)
+
+    values = {}
+    for key, _ in metrics:
+        values[key] = {s: [_v(quality_scores[s].get(t, {}).get(key)) for t in tables]
+                       for s in synths}
+    return {"tables": tables, "synths": synths,
+            "metrics": [[k, l] for k, l in metrics], "values": values}
+
+
 def plot_quality_comparison(
     quality_scores: Dict[str, Dict[str, Dict[str, float]]], out_png: str
 ) -> Optional[str]:

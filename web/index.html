@@ -384,6 +384,7 @@ $("#btn-theme").addEventListener("click",()=>{
   const next=document.documentElement.getAttribute("data-theme")==="dark"?"light":"dark";
   applyTheme(next);
   try{ localStorage.setItem("synthlab-theme",next); }catch(e){}
+  if(typeof restylePlotly==="function") restylePlotly();   // recolour live charts
 });
 
 const BACKEND_HELP="Can't reach the backend.\n\nOpen this dashboard THROUGH the server, not as a file:\n\n"
@@ -676,54 +677,109 @@ const fig=(b64,cap="",cls="")=>b64?`<figure class="fig ${cls}"><img src="data:im
 const meter=(label,v)=>`<div class="meter"><div class="m-label"><span>${label}</span><b>${fmt(v)}</b></div>
   <div class="m-track"><div class="m-fill" data-w="${Math.max(0,Math.min(1,v||0))*100}" style="background:${meterColor(v||0)}"></div></div></div>`;
 
-/* ---------------- interactive heatmaps (Plotly, PNG fallback) ---------------- */
+/* ---------------- interactive charts (Plotly, PNG fallback) ---------------- */
 const HAS_PLOTLY=typeof window.Plotly!=="undefined";
 const RDYLGN=[[0,"#a50026"],[0.25,"#f46d43"],[0.5,"#fee08b"],[0.75,"#a6d96a"],[1,"#1a9850"]];
-let HM_QUEUE=[];
-function safeId(s){return "hm_"+s.replace(/[^A-Za-z0-9]/g,"_");}
-/* returns HTML: a Plotly placeholder if data+lib available, else the PNG fig */
+let PLOT_QUEUE=[];            // pending {id,type,data,extra} to render after innerHTML
+const PLOTLY_REG=[];         // {id, heatmap} of rendered charts, for theme restyle
+function safeId(s){return "pl_"+s.replace(/[^A-Za-z0-9]/g,"_");}
+function maxLen(arr){ let m=0; for(const s of arr) m=Math.max(m,String(s).length); return m; }
+function themeColors(){
+  const cs=getComputedStyle(document.documentElement);
+  const g=(n,d)=>(cs.getPropertyValue(n)||d).trim();
+  return {ink:g("--ink","#122c42"), line:g("--line","#d5e2f0"),
+          soft:g("--line-soft","#e7eef7")};
+}
+
+/* heatmap placeholder (shapes/pairs); PNG fig fallback */
 function heatmapBlock(kind,table,data,png){
   if(HAS_PLOTLY && data){
     const id=safeId(kind+"_"+table);
-    HM_QUEUE.push({id,kind,data,table});
+    PLOT_QUEUE.push({id,type:kind,data,cap:table});
     return `<div class="hm-wrap"><div class="hm-cap">${esc(table)}</div><div id="${id}"></div></div>`;
   }
   return fig(png,table,"scroll");
 }
-function flushHeatmaps(){
-  if(!HAS_PLOTLY){ HM_QUEUE=[]; return; }
-  const cs=getComputedStyle(document.documentElement);
-  const ink=(cs.getPropertyValue("--ink")||"#122c42").trim();
-  const line=(cs.getPropertyValue("--line")||"#d5e2f0").trim();
-  for(const {id,kind,data,table} of HM_QUEUE){
-    const el=document.getElementById(id); if(!el) continue;
-    let x,y,z;
-    if(kind==="shapes"){ x=data.x; y=data.y; z=data.z; }
-    else { x=data.labels; y=data.labels; z=data.z; }
-    const nCol=x.length, nRow=y.length;
-    const width=Math.max(560, 26*nCol+150);
-    const height=(kind==="pairs") ? Math.max(360, 26*nRow+150) : (80+52*nRow+Math.min(160,7*maxLen(x)));
-    const trace={type:"heatmap", z, x, y, zmin:0, zmax:1, colorscale:RDYLGN,
-      xgap:1, ygap:1, hoverongaps:false,
-      hovertemplate:(kind==="shapes"?"col %{x}<br>%{y}: %{z:.3f}<extra></extra>"
-                                    :"%{x} × %{y}: %{z:.3f}<extra></extra>"),
-      colorbar:{title:{text:kind==="shapes"?"shape":"pair sim",side:"right"},thickness:10,len:0.9}};
-    const layout={width, height, margin:{l:130,r:20,t:10,b:110},
-      paper_bgcolor:"rgba(0,0,0,0)", plot_bgcolor:line,
-      font:{color:ink, size:10, family:"Spline Sans Mono, monospace"},
-      xaxis:{tickangle:-90, automargin:true, ticks:""},
-      yaxis:{automargin:true, autorange:"reversed", ticks:""}};
-    try{ window.Plotly.newPlot(el, [trace], layout, {displaylogo:false, responsive:false,
-      modeBarButtonsToRemove:["select2d","lasso2d","autoScale2d"]}); }
-    catch(e){ el.parentElement.innerHTML=`<div class="note">chart failed: ${esc(String(e))}</div>`; }
+/* fidelity QualityReport grouped bars (one chart per metric); PNG fig fallback */
+function qualityBlock(data,png){
+  if(HAS_PLOTLY && data && data.tables.length){
+    let html="";
+    data.metrics.forEach(([key,label],i)=>{
+      const id=safeId("quality_"+key);
+      PLOT_QUEUE.push({id,type:"quality",data,extra:{key,label}});
+      html+=`<div class="hm-wrap"><div class="hm-cap">${esc(label)}</div><div id="${id}"></div></div>`;
+    });
+    return html;
   }
-  HM_QUEUE=[];
+  return fig(png,"QualityReport scores per synthesizer per table");
 }
-function maxLen(arr){ let m=0; for(const s of arr) m=Math.max(m,String(s).length); return m; }
+
+function renderHeatmap(el,kind,data,c){
+  const x=(kind==="shapes")?data.x:data.labels;
+  const y=(kind==="shapes")?data.y:data.labels;
+  const z=data.z, nCol=x.length, nRow=y.length;
+  const width=Math.max(560, 26*nCol+150);
+  const height=(kind==="pairs")?Math.max(360,26*nRow+150):(80+52*nRow+Math.min(160,7*maxLen(x)));
+  const trace={type:"heatmap", z, x, y, zmin:0, zmax:1, colorscale:RDYLGN, xgap:1, ygap:1, hoverongaps:false,
+    hovertemplate:(kind==="shapes"?"col %{x}<br>%{y}: %{z:.3f}<extra></extra>":"%{x} × %{y}: %{z:.3f}<extra></extra>"),
+    colorbar:{title:{text:kind==="shapes"?"shape":"pair sim",side:"right"},thickness:10,len:0.9}};
+  const layout={width, height, margin:{l:130,r:20,t:10,b:110},
+    paper_bgcolor:"rgba(0,0,0,0)", plot_bgcolor:c.line,
+    font:{color:c.ink, size:10, family:"Spline Sans Mono, monospace"},
+    xaxis:{tickangle:-90, automargin:true, ticks:""},
+    yaxis:{automargin:true, autorange:"reversed", ticks:""}};
+  window.Plotly.newPlot(el,[trace],layout,{displaylogo:false, responsive:false,
+    modeBarButtonsToRemove:["select2d","lasso2d","autoScale2d"]});
+}
+function renderQuality(el,data,extra,c){
+  const {key}=extra, vals=data.values[key];
+  const traces=data.synths.map(s=>({type:"bar", name:s, x:data.tables, y:vals[s],
+    marker:{color:(res_palette(s))}, hovertemplate:s+" · %{x}: %{y:.3f}<extra></extra>"}));
+  const width=Math.max(420, 90*data.tables.length*data.synths.length+120);
+  const layout={barmode:"group", width, height:300, margin:{l:44,r:16,t:10,b:50},
+    paper_bgcolor:"rgba(0,0,0,0)", plot_bgcolor:"rgba(0,0,0,0)",
+    font:{color:c.ink, size:11, family:"Spline Sans Mono, monospace"},
+    yaxis:{range:[0,1.05], gridcolor:c.soft, zeroline:false},
+    xaxis:{gridcolor:c.soft},
+    legend:{orientation:"h", y:1.15, font:{size:10}}};
+  window.Plotly.newPlot(el,traces,layout,{displaylogo:false, responsive:false,
+    modeBarButtonsToRemove:["select2d","lasso2d","autoScale2d"]});
+}
+/* palette resolver set per report render (synth -> hex) */
+let _PALETTE={};
+function res_palette(s){return _PALETTE[s]||"#888";}
+
+function flushPlots(){
+  if(!HAS_PLOTLY){ PLOT_QUEUE=[]; return; }
+  const c=themeColors();
+  for(const item of PLOT_QUEUE){
+    const el=document.getElementById(item.id); if(!el) continue;
+    try{
+      if(item.type==="quality") renderQuality(el,item.data,item.extra,c);
+      else renderHeatmap(el,item.type,item.data,c);
+      if(!PLOTLY_REG.some(r=>r.id===item.id))
+        PLOTLY_REG.push({id:item.id, heatmap:item.type!=="quality"});
+    }catch(e){ el.parentElement.innerHTML=`<div class="note">chart failed: ${esc(String(e))}</div>`; }
+  }
+  PLOT_QUEUE=[];
+}
+/* re-apply theme colours to already-rendered charts (called on light/dark toggle) */
+function restylePlotly(){
+  if(!HAS_PLOTLY) return;
+  const c=themeColors();
+  for(const {id,heatmap} of PLOTLY_REG){
+    const el=document.getElementById(id); if(!el||!el.data) continue;
+    try{ window.Plotly.relayout(el, {"font.color":c.ink,
+      "plot_bgcolor": heatmap ? c.line : "rgba(0,0,0,0)",
+      "xaxis.gridcolor":c.soft, "yaxis.gridcolor":c.soft}); }catch(e){}
+  }
+}
 
 function renderReport(res){
   lockReportTabs(false);
   const P=n=>res.palette[n]||PALETTE[n]||"#888";
+  PLOTLY_REG.length=0;                       // fresh chart registry per report
+  _PALETTE={}; (res.synths||[]).forEach(s=>{_PALETTE[s]=P(s);});
 
   /* synthetic data list (left) */
   let sl=`<table class="ftable"><thead><tr><th>File Name</th><th>Action</th></tr></thead><tbody>`;
@@ -756,8 +812,8 @@ function renderReport(res){
       <td class="mono dim">${t}</td><td class="score-cell">${fmt(v.column_shapes)}</td>
       <td class="score-cell">${fmt(v.column_pair_trends)}</td>
       <td class="score-cell" style="color:${meterColor(v.overall)}">${fmt(v.overall)}</td></tr>`;
-  q+=`</tbody></table>`+fig(res.figures.quality,"QualityReport scores per synthesizer per table");
-  HM_QUEUE=[];
+  PLOT_QUEUE=[];
+  q+=`</tbody></table>`+qualityBlock(res.figures.quality_data, res.figures.quality);
   const shapesData=res.figures.shapes_data||{}, pairsData=res.figures.pairs_data||{};
   q+=`<h4 class="block-title">Column Shapes — per column</h4>
     <p class="note">Marginal-distribution match per column (KS complement numeric, TV complement categorical).
@@ -771,7 +827,7 @@ function renderReport(res){
     for(const t of Object.keys({...pairs,...pairsData})) q+=heatmapBlock("pairs",t,pairsData[t],pairs[t]);
   }
   $("#pane-quality").innerHTML=q;
-  flushHeatmaps();
+  flushPlots();
 
   /* referential */
   if(!res.referential.length){

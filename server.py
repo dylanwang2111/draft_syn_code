@@ -312,6 +312,7 @@ def _run_job(cfg: dict):
         fig_dir = f"{REPORTS_DIR}/figures"
         figs = {
             "quality": se.plot_quality_comparison(quality_scores, f"{fig_dir}/web_quality.png"),
+            "quality_data": se.quality_comparison_data(quality_scores),
             "privacy": se.plot_privacy_comparison(privacy_all, f"{fig_dir}/web_privacy.png"),
             "efficacy": se.plot_efficacy_scores(efficacy, f"{fig_dir}/web_efficacy.png"),
             # shapes/pairs: interactive Plotly data + a PNG fallback (offline).
