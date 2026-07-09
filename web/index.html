@@ -76,6 +76,19 @@ button{font-family:var(--mono); cursor:pointer; border-radius:8px; transition:.1
 .panel-h .count.zero{background:var(--line); color:var(--muted)}
 .empty{font-size:12.5px; color:var(--faint); font-style:italic; padding:8px 2px}
 
+/* strategy recommendation */
+.strat-head{display:flex; align-items:center; gap:9px; margin-bottom:8px}
+.tier-badge{font-family:var(--disp); font-weight:700; font-size:11px; color:#fff;
+  border-radius:7px; padding:3px 9px; letter-spacing:.02em}
+.tier-0{background:var(--faint)} .tier-1{background:var(--blue)}
+.tier-2{background:var(--pass)} .tier-3{background:var(--warn)}
+.strat-name{font-family:var(--mono); font-size:12px; color:var(--ink); font-weight:600}
+.strat-list{list-style:none; margin:6px 0 0; padding:0}
+.strat-list li{font-size:11.5px; color:var(--muted); padding:3px 0 3px 15px; position:relative; line-height:1.4}
+.strat-list li::before{content:"›"; position:absolute; left:2px; color:var(--blue)}
+.strat-list li.warn{color:var(--warn)} .strat-list li.warn::before{content:"⚠"; left:0; font-size:9px}
+.strat-apply{margin-top:9px}
+
 /* file tables */
 .ftable{width:100%; border-collapse:collapse; font-size:12.5px}
 .ftable th{font-family:var(--mono); font-size:9.5px; letter-spacing:.1em; text-transform:uppercase;
@@ -245,6 +258,11 @@ table.rep tr:hover td{background:var(--panel-2)}
       <div id="seed-list"><div class="empty">No tables yet — Upload or Load Sample.</div></div>
     </div>
 
+    <div class="panel" id="strategy-panel" style="display:none">
+      <div class="panel-h"><h2>Recommended strategy</h2></div>
+      <div id="strategy-body"></div>
+    </div>
+
     <div class="panel" id="rel-panel" style="display:none">
       <div class="panel-h"><h2>Relationships</h2></div>
       <div id="rel-rows"></div>
@@ -371,7 +389,8 @@ function init(payload){
   $("#synthetic-panel").style.display="none"; $("#synth-list").innerHTML="";
   $("#synth-count").textContent="0"; $("#synth-count").className="count zero";
   lockReportTabs(true);
-  renderSeedList(); renderSchemaBlocks(); renderRels(payload.relationships); renderRecipe();
+  renderSeedList(); renderSchemaBlocks(); renderStrategy(payload.profile);
+  renderRels(payload.relationships); renderRecipe();
   selectTable(Object.keys(DATA.tables)[0]);
   activateTab("pane-schema");
 }
@@ -457,6 +476,28 @@ function renderRels(rels){
     `${r.parent_table_name}.${r.parent_primary_key}`,`${r.child_table_name}.${r.child_foreign_key}`)));
 }
 $("#btn-add-rel").addEventListener("click",()=>$("#rel-rows").appendChild(relRow()));
+
+/* ---------------- strategy recommendation ---------------- */
+const TIER_LABEL={0:"TIER 0 · INDEPENDENT",1:"TIER 1 · RELATIONAL",
+  2:"TIER 2 · SEQUENTIAL",3:"TIER 3 · TEMPORAL"};
+let RECOMMENDED_RELS=[];
+function renderStrategy(profile){
+  const panel=$("#strategy-panel"), body=$("#strategy-body");
+  if(!profile||profile.error||!profile.recommendation){ panel.style.display="none"; return; }
+  const r=profile.recommendation; RECOMMENDED_RELS=r.relationships||[];
+  panel.style.display="block";
+  let h=`<div class="strat-head"><span class="tier-badge tier-${r.tier}">${TIER_LABEL[r.tier]||("TIER "+r.tier)}</span>
+    <span class="strat-name">${r.strategy}</span></div><ul class="strat-list">`;
+  (r.reasons||[]).forEach(x=>h+=`<li>${esc(x)}</li>`);
+  (r.warnings||[]).forEach(x=>h+=`<li class="warn">${esc(x)}</li>`);
+  h+=`</ul>`;
+  if(RECOMMENDED_RELS.length)
+    h+=`<button class="mini-btn strat-apply" id="btn-apply-rels">apply ${RECOMMENDED_RELS.length} recommended relationship(s)</button>`;
+  body.innerHTML=h;
+  const btn=$("#btn-apply-rels");
+  if(btn) btn.addEventListener("click",()=>{ renderRels(RECOMMENDED_RELS);
+    btn.textContent="✓ applied — see Relationships"; btn.disabled=true; });
+}
 
 /* ---------------- recipe ---------------- */
 function renderRecipe(){

@@ -51,6 +51,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import synth_eval as se
+import profiler
 
 app = FastAPI(title="Synthetic Data Studio")
 
@@ -112,6 +113,11 @@ def _tables_payload():
             "preview": df.head(5).astype(str).to_dict(orient="split"),
             "targets": roles.modelable,
         }
+    # structural profile + recommended synthesis tier (safe: structure only)
+    try:
+        out["profile"] = _clean(profiler.profile_dataset(tables))
+    except Exception as e:  # pragma: no cover - never block upload on profiling
+        out["profile"] = {"error": str(e)[:200]}
     return out
 
 
