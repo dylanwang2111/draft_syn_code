@@ -249,6 +249,14 @@ table.rep tr:hover td{background:var(--panel-2)}
 .console .ln.ok{color:#7fe0a6}
 .cursor::after{content:"▮"; color:var(--sky); animation:blink 1s steps(1) infinite; margin-left:2px}
 @keyframes blink{50%{opacity:0}}
+/* overall job progress bar */
+.jobbar{flex:none; height:0; overflow:hidden; background:var(--panel-2); position:relative;
+  transition:height .2s; border-top:0 solid var(--line)}
+.jobbar.show{height:22px; border-top-width:1px}
+.jobbar-fill{height:100%; width:0; background:linear-gradient(90deg,var(--blue),var(--sky));
+  transition:width .45s cubic-bezier(.2,.7,.2,1)}
+.jobbar-lbl{position:absolute; inset:0; display:flex; align-items:center; gap:8px; padding:0 12px;
+  font-family:var(--mono); font-size:11px; color:var(--ink); pointer-events:none}
 </style>
 </head>
 <body>
@@ -358,6 +366,8 @@ table.rep tr:hover td{background:var(--panel-2)}
       <div class="pane" id="pane-privacy"></div>
       <div class="pane" id="pane-ml"></div>
     </div>
+    <div class="jobbar" id="jobbar"><div class="jobbar-fill" id="jobbar-fill"></div>
+      <span class="jobbar-lbl" id="jobbar-lbl"></span></div>
     <div class="console" id="console"></div>
   </main>
 </div>
@@ -711,22 +721,31 @@ $("#btn-run").addEventListener("click",async()=>{
   if(!r.ok){ alert((await r.json()).error||"failed to start"); return; }
   $("#btn-run").disabled=true; setStatus("run","synthesizing");
   $("#console").classList.add("show"); $("#console").innerHTML="";
+  $("#jobbar").classList.add("show"); $("#jobbar-fill").style.width="0%"; $("#jobbar-lbl").textContent="starting…";
   poll();
 });
+function setJobBar(pct,status){
+  pct=Math.max(0,Math.min(100, pct||0));
+  $("#jobbar-fill").style.width=pct+"%";
+  const label=status==="done"?"complete":status==="error"?"failed":"synthesizing…";
+  $("#jobbar-lbl").textContent=`${label} ${pct.toFixed(0)}%`;
+}
 async function poll(){
   let j; try{ j=await (await fetch("/api/progress")).json(); }catch(e){ setStatus("err","lost backend"); return; }
   const con=$("#console");
   con.innerHTML=j.log.map((l,i)=>{
-    const cls=l.startsWith("⚠")?"warn":l.startsWith("✗")?"err":l.startsWith("Done")?"ok":"";
+    const cls=l.startsWith("⚠")?"warn":l.startsWith("✗")?"err":l.startsWith("Done")?"ok":l.startsWith("⏳")?"":"";
     const cur=(i===j.log.length-1&&j.status==="running")?' cursor':'';
     return `<div class="ln ${cls}${cur}">${esc(l)}</div>`;
   }).join("");
   con.scrollTop=con.scrollHeight;
-  if(j.status==="running"){ setTimeout(poll,2000); return; }
+  setJobBar(j.pct, j.status);
+  if(j.status==="running"){ setTimeout(poll,1500); return; }
   $("#btn-run").disabled=false;
-  if(j.status==="done"){ setStatus("done","complete"); renderReport(await (await fetch("/api/results")).json());
-    setTimeout(()=>$("#console").classList.remove("show"),1200); }
-  else setStatus("err","failed — see log");
+  if(j.status==="done"){ setJobBar(100,"done"); setStatus("done","complete");
+    renderReport(await (await fetch("/api/results")).json());
+    setTimeout(()=>{$("#console").classList.remove("show"); $("#jobbar").classList.remove("show");},1500); }
+  else { setStatus("err","failed — see log"); }
 }
 
 /* ---------------- report ---------------- */

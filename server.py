@@ -311,16 +311,26 @@ def _run_job(cfg: dict):
     job = STATE["job"]
     log = job["log"]
 
+    def set_pct(p):
+        """Monotonically advance the job's percent-complete (capped < 100)."""
+        job["pct"] = max(float(job.get("pct", 0.0)), min(99.0, float(p)))
+
     def say(msg):
         log.append(msg)
 
     def progress(msg):
-        """Update a single live '⏳' line (from captured tqdm) instead of spamming."""
+        """Update a single live '⏳' line (from captured tqdm) instead of spamming.
+        Also maps the fit phase/percent onto the overall progress bar (5–40%)."""
         line = "⏳ " + msg
         if log and log[-1].startswith("⏳ "):
             log[-1] = line
         else:
             log.append(line)
+        m = re.search(r"(Preprocess|Learning|Modeling|Sampling|report)\D*?(\d+)\s*%", msg)
+        if m:
+            base = {"Preprocess": 5, "Learning": 10, "Modeling": 22,
+                    "Sampling": 34, "report": 38}.get(m.group(1), 10)
+            set_pct(base + 0.06 * float(m.group(2)))
 
     try:
         tables = STATE["tables"]
@@ -340,6 +350,7 @@ def _run_job(cfg: dict):
         full_metadata = _build_metadata(tables_meta, [])
         eval_meta_dict = full_metadata.to_dict()
 
+        set_pct(3)
         say("Splitting train / holdout (before any fitting)…")
         train, hold = _relational_split(tables, rels if rels_ok else [],
                                         cfg["holdout"], cfg.get("seed", 42))
@@ -455,7 +466,12 @@ def _run_job(cfg: dict):
         meta_dict = eval_meta_dict
         from sdmetrics.reports.single_table import QualityReport
 
+        set_pct(40)
         os.makedirs(os.path.join(REPORTS_DIR, "figures"), exist_ok=True)
+        # step counts drive the progress bar across the evaluation phases
+        n_st = sum(len(tabs) for tabs in suite.values())         # synth × table
+        n_tab = len(tables)
+        done_q = done_p = done_e = 0
         quality_scores, shape_details, pair_details, pair_full = {}, {}, {}, {}
         for s, tabs in suite.items():
             quality_scores[s] = {}
@@ -476,6 +492,7 @@ def _run_job(cfg: dict):
                 # sent to the client for the on-page details table.
                 pair_full.setdefault(t, {})[s] = pd_det.to_dict(orient="records")
                 pair_details.setdefault(t, {})[s] = pd_det.head(60).to_dict(orient="records")
+                done_q += 1; set_pct(40 + 20 * done_q / max(1, n_st))
 
         privacy_all = {}
         for s, tabs in suite.items():
@@ -484,6 +501,7 @@ def _run_job(cfg: dict):
                 say(f"Privacy · {s} · {t}")
                 privacy_all[s][t] = se.privacy_report(
                     train[t], hold[t], sdf, roles[t], t, REPORTS_DIR, full_metadata)
+                done_p += 1; set_pct(60 + 20 * done_p / max(1, n_st))
 
         eff_frames = []
         for t in tables:
@@ -500,8 +518,10 @@ def _run_job(cfg: dict):
             synth_dict = {s: tabs[t] for s, tabs in suite.items() if t in tabs}
             eff_frames.append(se.sdmetrics_ml_efficacy(
                 train[t], hold[t], synth_dict, roles[t], target, task, table_name=t))
+            done_e += 1; set_pct(80 + 12 * done_e / max(1, n_tab))
         efficacy = pd.concat(eff_frames, ignore_index=True) if eff_frames else pd.DataFrame()
 
+        set_pct(93)
         say("Leaderboard + comparison figures…")
         leaderboard = se.compute_leaderboard(quality_scores, privacy_all, efficacy)
         fig_dir = f"{REPORTS_DIR}/figures"
@@ -544,6 +564,7 @@ def _run_job(cfg: dict):
             "figures": figs,
             "config": {k: cfg[k] for k in ("synths", "epochs", "scale", "holdout")},
         })
+        job["pct"] = 100.0
         job["status"] = "done"
         say("Done ✓")
     except Exception as e:
@@ -589,7 +610,7 @@ async def synthesize(cfg: dict):
         return JSONResponse({"error": "upload data first"}, status_code=400)
     if STATE["job"] and STATE["job"]["status"] == "running":
         return JSONResponse({"error": "a job is already running"}, status_code=409)
-    STATE["job"] = {"status": "running", "log": [], "error": None}
+    STATE["job"] = {"status": "running", "log": [], "error": None, "pct": 0.0}
     STATE["results"] = None
     threading.Thread(target=_run_job, args=(cfg,), daemon=True).start()
     return {"status": "running"}
@@ -600,7 +621,8 @@ def progress():
     job = STATE["job"]
     if not job:
         return {"status": "idle", "log": []}
-    return {"status": job["status"], "log": job["log"], "error": job.get("error")}
+    return {"status": job["status"], "log": job["log"], "error": job.get("error"),
+            "pct": round(float(job.get("pct", 0.0)), 1)}
 
 
 @app.get("/api/results")
