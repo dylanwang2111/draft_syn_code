@@ -572,8 +572,12 @@ function collectConstraints(){
 }
 
 /* ---------------- strategy recommendation ---------------- */
-const TIER_LABEL={0:"TIER 0 · INDEPENDENT",1:"TIER 1 · RELATIONAL",
-  2:"TIER 2 · SEQUENTIAL",3:"TIER 3 · TEMPORAL"};
+const TIER_LABEL={0:"TIER 0 · INDEPENDENT TABLES",1:"TIER 1 · LINKED TABLES",
+  2:"TIER 2 · VERSION HISTORY (SCD)",3:"TIER 3 · VERSION PATTERNS (SCD, no key)"};
+const STRATEGY_LABEL={independent:"each table on its own",
+  relational:"keep the table links",
+  sequential:"model each entity's history over time",
+  temporal_statistical:"copy the history patterns, not identities"};
 let RECOMMENDED_RELS=[];
 function renderStrategy(profile){
   const panel=$("#strategy-panel"), body=$("#strategy-body");
@@ -581,7 +585,7 @@ function renderStrategy(profile){
   const r=profile.recommendation; RECOMMENDED_RELS=r.relationships||[];
   panel.style.display="block";
   let h=`<div class="strat-head"><span class="tier-badge tier-${r.tier}">${TIER_LABEL[r.tier]||("TIER "+r.tier)}</span>
-    <span class="strat-name">${r.strategy}</span></div><ul class="strat-list">`;
+    <span class="strat-name">${STRATEGY_LABEL[r.strategy]||r.strategy}</span></div><ul class="strat-list">`;
   (r.reasons||[]).forEach(x=>h+=`<li>${esc(x)}</li>`);
   (r.warnings||[]).forEach(x=>h+=`<li class="warn">${esc(x)}</li>`);
   h+=`</ul>`;

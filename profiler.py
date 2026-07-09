@@ -399,11 +399,16 @@ def recommend_strategy(tables: Dict[str, pd.DataFrame],
                     "sequence_index": p.usable_date_columns[0],
                 }
         if seq_specs:
-            reasons.append("tables are versioned with parseable effective dates and a "
-                           "repeating entity key — model per-entity sequences (PAR)")
+            reasons.append(
+                "This looks like slowly-changing-dimension (SCD) data: each thing "
+                "(a person, an account) keeps several dated versions as its details "
+                "change over time, and there is a stable ID tying an entity's "
+                "versions together. We'll generate each entity's history as a "
+                "time-ordered sequence so the versions stay consistent.")
             if len(tables) > 1:
-                warnings.append("SDV PAR is single-table; run per table and link via the "
-                                "shared entity key or the temporal-statistical pass")
+                warnings.append(
+                    "The sequence model works one table at a time, so each table's "
+                    "history is generated separately and then re-linked by the shared ID.")
             return StrategyRecommendation(
                 tier=2, strategy="sequential", reasons=reasons,
                 sequence_specs=seq_specs, warnings=warnings)
@@ -414,34 +419,50 @@ def recommend_strategy(tables: Dict[str, pd.DataFrame],
             "parent_table_name": l.parent_table, "parent_primary_key": l.parent_column,
             "child_table_name": l.child_table, "child_foreign_key": l.child_column,
         } for l in pk_links]
-        reasons.append(f"{len(pk_links)} clean primary-key/foreign-key link(s) found — "
-                       "model relationally with HMA")
+        n = len(pk_links)
+        reasons.append(
+            f"Found {n} clean key link{'s' if n != 1 else ''} between tables — a value "
+            "in one table's ID column matches rows in another (a parent → child "
+            "relationship). We'll keep those links intact while generating, so the "
+            "tables still join together correctly.")
         return StrategyRecommendation(
             tier=1, strategy="relational", reasons=reasons,
             relationships=rels, warnings=warnings)
 
     # Tier 3: versioned but no durable key we can trust => statistical history
     if any_versioned:
-        reasons.append("tables look versioned but no reliable durable key links the "
-                       "rows — preserve history *distributions* (versions per entity, "
-                       "window lengths, transitions) rather than individual identities")
+        reasons.append(
+            "This looks like slowly-changing-dimension (SCD) data — each row is a "
+            "dated 'version' of some entity whose details change over time — but "
+            "there is no reliable ID tying one entity's versions together. Without "
+            "that key we can't rebuild any individual's real timeline, so instead we "
+            "copy the general patterns of change (how many versions entities tend to have, "
+            "how long each version lasts, how values shift) rather than any real "
+            "person's history. This is also the safer choice for privacy.")
         if durable_links:
-            warnings.append("shared repeating columns exist (" +
-                            ", ".join(f"{l.parent_table}.{l.parent_column}" for l in durable_links[:3]) +
-                            ") — you could nominate a natural key to lift this to Tier 1/2, "
-                            "but entity resolution carries a re-identification risk")
+            warnings.append(
+                "Some columns repeat across rows (" +
+                ", ".join(f"{l.parent_table}.{l.parent_column}" for l in durable_links[:3]) +
+                ") and could act as that entity ID — if you can confirm one stays the "
+                "same as an entity changes over time, declaring it unlocks richer "
+                "modelling. Caveat: pinning real identities raises re-identification risk.")
         if not any_usable_dates:
-            warnings.append("no parseable date columns — temporal windows cannot be "
-                            "reconstructed until dates are re-exported as real datetimes")
+            warnings.append(
+                "The date columns aren't real dates (they look Excel-mangled, e.g. "
+                "'00:00.0'), so version timelines can't be rebuilt. Re-export those "
+                "columns as proper dates to enable time-based modelling.")
         return StrategyRecommendation(
             tier=3, strategy="temporal_statistical", reasons=reasons, warnings=warnings)
 
     # Tier 0: nothing linkable
-    reasons.append("no reliable relationships or versioning detected — synthesize each "
-                   "table independently (preserves per-column and intra-row structure)")
+    reasons.append(
+        "No links or version-history between rows were detected. Each table is "
+        "generated on its own — this keeps every column's values realistic and "
+        "preserves how columns relate within a single row.")
     if links:
-        warnings.append("weak column overlaps exist but none are clean keys; declare a "
-                        "relationship manually if you know one holds")
+        warnings.append(
+            "Some columns share values across tables but none look like clean keys. "
+            "If you know two tables are related, add the relationship by hand above.")
     return StrategyRecommendation(
         tier=0, strategy="independent", reasons=reasons, warnings=warnings)
 
