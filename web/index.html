@@ -7,6 +7,8 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400..700&family=Spline+Sans:wght@300..700&family=Spline+Sans+Mono:ital,wght@0,400..600;1,400..600&display=swap" rel="stylesheet">
+<!-- Plotly for interactive heatmaps; the report falls back to PNGs if it fails to load (offline). -->
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
 <style>
 :root{
   --bg:#eaf1f8; --panel:#ffffff; --panel-2:#f1f6fc; --tint:#e7f0fa;
@@ -229,6 +231,10 @@ table.rep tr:hover td{background:var(--panel-2)}
    being squeezed (and collapsing) to fit the pane width */
 .fig.scroll{overflow-x:auto; text-align:left}
 .fig.scroll img{max-width:none}
+/* interactive heatmap containers (Plotly) */
+.hm-wrap{margin:16px 0; overflow-x:auto; border:1px solid var(--line); border-radius:11px;
+  background:var(--panel); padding:10px}
+.hm-cap{font-family:var(--mono); font-size:11px; color:var(--muted); margin:0 0 4px 2px}
 .fig figcaption{font-family:var(--mono); font-size:10.5px; color:var(--faint); margin-top:7px; letter-spacing:.05em}
 .efflog{font-family:var(--mono); font-size:11px; color:var(--warn); background:var(--err-bg);
   border:1px solid rgba(207,138,18,.35); border-radius:8px; padding:8px 12px; margin:2px 0 14px;
@@ -670,6 +676,51 @@ const fig=(b64,cap="",cls="")=>b64?`<figure class="fig ${cls}"><img src="data:im
 const meter=(label,v)=>`<div class="meter"><div class="m-label"><span>${label}</span><b>${fmt(v)}</b></div>
   <div class="m-track"><div class="m-fill" data-w="${Math.max(0,Math.min(1,v||0))*100}" style="background:${meterColor(v||0)}"></div></div></div>`;
 
+/* ---------------- interactive heatmaps (Plotly, PNG fallback) ---------------- */
+const HAS_PLOTLY=typeof window.Plotly!=="undefined";
+const RDYLGN=[[0,"#a50026"],[0.25,"#f46d43"],[0.5,"#fee08b"],[0.75,"#a6d96a"],[1,"#1a9850"]];
+let HM_QUEUE=[];
+function safeId(s){return "hm_"+s.replace(/[^A-Za-z0-9]/g,"_");}
+/* returns HTML: a Plotly placeholder if data+lib available, else the PNG fig */
+function heatmapBlock(kind,table,data,png){
+  if(HAS_PLOTLY && data){
+    const id=safeId(kind+"_"+table);
+    HM_QUEUE.push({id,kind,data,table});
+    return `<div class="hm-wrap"><div class="hm-cap">${esc(table)}</div><div id="${id}"></div></div>`;
+  }
+  return fig(png,table,"scroll");
+}
+function flushHeatmaps(){
+  if(!HAS_PLOTLY){ HM_QUEUE=[]; return; }
+  const cs=getComputedStyle(document.documentElement);
+  const ink=(cs.getPropertyValue("--ink")||"#122c42").trim();
+  const line=(cs.getPropertyValue("--line")||"#d5e2f0").trim();
+  for(const {id,kind,data,table} of HM_QUEUE){
+    const el=document.getElementById(id); if(!el) continue;
+    let x,y,z;
+    if(kind==="shapes"){ x=data.x; y=data.y; z=data.z; }
+    else { x=data.labels; y=data.labels; z=data.z; }
+    const nCol=x.length, nRow=y.length;
+    const width=Math.max(560, 26*nCol+150);
+    const height=(kind==="pairs") ? Math.max(360, 26*nRow+150) : (80+52*nRow+Math.min(160,7*maxLen(x)));
+    const trace={type:"heatmap", z, x, y, zmin:0, zmax:1, colorscale:RDYLGN,
+      xgap:1, ygap:1, hoverongaps:false,
+      hovertemplate:(kind==="shapes"?"col %{x}<br>%{y}: %{z:.3f}<extra></extra>"
+                                    :"%{x} × %{y}: %{z:.3f}<extra></extra>"),
+      colorbar:{title:{text:kind==="shapes"?"shape":"pair sim",side:"right"},thickness:10,len:0.9}};
+    const layout={width, height, margin:{l:130,r:20,t:10,b:110},
+      paper_bgcolor:"rgba(0,0,0,0)", plot_bgcolor:line,
+      font:{color:ink, size:10, family:"Spline Sans Mono, monospace"},
+      xaxis:{tickangle:-90, automargin:true, ticks:""},
+      yaxis:{automargin:true, autorange:"reversed", ticks:""}};
+    try{ window.Plotly.newPlot(el, [trace], layout, {displaylogo:false, responsive:false,
+      modeBarButtonsToRemove:["select2d","lasso2d","autoScale2d"]}); }
+    catch(e){ el.parentElement.innerHTML=`<div class="note">chart failed: ${esc(String(e))}</div>`; }
+  }
+  HM_QUEUE=[];
+}
+function maxLen(arr){ let m=0; for(const s of arr) m=Math.max(m,String(s).length); return m; }
+
 function renderReport(res){
   lockReportTabs(false);
   const P=n=>res.palette[n]||PALETTE[n]||"#888";
@@ -692,7 +743,7 @@ function renderReport(res){
       <div class="lb-name"><span class="dot" style="background:${P(r.synthesizer)}"></span>${r.synthesizer}</div>
       <div class="big-score">${fmt(r.overall)}<small> /1 overall</small></div>
       ${meter("fidelity",r.fidelity)}${meter("privacy",r.privacy)}${meter("utility · TSTR",r.utility_tstr)}</div>`).join("")}</div>
-    <p class="note">fidelity = mean sdmetrics QualityReport · privacy = MIA ⊕ DCR ⊕ novelty ⊕ exact-match ·
+    <p class="note">fidelity = mean sdmetrics QualityReport · privacy = MIA ⊕ NewRowSynthesis ⊕ CategoricalCAP ·
       utility = TSTR/TRTR ratio (see METRICS.md).</p>`;
   requestAnimationFrame(()=>$$("#pane-lb .m-fill").forEach(m=>m.style.width=m.dataset.w+"%"));
 
@@ -706,17 +757,21 @@ function renderReport(res){
       <td class="score-cell">${fmt(v.column_pair_trends)}</td>
       <td class="score-cell" style="color:${meterColor(v.overall)}">${fmt(v.overall)}</td></tr>`;
   q+=`</tbody></table>`+fig(res.figures.quality,"QualityReport scores per synthesizer per table");
+  HM_QUEUE=[];
+  const shapesData=res.figures.shapes_data||{}, pairsData=res.figures.pairs_data||{};
   q+=`<h4 class="block-title">Column Shapes — per column</h4>
-    <p class="note">Marginal-distribution match per column (KS complement numeric, TV complement categorical).</p>`;
-  for(const [t,b64] of Object.entries(res.figures.shapes||{})) q+=fig(b64,t,"scroll");
+    <p class="note">Marginal-distribution match per column (KS complement numeric, TV complement categorical).
+    ${HAS_PLOTLY?"Hover for exact scores; drag to zoom.":""}</p>`;
+  for(const [t,b64] of Object.entries(res.figures.shapes||{})) q+=heatmapBlock("shapes",t,shapesData[t],b64);
   const pairs=res.figures.pairs||{};
-  if(Object.values(pairs).some(Boolean)){
+  if(Object.values(pairs).some(Boolean) || Object.values(pairsData).some(Boolean)){
     q+=`<h4 class="block-title">Column Pair Trends — per column pair</h4>
       <p class="note">Relationship preservation per pair (correlation similarity numeric, contingency similarity categorical/mixed).
       1 = identical trend; blank = a pair sdmetrics couldn't score. Shown for ${res.synths[0]}.</p>`;
-    for(const [t,b64] of Object.entries(pairs)) if(b64) q+=fig(b64,t,"scroll");
+    for(const t of Object.keys({...pairs,...pairsData})) q+=heatmapBlock("pairs",t,pairsData[t],pairs[t]);
   }
   $("#pane-quality").innerHTML=q;
+  flushHeatmaps();
 
   /* referential */
   if(!res.referential.length){

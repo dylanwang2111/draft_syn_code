@@ -101,6 +101,70 @@ def plot_column_shapes_heatmap(
     return _save_fig(fig, out_png)
 
 
+def _pair_trends_matrix(details):
+    """Build the column x column pair-trend matrix from sdmetrics detail records.
+
+    Returns (scored_columns, DataFrame) or None if fewer than 2 scored columns.
+    """
+    if not details:
+        return None
+    scores = {}
+    cols = []
+    for rec in details:
+        c1, c2, sc = rec.get("Column 1"), rec.get("Column 2"), rec.get("Score")
+        if c1 is None or c2 is None:
+            continue
+        for c in (c1, c2):
+            if c not in cols:
+                cols.append(c)
+        if sc is not None and not (isinstance(sc, float) and np.isnan(sc)):
+            scores[(c1, c2)] = float(sc)
+            scores[(c2, c1)] = float(sc)
+    scored_cols = [c for c in cols if any((c, o) in scores for o in cols)]
+    if len(scored_cols) < 2:
+        return None
+    mat = pd.DataFrame(np.nan, index=scored_cols, columns=scored_cols, dtype=float)
+    for (a, b), v in scores.items():
+        if a in mat.index and b in mat.columns:
+            mat.loc[a, b] = v
+    np.fill_diagonal(mat.values, 1.0)
+    return scored_cols, mat
+
+
+def _matrix_to_z(mat):
+    """DataFrame -> nested list with NaN replaced by None (JSON-safe for Plotly)."""
+    return [[None if pd.isna(v) else float(v) for v in row] for row in mat.values]
+
+
+def shapes_heatmap_data(shape_scores) -> Optional[dict]:
+    """Interactive-chart data for the per-column shape-score heatmap.
+
+    Returns {"x": data columns, "y": synthesizers, "z": [[score]]} — the same
+    wide orientation as the PNG — or None.  Consumed by the dashboard's Plotly
+    renderer; the PNG remains an offline fallback.
+    """
+    if not shape_scores:
+        return None
+    mat = pd.DataFrame(shape_scores).T          # rows = synths, cols = data columns
+    if mat.empty:
+        return None
+    return {"x": [str(c) for c in mat.columns], "y": [str(i) for i in mat.index],
+            "z": _matrix_to_z(mat)}
+
+
+def pair_trends_heatmap_data(details) -> Optional[dict]:
+    """Interactive-chart data for the pair-trends heatmap.
+
+    Returns {"labels": scored columns, "z": [[similarity]]} (unscored pairs are
+    None) or None.
+    """
+    built = _pair_trends_matrix(details)
+    if built is None:
+        return None
+    scored_cols, mat = built
+    return {"labels": [str(c) for c in scored_cols], "z": _matrix_to_z(mat)}
+
+
 def plot_pair_trends_heatmap(
     details: Sequence[dict], out_png: str, table_name: str = "", synth_name: str = ""
 ) -> Optional[str]:
@@ -113,30 +177,10 @@ def plot_pair_trends_heatmap(
     blank.  Columns that have no scored pair at all are dropped so the plot
     focuses on the relationships that actually exist.
     """
-    if not details:
+    built = _pair_trends_matrix(details)
+    if built is None:
         return None
-    scores: Dict[tuple, float] = {}
-    cols: List[str] = []
-    for rec in details:
-        c1, c2, sc = rec.get("Column 1"), rec.get("Column 2"), rec.get("Score")
-        if c1 is None or c2 is None:
-            continue
-        for c in (c1, c2):
-            if c not in cols:
-                cols.append(c)
-        if sc is not None and not (isinstance(sc, float) and np.isnan(sc)):
-            scores[(c1, c2)] = float(sc)
-            scores[(c2, c1)] = float(sc)
-    # keep only columns that participate in at least one scored pair
-    scored_cols = [c for c in cols if any((c, o) in scores for o in cols)]
-    if len(scored_cols) < 2:
-        return None
-    mat = pd.DataFrame(np.nan, index=scored_cols, columns=scored_cols, dtype=float)
-    for (a, b), v in scores.items():
-        if a in mat.index and b in mat.columns:
-            mat.loc[a, b] = v
-    np.fill_diagonal(mat.values, 1.0)
-
+    scored_cols, mat = built
     n = len(scored_cols)
     annot = n <= 18
     fig, ax = plt.subplots(figsize=(1.5 + 0.55 * n, 1.2 + 0.5 * n))

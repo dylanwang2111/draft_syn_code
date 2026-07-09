@@ -314,9 +314,11 @@ def _run_job(cfg: dict):
             "quality": se.plot_quality_comparison(quality_scores, f"{fig_dir}/web_quality.png"),
             "privacy": se.plot_privacy_comparison(privacy_all, f"{fig_dir}/web_privacy.png"),
             "efficacy": se.plot_efficacy_scores(efficacy, f"{fig_dir}/web_efficacy.png"),
+            # shapes/pairs: interactive Plotly data + a PNG fallback (offline).
             "shapes": {t: se.plot_column_shapes_heatmap(d, f"{fig_dir}/web_shapes_{t}.png", t)
                        for t, d in shape_details.items()},
-            "pairs": {},
+            "shapes_data": {t: se.shapes_heatmap_data(d) for t, d in shape_details.items()},
+            "pairs": {}, "pairs_data": {},
         }
         # Column Pair Trends heatmap per table, for the primary (first) synthesizer.
         primary = list(suite)[0]
@@ -325,6 +327,7 @@ def _run_job(cfg: dict):
             if recs:
                 figs["pairs"][t] = se.plot_pair_trends_heatmap(
                     recs, f"{fig_dir}/web_pairs_{t}.png", t, primary)
+                figs["pairs_data"][t] = se.pair_trends_heatmap_data(recs)
 
         STATE["suite"] = suite  # kept server-side for CSV downloads
         STATE["results"] = _clean({
