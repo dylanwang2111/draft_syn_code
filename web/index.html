@@ -78,8 +78,17 @@ button{font-family:var(--mono); cursor:pointer; border-radius:8px; transition:.1
 .panel.collapsed{margin-bottom:12px}
 .panel.collapsed > :not(.panel-h){display:none !important}
 .panel-h h2{font-family:var(--disp); font-weight:600; font-size:15px; color:var(--ink)}
+.panel-h h2 .step{color:var(--faint); font-weight:500}
 .panel-h .count{font-family:var(--mono); font-size:10.5px; color:#fff; background:var(--sky);
   border-radius:999px; padding:1px 8px; font-weight:500}
+/* collapsed-state summary chip in a panel header */
+.panel-sum{margin-left:auto; font-family:var(--mono); font-size:10px; color:var(--muted);
+  font-weight:400; max-width:56%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+  background:var(--panel-2); border:1px solid var(--line-soft); border-radius:999px; padding:2px 9px}
+.panel-sum:empty{display:none}
+.sub-label{font-family:var(--mono); font-size:10px; letter-spacing:.08em; text-transform:uppercase;
+  color:var(--muted); font-weight:600; margin:14px 0 6px}
+.sub-label:first-of-type{margin-top:2px}
 .panel-h .count.zero{background:var(--line); color:var(--muted)}
 .empty{font-size:12.5px; color:var(--faint); font-style:italic; padding:8px 2px}
 
@@ -291,44 +300,52 @@ table.rep tr:hover td{background:var(--panel-2)}
     </div>
 
     <div class="panel collapsed" id="strategy-panel" style="display:none">
-      <div class="panel-h"><h2>Recommended strategy</h2></div>
+      <div class="panel-h"><h2><span class="step">1 ·</span> Strategy</h2><span class="panel-sum" id="sum-strategy"></span></div>
       <div id="strategy-body"></div>
     </div>
 
-    <div class="panel collapsed" id="rel-panel" style="display:none">
-      <div class="panel-h"><h2>Relationships</h2></div>
-      <div id="rel-rows"></div>
-      <button class="mini-btn" id="btn-add-rel">+ add relationship</button>
-      <p class="hint">parent key → child FK. Empty = independent tables.</p>
-    </div>
-
-    <div class="panel collapsed" id="constraint-panel" style="display:none">
-      <div class="panel-h"><h2>Constraints</h2></div>
-      <div id="constraint-rows"></div>
-      <button class="mini-btn" id="btn-add-constraint">+ add constraint</button>
-      <p class="hint">enforced during synthesis (SDV cag). e.g. EFFECTIVE_DATE ≤ END_DATE.</p>
-    </div>
-
-    <div class="panel collapsed" id="settings-panel" style="display:none">
-      <div class="panel-h"><h2>Run Settings</h2></div>
-      <div class="field" id="field-entity">
-        <label>Entity key — referential integrity</label>
+    <div class="panel collapsed" id="structure-panel" style="display:none">
+      <div class="panel-h"><h2><span class="step">2 ·</span> Structure &amp; keys</h2><span class="panel-sum" id="sum-structure"></span></div>
+      <p class="hint">How are your tables related? Choose a shared <b>entity key</b> for versioned /
+        SCD data, or declare explicit parent → child <b>relationships</b> if a table has a true
+        primary key. Leave both empty to treat the tables as independent.</p>
+      <div class="sub-label">Entity key (referential integrity)</div>
+      <div class="field" id="field-entity" style="margin-top:0">
         <select id="in-entity"><option value="">(none — tables independent)</option></select>
         <p class="hint" id="entity-hint">a business key shared across tables (e.g. CONT_ID) that
           identifies one entity across its versions. Set it and HMA keeps the tables joinable on it.</p></div>
-      <div class="field" id="field-scd" style="display:none">
-        <label>SCD timeline — effective / end / current</label>
+      <div class="field" id="field-scd" style="display:none; margin-top:0">
+        <div class="sub-label">SCD timeline (effective / end / current)</div>
         <div class="tgt-row" style="grid-template-columns:1fr 1fr"><select id="in-scd-eff"></select><select id="in-scd-end"></select></div>
         <select id="in-scd-cur" style="margin-top:6px"></select>
         <p class="hint">needs the entity key + real date columns. Rewrites each entity's versions
           into non-overlapping, contiguous windows and marks one current row.</p></div>
-      <div class="field"><label>Synthesizers</label><div class="chips" id="synth-chips"></div></div>
+      <div class="sub-label">Relationships (parent key → child FK)</div>
+      <div id="rel-rows"></div>
+      <button class="mini-btn" id="btn-add-rel">+ add relationship</button>
+    </div>
+
+    <div class="panel collapsed" id="constraint-panel" style="display:none">
+      <div class="panel-h"><h2><span class="step">3 ·</span> Constraints</h2><span class="panel-sum" id="sum-constraints"></span></div>
+      <div id="constraint-rows"></div>
+      <button class="mini-btn" id="btn-add-constraint">+ add constraint</button>
+      <p class="hint">rules enforced during synthesis (SDV cag), e.g. EFFECTIVE_DATE ≤ END_DATE.</p>
+    </div>
+
+    <div class="panel collapsed" id="synth-panel" style="display:none">
+      <div class="panel-h"><h2><span class="step">4 ·</span> Synthesizers</h2><span class="panel-sum" id="sum-synths"></span></div>
+      <div class="field" style="margin-top:0"><div class="chips" id="synth-chips"></div>
+        <p class="hint">HMA = multi-table; the rest are single-table. CTGAN/TVAE/CopulaGAN are neural (slower).</p></div>
       <div class="field" id="field-epochs" style="display:none">
         <label>GAN epochs <output id="out-epochs">60</output></label>
         <input type="range" id="in-epochs" min="10" max="600" step="10" value="60"></div>
-      <div class="field"><label>Sample scale ×rows <output id="out-scale">1.0</output></label>
+    </div>
+
+    <div class="panel collapsed" id="params-panel" style="display:none">
+      <div class="panel-h"><h2><span class="step">5 ·</span> Run parameters</h2><span class="panel-sum" id="sum-params"></span></div>
+      <div class="field" style="margin-top:0"><label>Sample scale ×rows <output id="out-scale">1.0</output></label>
         <input type="range" id="in-scale" min="0.25" max="2" step="0.25" value="1"></div>
-      <div class="field"><label>Holdout frac <output id="out-holdout">0.25</output></label>
+      <div class="field"><label>Holdout fraction (privacy / TSTR) <output id="out-holdout">0.25</output></label>
         <input type="range" id="in-holdout" min="0.10" max="0.40" step="0.05" value="0.25"></div>
       <div class="field"><label>ML-efficacy target / table</label><div id="target-fields"></div></div>
     </div>
@@ -444,15 +461,29 @@ async function sendFiles(files){
 
 function init(payload){
   DATA=payload; detected={};
-  $("#rel-panel").style.display=$("#settings-panel").style.display="block";
-  $("#constraint-panel").style.display="block"; renderConstraints();
+  ["#structure-panel","#constraint-panel","#synth-panel","#params-panel"].forEach(id=>$(id).style.display="block");
+  renderConstraints();
   $("#synthetic-panel").style.display="none"; $("#synth-list").innerHTML="";
   $("#synth-count").textContent="0"; $("#synth-count").className="count zero";
   lockReportTabs(true);
   renderSeedList(); renderSchemaBlocks(); renderStrategy(payload.profile);
   renderRels(payload.relationships); renderRecipe();
+  updateSummaries();
   selectTable(Object.keys(DATA.tables)[0]);
   activateTab("pane-schema");
+}
+/* compact state chips shown in each collapsed panel header */
+function updateSummaries(){
+  if(!DATA) return;
+  const r=DATA.profile&&DATA.profile.recommendation;
+  $("#sum-strategy").textContent=r?("tier "+r.tier):"";
+  const ek=$("#in-entity").value;
+  const nrel=$$(".rel-row").filter(x=>x.querySelector(".rel-parent").value&&x.querySelector(".rel-child").value).length;
+  $("#sum-structure").textContent = ek ? ("key: "+ek) : nrel ? (nrel+" link"+(nrel>1?"s":"")) : "independent";
+  const nc=$$(".con-row").length;
+  $("#sum-constraints").textContent = nc ? (nc+" rule"+(nc>1?"s":"")) : "none";
+  $("#sum-synths").textContent=[...selectedSynths].join(", ")||"none";
+  $("#sum-params").textContent="×"+(+$("#in-scale").value).toFixed(2).replace(/0$/,"")+" · holdout "+Math.round(100*$("#in-holdout").value)+"%";
 }
 
 /* ---------------- left: seed list ---------------- */
@@ -527,7 +558,8 @@ function relRow(parent="",child=""){
   const div=document.createElement("div"); div.className="rel-row";
   div.innerHTML=`<select class="rel-parent">${opts(parent)}</select><span class="arrow-lbl">→</span>
     <select class="rel-child">${opts(child)}</select><button class="rel-del" title="remove">✕</button>`;
-  div.querySelector(".rel-del").addEventListener("click",()=>div.remove());
+  div.querySelector(".rel-del").addEventListener("click",()=>{div.remove();updateSummaries();});
+  div.querySelectorAll("select").forEach(s=>s.addEventListener("change",updateSummaries));
   return div;
 }
 function renderRels(rels){
@@ -535,7 +567,7 @@ function renderRels(rels){
   (rels||[]).forEach(r=>host.appendChild(relRow(
     `${r.parent_table_name}.${r.parent_primary_key}`,`${r.child_table_name}.${r.child_foreign_key}`)));
 }
-$("#btn-add-rel").addEventListener("click",()=>$("#rel-rows").appendChild(relRow()));
+$("#btn-add-rel").addEventListener("click",()=>{$("#rel-rows").appendChild(relRow());updateSummaries();});
 
 /* ---------------- constraints ---------------- */
 const CON_TYPES=[["inequality","low ≤ high"],["range","low ≤ mid ≤ high"],
@@ -568,14 +600,14 @@ function conRow(){
   div.innerHTML=`<div class="con-top"><select class="con-table">${tOpts}</select>
     <select class="con-type">${tyOpts}</select><button class="con-del" title="remove">✕</button></div>
     <div class="con-body"></div>`;
-  div.querySelector(".con-del").addEventListener("click",()=>div.remove());
+  div.querySelector(".con-del").addEventListener("click",()=>{div.remove();updateSummaries();});
   div.querySelector(".con-table").addEventListener("change",()=>conBody(div));
   div.querySelector(".con-type").addEventListener("change",()=>conBody(div));
   conBody(div);
   return div;
 }
 function renderConstraints(){ $("#constraint-rows").innerHTML=""; }
-$("#btn-add-constraint").addEventListener("click",()=>$("#constraint-rows").appendChild(conRow()));
+$("#btn-add-constraint").addEventListener("click",()=>{$("#constraint-rows").appendChild(conRow());updateSummaries();});
 function collectConstraints(){
   return [...$$(".con-row")].map(r=>{
     const table=r.querySelector(".con-table").value, type=r.querySelector(".con-type").value;
@@ -615,7 +647,9 @@ function renderStrategy(profile){
   body.innerHTML=h;
   const btn=$("#btn-apply-rels");
   if(btn) btn.addEventListener("click",()=>{ renderRels(RECOMMENDED_RELS);
-    btn.textContent="✓ applied — see Relationships"; btn.disabled=true; });
+    $("#structure-panel").classList.remove("collapsed"); updateSummaries();
+    btn.textContent="✓ applied — see Structure & keys"; btn.disabled=true; });
+  updateSummaries();
 }
 
 /* ---------------- recipe ---------------- */
@@ -625,7 +659,7 @@ function renderRecipe(){
   $$("#synth-chips .chip").forEach(ch=>ch.addEventListener("click",()=>{
     const s=ch.dataset.s;
     selectedSynths.has(s)?selectedSynths.delete(s):selectedSynths.add(s);
-    ch.classList.toggle("on"); $("#btn-run").disabled=!selectedSynths.size; updateEpochsVisibility();
+    ch.classList.toggle("on"); $("#btn-run").disabled=!selectedSynths.size; updateEpochsVisibility(); updateSummaries();
   }));
   updateEpochsVisibility();
   $("#target-fields").innerHTML=Object.entries(DATA.tables).map(([t,v])=>`
@@ -662,7 +696,7 @@ function renderRecipe(){
   $("#in-scd-end").innerHTML=opt("end-date column…",endSug);
   $("#in-scd-cur").innerHTML=opt("current-flag column (optional)…","");
   updateScdVisibility();
-  $("#in-entity").addEventListener("change",updateScdVisibility);
+  $("#in-entity").addEventListener("change",()=>{updateScdVisibility();updateSummaries();});
   $("#btn-run").disabled=!selectedSynths.size;
 }
 /* entity-key suggestion — ONLY when the profiler found a real primary/foreign
@@ -678,7 +712,7 @@ function updateEpochsVisibility(){
   $("#field-epochs").style.display=[...selectedSynths].some(s=>GAN_SYNTHS.has(s))?"block":"none";
 }
 [["epochs",v=>v],["scale",v=>(+v).toFixed(2).replace(/0$/,"")],["holdout",v=>v]].forEach(([k,f])=>{
-  $(`#in-${k}`).addEventListener("input",e=>$(`#out-${k}`).textContent=f(e.target.value));
+  $(`#in-${k}`).addEventListener("input",e=>{$(`#out-${k}`).textContent=f(e.target.value); updateSummaries();});
 });
 
 /* ---------------- tabs ---------------- */
