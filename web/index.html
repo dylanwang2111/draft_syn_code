@@ -629,6 +629,17 @@ function renderRecipe(){
   const sk=suggestedEntityKey(DATA.profile); const sug=cands.includes(sk)?sk:"";
   $("#in-entity").innerHTML=`<option value="">(none — tables independent)</option>`+
     cands.map(c=>`<option value="${esc(c)}" ${c===sug?"selected":""}>${esc(c)} (in ${shared[c]} tables)</option>`).join("");
+  // entity-key hint: explain the concept and, for versioned (SCD) data, prompt
+  // the user to pick the true durable key (the tool can't detect it reliably).
+  const tier=(DATA.profile&&DATA.profile.recommendation||{}).tier;
+  $("#entity-hint").innerHTML = (tier===2||tier===3)
+    ? "This looks like <b>versioned (SCD)</b> data — each row is a dated version of some entity. "
+      + "If you know the column that stays the <b>same across all of an entity's versions</b> — a durable "
+      + "business key such as a customer/contact id (<i>not</i> a per-row surrogate, and not something that "
+      + "changes over time) — <b>choose it here</b>. It links the tables and keeps each entity coherent. "
+      + "The tool can't detect this reliably, so it's your call based on the data's meaning."
+    : "An <b>entity key</b> is a business key shared across tables that identifies one entity across all its "
+      + "rows/versions (e.g. CONT_ID). Choose it if you know one holds — the tables are then kept joinable on it.";
   // SCD timeline columns: all column names (date-ish first), effective/end pre-selected
   const allCols=[...new Set(Object.values(DATA.tables).flatMap(v=>v.columns.map(c=>c.name)))];
   const dateish=c=>/(_dt|_date|eff|end|start|expiry|since|left)/i.test(c);
@@ -644,13 +655,12 @@ function renderRecipe(){
   $("#in-entity").addEventListener("change",updateScdVisibility);
   $("#btn-run").disabled=!selectedSynths.size;
 }
-/* entity-key suggestion from the profiler recommendation, across all tiers */
+/* entity-key suggestion — ONLY when the profiler found a real primary/foreign
+   key link (Tier 1). For versioned (SCD, Tier 2/3) data the true durable key is
+   a domain decision the tool can't reliably detect, so we leave it to the user. */
 function suggestedEntityKey(profile){
   const r=profile&&profile.recommendation; if(!r) return "";
   if((r.relationships||[]).length) return r.relationships[0].parent_primary_key||"";
-  if(r.sequence_specs){ const v=Object.values(r.sequence_specs)[0]; if(v&&v.sequence_key) return v.sequence_key; }
-  const dl=(profile.links||[]).filter(l=>l.linkable_via_durable);
-  if(dl.length) return dl[0].parent_column||"";
   return "";
 }
 function updateScdVisibility(){ $("#field-scd").style.display=$("#in-entity").value?"block":"none"; }
