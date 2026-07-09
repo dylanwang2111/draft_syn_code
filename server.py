@@ -197,6 +197,22 @@ def _relationships_hold(rels, tables) -> bool:
     return True
 
 
+def _child_pk(df):
+    """Pick a unique per-row id column to serve as a table's primary key in the
+    entity-hub schema (prefers a warehouse/surrogate id), else None."""
+    cols = list(df.columns)
+    for c in cols:
+        if "warehouse" in c.lower() and df[c].is_unique:
+            return c
+    for c in cols:
+        if c.lower().endswith("_id") and df[c].is_unique:
+            return c
+    for c in cols:
+        if df[c].is_unique:
+            return c
+    return None
+
+
 def _referential_integrity(rels, real_tables, suite):
     rows = []
     for r in rels:
@@ -241,11 +257,34 @@ def _run_job(cfg: dict):
                                         cfg["holdout"], cfg.get("seed", 42))
         roles = {t: se.classify_columns(df, metadata, t) for t, df in train.items()}
 
-        say(f"Fitting: {', '.join(cfg['synths'])} (epochs={cfg['epochs']}, scale={cfg['scale']})")
+        # Entity-key (SCD hub) mode: derive a parent table keyed by the shared
+        # business key (e.g. CONT_ID) so HMA preserves cross-table referential
+        # integrity on it.  Only HMA can use the hub, so other synthesizers are
+        # skipped while this mode is on.
+        entity_key = (cfg.get("entity_key") or "").strip()
+        entity_children = se.entity_key_tables(tables, entity_key) if entity_key else []
+        parent_name, hub_rels = None, []
+        fit_tables, fit_synths = train, cfg["synths"]
+        if entity_children:
+            try:
+                child_pks = {t: _child_pk(train[t]) for t in entity_children}
+                fit_tables, metadata, hub_rels, hub_info = se.build_entity_hub(
+                    train, entity_key, child_primary_keys=child_pks, lift_invariant=False)
+                parent_name = hub_info["parent"]
+                fit_synths = ["HMA"]
+                say(f"Entity-key mode: built '{parent_name}' over {len(entity_children)} "
+                    f"table(s) — {hub_info['n_entities']} distinct {entity_key}. Using HMA so "
+                    f"referential integrity on {entity_key} is preserved; other synthesizers "
+                    f"are skipped in this mode.")
+            except Exception as e:
+                say(f"⚠ entity-key mode failed ({e}); falling back to normal synthesis")
+                parent_name, hub_rels, fit_tables, fit_synths = None, [], train, cfg["synths"]
+
+        say(f"Fitting: {', '.join(fit_synths)} (epochs={cfg['epochs']}, scale={cfg['scale']})")
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             suite = se.generate_synthetic_suite(
-                train, metadata, synthesizers=cfg["synths"],
+                fit_tables, metadata, synthesizers=fit_synths,
                 scale=cfg["scale"], epochs=cfg["epochs"], verbose=False,
                 constraints=cfg.get("constraints") or [])
         for w in caught:
@@ -254,6 +293,15 @@ def _run_job(cfg: dict):
         if not suite:
             raise RuntimeError("every synthesizer failed — check the schema edits")
         say(f"Synthesis done: {', '.join(suite)}")
+
+        # Referential integrity is measured while the derived parent is still in
+        # the suite; then the parent is dropped so only real tables are evaluated.
+        if parent_name:
+            ri = _referential_integrity(hub_rels, fit_tables, suite)
+            for s in list(suite):
+                suite[s].pop(parent_name, None)
+        else:
+            ri = _referential_integrity(rels, train, suite) if rels else []
 
         meta_dict = metadata.to_dict()
         from sdmetrics.reports.single_table import QualityReport
@@ -279,8 +327,6 @@ def _run_job(cfg: dict):
                 # sent to the client for the on-page details table.
                 pair_full.setdefault(t, {})[s] = pd_det.to_dict(orient="records")
                 pair_details.setdefault(t, {})[s] = pd_det.head(60).to_dict(orient="records")
-
-        ri = _referential_integrity(rels, train, suite) if rels else []
 
         privacy_all = {}
         for s, tabs in suite.items():

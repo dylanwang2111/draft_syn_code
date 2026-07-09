@@ -303,6 +303,11 @@ table.rep tr:hover td{background:var(--panel-2)}
 
     <div class="panel" id="settings-panel" style="display:none">
       <div class="panel-h"><h2>Run Settings</h2></div>
+      <div class="field" id="field-entity">
+        <label>Entity key — referential integrity</label>
+        <select id="in-entity"><option value="">(none — tables independent)</option></select>
+        <p class="hint" id="entity-hint">a business key shared across tables (e.g. CONT_ID) that
+          identifies one entity across its versions. Set it and HMA keeps the tables joinable on it.</p></div>
       <div class="field"><label>Synthesizers</label><div class="chips" id="synth-chips"></div></div>
       <div class="field" id="field-epochs" style="display:none">
         <label>GAN epochs <output id="out-epochs">60</output></label>
@@ -611,6 +616,13 @@ function renderRecipe(){
     <div class="tgt-row"><span title="${t}">${t}</span>
       <select id="target-${t}"><option value="auto">(auto)</option>
         ${v.targets.map(c=>`<option>${c}</option>`).join("")}</select></div>`).join("");
+  // entity-key options = columns present in >= 2 tables (candidate shared keys)
+  const shared={};
+  for(const v of Object.values(DATA.tables)) for(const c of v.columns) shared[c.name]=(shared[c.name]||0)+1;
+  const cands=Object.keys(shared).filter(c=>shared[c]>=2).sort();
+  const sug=(DATA.profile&&DATA.profile.recommendation&&(DATA.profile.recommendation.relationships||[])[0]||{}).parent_primary_key;
+  $("#in-entity").innerHTML=`<option value="">(none — tables independent)</option>`+
+    cands.map(c=>`<option value="${esc(c)}" ${c===sug?"selected":""}>${esc(c)} (in ${shared[c]} tables)</option>`).join("");
   $("#btn-run").disabled=!selectedSynths.size;
 }
 function updateEpochsVisibility(){
@@ -650,6 +662,7 @@ $("#btn-run").addEventListener("click",async()=>{
   }).filter(Boolean);
   const targets={}; Object.keys(DATA.tables).forEach(t=>targets[t]=$(`#target-${t}`).value);
   const cfg={schema, relationships:rels, targets, constraints:collectConstraints(),
+    entity_key:$("#in-entity").value||"",
     synths:[...selectedSynths],
     epochs:+$("#in-epochs").value, scale:+$("#in-scale").value, holdout:+$("#in-holdout").value};
   let r;

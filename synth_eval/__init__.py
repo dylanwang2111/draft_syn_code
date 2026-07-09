@@ -17,3 +17,4 @@ from .privacy import *  # noqa: F401,F403
 from .efficacy import *  # noqa: F401,F403
 from .suite import *  # noqa: F401,F403
 from .compare import *  # noqa: F401,F403
+from .entity import build_entity_hub, entity_key_tables  # noqa: F401
