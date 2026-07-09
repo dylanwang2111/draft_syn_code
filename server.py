@@ -246,9 +246,10 @@ def _run_job(cfg: dict):
             warnings.simplefilter("always")
             suite = se.generate_synthetic_suite(
                 train, metadata, synthesizers=cfg["synths"],
-                scale=cfg["scale"], epochs=cfg["epochs"], verbose=False)
+                scale=cfg["scale"], epochs=cfg["epochs"], verbose=False,
+                constraints=cfg.get("constraints") or [])
         for w in caught:
-            if "skipped" in str(w.message):
+            if any(k in str(w.message) for k in ("skipped", "constraints not applied")):
                 say(f"⚠ {w.message}")
         if not suite:
             raise RuntimeError("every synthesizer failed — check the schema edits")

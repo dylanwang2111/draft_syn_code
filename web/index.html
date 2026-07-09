@@ -122,6 +122,15 @@ input[type=range]{width:100%; accent-color:var(--blue)}
 select{background:var(--panel); color:var(--ink); border:1px solid var(--line); border-radius:7px;
   font-family:var(--mono); font-size:11.5px; padding:5px 8px; cursor:pointer; width:100%}
 select:hover{border-color:var(--sky)} select:focus{outline:none; border-color:var(--blue)}
+.con-row{border:1px solid var(--line); border-radius:9px; padding:8px; margin-bottom:8px; background:var(--panel-2)}
+.con-top{display:grid; grid-template-columns:1fr 1fr 26px; gap:6px; align-items:center; margin-bottom:6px}
+.con-body{display:grid; gap:6px}
+.con-body.two{grid-template-columns:1fr 1fr} .con-body.three{grid-template-columns:1fr 1fr 1fr}
+.con-body label{display:block; font-family:var(--mono); font-size:9px; color:var(--faint);
+  text-transform:uppercase; letter-spacing:.06em; margin-bottom:2px}
+.con-del{background:var(--panel); border:1px solid var(--line); color:var(--faint); border-radius:6px; height:30px}
+.con-del:hover{color:#fff; background:var(--red); border-color:var(--red)}
+.con-strict{display:flex; align-items:center; gap:6px; font-family:var(--mono); font-size:10.5px; color:var(--muted); margin-top:6px}
 .rel-row{display:grid; grid-template-columns:1fr 18px 1fr 26px; gap:6px; align-items:center; margin-bottom:7px}
 .rel-row .arrow-lbl{text-align:center; color:var(--blue); font-weight:700; font-size:13px}
 .rel-del{background:var(--panel); border:1px solid var(--line); color:var(--faint); border-radius:6px; height:30px}
@@ -270,6 +279,13 @@ table.rep tr:hover td{background:var(--panel-2)}
       <p class="hint">parent key → child FK. Empty = independent tables.</p>
     </div>
 
+    <div class="panel" id="constraint-panel" style="display:none">
+      <div class="panel-h"><h2>Constraints</h2></div>
+      <div id="constraint-rows"></div>
+      <button class="mini-btn" id="btn-add-constraint">+ add constraint</button>
+      <p class="hint">enforced during synthesis (SDV cag). e.g. EFFECTIVE_DATE ≤ END_DATE.</p>
+    </div>
+
     <div class="panel" id="settings-panel" style="display:none">
       <div class="panel-h"><h2>Run Settings</h2></div>
       <div class="field"><label>Synthesizers</label><div class="chips" id="synth-chips"></div></div>
@@ -386,6 +402,7 @@ async function sendFiles(files){
 function init(payload){
   DATA=payload; detected={};
   $("#rel-panel").style.display=$("#settings-panel").style.display="block";
+  $("#constraint-panel").style.display="block"; renderConstraints();
   $("#synthetic-panel").style.display="none"; $("#synth-list").innerHTML="";
   $("#synth-count").textContent="0"; $("#synth-count").className="count zero";
   lockReportTabs(true);
@@ -477,6 +494,61 @@ function renderRels(rels){
 }
 $("#btn-add-rel").addEventListener("click",()=>$("#rel-rows").appendChild(relRow()));
 
+/* ---------------- constraints ---------------- */
+const CON_TYPES=[["inequality","low ≤ high"],["range","low ≤ mid ≤ high"],
+  ["fixed_combinations","columns co-vary"],["fixed_increments","multiple of N"]];
+function colsFor(t){ return (DATA.tables[t]?DATA.tables[t].columns:[]).map(c=>c.name); }
+function colSel(cls,t,sel){
+  return `<select class="${cls}">`+["<option value=''></option>",
+    ...colsFor(t).map(c=>`<option ${c===sel?"selected":""}>${esc(c)}</option>`)].join("")+"</select>";
+}
+function conBody(row){
+  const t=row.querySelector(".con-table").value, type=row.querySelector(".con-type").value;
+  const body=row.querySelector(".con-body"); body.className="con-body";
+  if(type==="inequality"){ body.classList.add("two");
+    body.innerHTML=`<div><label>low</label>${colSel("c-low",t)}</div><div><label>high</label>${colSel("c-high",t)}</div>`
+      +`<div class="con-strict" style="grid-column:1/-1"><input type="checkbox" class="c-strict">strict (&lt; not ≤)</div>`;
+  } else if(type==="range"){ body.classList.add("three");
+    body.innerHTML=`<div><label>low</label>${colSel("c-low",t)}</div><div><label>middle</label>${colSel("c-mid",t)}</div><div><label>high</label>${colSel("c-high",t)}</div>`
+      +`<div class="con-strict" style="grid-column:1/-1"><input type="checkbox" class="c-strict" checked>strict</div>`;
+  } else if(type==="fixed_combinations"){ body.classList.add("two");
+    body.innerHTML=`<div><label>column A</label>${colSel("c-a",t)}</div><div><label>column B</label>${colSel("c-b",t)}</div>`
+      +`<div style="grid-column:1/-1"><label>column C (optional)</label>${colSel("c-c",t)}</div>`;
+  } else { body.classList.add("two");
+    body.innerHTML=`<div><label>column</label>${colSel("c-col",t)}</div><div><label>increment (int)</label><input type="number" class="c-inc" min="1" value="1" style="width:100%"></div>`;
+  }
+}
+function conRow(){
+  const div=document.createElement("div"); div.className="con-row";
+  const tOpts=Object.keys(DATA.tables).map(t=>`<option>${esc(t)}</option>`).join("");
+  const tyOpts=CON_TYPES.map(([v,l])=>`<option value="${v}">${l}</option>`).join("");
+  div.innerHTML=`<div class="con-top"><select class="con-table">${tOpts}</select>
+    <select class="con-type">${tyOpts}</select><button class="con-del" title="remove">✕</button></div>
+    <div class="con-body"></div>`;
+  div.querySelector(".con-del").addEventListener("click",()=>div.remove());
+  div.querySelector(".con-table").addEventListener("change",()=>conBody(div));
+  div.querySelector(".con-type").addEventListener("change",()=>conBody(div));
+  conBody(div);
+  return div;
+}
+function renderConstraints(){ $("#constraint-rows").innerHTML=""; }
+$("#btn-add-constraint").addEventListener("click",()=>$("#constraint-rows").appendChild(conRow()));
+function collectConstraints(){
+  return [...$$(".con-row")].map(r=>{
+    const table=r.querySelector(".con-table").value, type=r.querySelector(".con-type").value;
+    const v=cls=>{const e=r.querySelector(cls);return e?e.value:"";};
+    const ck=cls=>{const e=r.querySelector(cls);return e?e.checked:false;};
+    if(type==="inequality"){ const low=v(".c-low"),high=v(".c-high"); if(!low||!high)return null;
+      return {table,type,low,high,strict:ck(".c-strict")}; }
+    if(type==="range"){ const low=v(".c-low"),middle=v(".c-mid"),high=v(".c-high");
+      if(!low||!middle||!high)return null; return {table,type,low,middle,high,strict:ck(".c-strict")}; }
+    if(type==="fixed_combinations"){ const cols=[v(".c-a"),v(".c-b"),v(".c-c")].filter(Boolean);
+      if(cols.length<2)return null; return {table,type,columns:cols}; }
+    const column=v(".c-col"),increment=parseInt(v(".c-inc")||"1",10);
+    if(!column)return null; return {table,type,column,increment};
+  }).filter(Boolean);
+}
+
 /* ---------------- strategy recommendation ---------------- */
 const TIER_LABEL={0:"TIER 0 · INDEPENDENT",1:"TIER 1 · RELATIONAL",
   2:"TIER 2 · SEQUENTIAL",3:"TIER 3 · TEMPORAL"};
@@ -551,7 +623,8 @@ $("#btn-run").addEventListener("click",async()=>{
     return {parent_table_name:pt,parent_primary_key:pk,child_table_name:ct,child_foreign_key:fk};
   }).filter(Boolean);
   const targets={}; Object.keys(DATA.tables).forEach(t=>targets[t]=$(`#target-${t}`).value);
-  const cfg={schema, relationships:rels, targets, synths:[...selectedSynths],
+  const cfg={schema, relationships:rels, targets, constraints:collectConstraints(),
+    synths:[...selectedSynths],
     epochs:+$("#in-epochs").value, scale:+$("#in-scale").value, holdout:+$("#in-holdout").value};
   let r;
   try{ r=await fetch("/api/synthesize",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(cfg)}); }
