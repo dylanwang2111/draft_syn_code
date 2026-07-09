@@ -213,42 +213,6 @@ def sdmetrics_privacy(
         except Exception as e:  # pragma: no cover
             out["CategoricalCAP"] = None
             out["CategoricalCAP_error"] = str(e)[:200]
-
-    # DCROverfittingProtection: sdmetrics' official parallel to our MIA/DCR.
-    # Compares how close synthetic rows sit to the TRAINING data vs the
-    # (pre-fit) VALIDATION holdout.  1.0 => synthetic is no closer to training
-    # than to unseen data (no memorisation); lower => overfit / leakage.
-    if holdout is not None and meta_dict is not None and len(holdout) >= 2:
-        try:
-            from sdmetrics.single_table import DCROverfittingProtection
-
-            sub = int(min(len(real), len(synth), len(holdout)))
-            score = DCROverfittingProtection.compute(
-                real_training_data=real, synthetic_data=synth,
-                real_validation_data=holdout, metadata=meta_dict,
-                num_rows_subsample=sub if sub > 0 else None,
-            )
-            out["DCROverfittingProtection"] = float(score)
-        except Exception as e:  # pragma: no cover
-            out["DCROverfittingProtection"] = None
-            out["DCROverfittingProtection_error"] = str(e)[:200]
-
-    # DCRBaselineProtection: synthetic-vs-real DCR against a random-data
-    # baseline.  Fragile on Excel-mangled numeric ids (huge ranges overflow its
-    # uniform sampler), so it is best-effort and skipped on failure.
-    if meta_dict is not None:
-        try:
-            from sdmetrics.single_table import DCRBaselineProtection
-
-            sub = int(min(len(real), len(synth)))
-            score = DCRBaselineProtection.compute(
-                real_data=real, synthetic_data=synth, metadata=meta_dict,
-                num_rows_subsample=sub if sub > 0 else None,
-            )
-            out["DCRBaselineProtection"] = float(score)
-        except Exception as e:  # pragma: no cover
-            out["DCRBaselineProtection"] = None
-            out["DCRBaselineProtection_error"] = str(e)[:200]
     return out
 
 
@@ -261,87 +225,51 @@ def privacy_report(
     reports_dir: str,
     metadata=None,
 ) -> Dict[str, object]:
-    """Full privacy module for one table, plus pass/warn verdicts."""
-    fig_dir = os.path.join(reports_dir, "figures", table_name)
-    os.makedirs(fig_dir, exist_ok=True)
+    """Compact privacy module for one table: three metrics + verdicts.
 
-    # MIA uses train (members) vs holdout (non-members).
+    A small, non-overlapping set, one per distinct attack:
+
+      * Membership Inference (MIA) — custom trained-attacker AUC: can a real
+                                     record be identified as a training member?
+      * NewRowSynthesis (sdmetrics) — are synthetic rows novel (not copies)?
+      * CategoricalCAP (sdmetrics)  — can a sensitive categorical field be inferred?
+
+    MIA and sdmetrics' DCROverfittingProtection test the same membership-
+    inference threat; we report the trained-attacker AUC framing here.
+    """
     mia = membership_inference_attack(train_real, holdout_real, synth, roles)
-    # DCR / exact-match compare the *training* real data with synthetic.
-    dcr = dcr_distributions(train_real, synth, roles, os.path.join(fig_dir, "dcr.png"))
-    exact = exact_match_rate(train_real, synth, roles)
     sdm = sdmetrics_privacy(train_real, synth, roles, metadata, table_name, holdout=holdout_real)
 
     verdicts = {}
-    # MIA AUC close to 0.5 is good.
+    # MIA AUC close to 0.5 == attacker cannot tell members from non-members.
     auc = mia.get("auc")
-    if auc is None or np.isnan(auc):
-        verdicts["mia"] = ("SKIP", mia.get("note", ""))
+    if auc is None or (isinstance(auc, float) and np.isnan(auc)):
+        verdicts["membership_inference"] = ("SKIP", mia.get("note", "MIA not computed"))
     elif abs(auc - 0.5) <= 0.10:
-        verdicts["mia"] = ("PASS", f"AUC={auc:.3f} (~0.5 => members indistinguishable)")
+        verdicts["membership_inference"] = ("PASS", f"attacker AUC={auc:.3f} (~0.5 => members indistinguishable)")
     elif abs(auc - 0.5) <= 0.20:
-        verdicts["mia"] = ("WARN", f"AUC={auc:.3f} (some membership signal)")
+        verdicts["membership_inference"] = ("WARN", f"attacker AUC={auc:.3f} (some membership signal)")
     else:
-        verdicts["mia"] = ("FAIL", f"AUC={auc:.3f} (strong membership signal)")
-
-    emr = exact.get("exact_match_rate", 0.0)
-    verdicts["exact_match"] = (
-        "PASS" if emr <= 0.001 else "WARN" if emr <= 0.01 else "FAIL",
-        f"{emr:.4%} of synthetic rows exactly match a real row",
-    )
-
-    ratio = dcr.get("dcr_ratio_median")
-    if ratio is None:
-        verdicts["dcr"] = ("SKIP", dcr.get("note", ""))
-    else:
-        verdicts["dcr"] = (
-            "PASS" if ratio >= 0.9 else "WARN" if ratio >= 0.5 else "FAIL",
-            f"median DCR(real->synth)/DCR(real->real)={ratio:.2f} (>=1 is safe)",
-        )
+        verdicts["membership_inference"] = ("FAIL", f"attacker AUC={auc:.3f} (strong membership signal)")
 
     nrs = sdm.get("NewRowSynthesis")
     if nrs is not None:
         verdicts["new_row_synthesis"] = (
             "PASS" if nrs >= 0.9 else "WARN" if nrs >= 0.7 else "FAIL",
-            f"NewRowSynthesis={nrs:.3f} (fraction of novel synthetic rows)",
-        )
-
-    dop = sdm.get("DCROverfittingProtection")
-    if dop is not None:
-        verdicts["dcr_overfitting_protection"] = (
-            "PASS" if dop >= 0.9 else "WARN" if dop >= 0.5 else "FAIL",
-            f"DCROverfittingProtection={dop:.3f} (sdmetrics; 1.0 => synthetic no "
-            f"closer to training than to holdout)",
-        )
-
-    dbp = sdm.get("DCRBaselineProtection")
-    if dbp is not None:
-        verdicts["dcr_baseline_protection"] = (
-            "PASS" if dbp >= 0.9 else "WARN" if dbp >= 0.5 else "FAIL",
-            f"DCRBaselineProtection={dbp:.3f} (sdmetrics; DCR vs random-data baseline)",
+            f"NewRowSynthesis={nrs:.3f} (fraction of synthetic rows that are not copies of real rows)",
         )
 
     cap = sdm.get("CategoricalCAP")
     if cap is not None:
         verdicts["categorical_cap"] = (
             "PASS" if cap >= 0.5 else "WARN" if cap >= 0.3 else "FAIL",
-            f"CategoricalCAP={cap:.3f} (sdmetrics; 1.0 => sensitive field not "
-            f"inferable from key fields)",
+            f"CategoricalCAP={cap:.3f} (1.0 => a sensitive field cannot be "
+            f"inferred from the key fields)",
         )
 
     return {
         "table": table_name,
         "membership_inference": mia,
-        "dcr": {
-            k: v
-            for k, v in dcr.items()
-            if k != "b64" and not k.startswith("distances")
-        },
-        "dcr_arrays": {
-            "real_synth": dcr.get("distances_real_synth"),
-            "real_real": dcr.get("distances_real_real"),
-        },
-        "exact_match": exact,
         "sdmetrics": sdm,
         "verdicts": {k: {"status": s, "detail": d} for k, (s, d) in verdicts.items()},
     }

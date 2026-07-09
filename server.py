@@ -316,7 +316,7 @@ def _run_job(cfg: dict):
             "efficacy": se.plot_efficacy_scores(efficacy, f"{fig_dir}/web_efficacy.png"),
             "shapes": {t: se.plot_column_shapes_heatmap(d, f"{fig_dir}/web_shapes_{t}.png", t)
                        for t, d in shape_details.items()},
-            "pairs": {}, "dcr": {},
+            "pairs": {},
         }
         # Column Pair Trends heatmap per table, for the primary (first) synthesizer.
         primary = list(suite)[0]
@@ -325,12 +325,6 @@ def _run_job(cfg: dict):
             if recs:
                 figs["pairs"][t] = se.plot_pair_trends_heatmap(
                     recs, f"{fig_dir}/web_pairs_{t}.png", t, primary)
-        for t in tables:
-            arrays = {s: privacy_all[s][t]["dcr_arrays"].get("real_synth")
-                      for s in privacy_all if t in privacy_all[s]}
-            base = next((privacy_all[s][t]["dcr_arrays"].get("real_real")
-                         for s in privacy_all if t in privacy_all[s]), None)
-            figs["dcr"][t] = se.plot_dcr_overlay(arrays, base, f"{fig_dir}/web_dcr_{t}.png", t)
 
         STATE["suite"] = suite  # kept server-side for CSV downloads
         STATE["results"] = _clean({

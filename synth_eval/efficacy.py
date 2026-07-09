@@ -185,14 +185,15 @@ def sdmetrics_ml_efficacy(
     """Condensed TSTR using **sdmetrics** ML-efficacy metrics.
 
     Metric selection (kept deliberately small):
-        binary target      -> BinaryDecisionTreeClassifier + BinaryLogisticRegression (F1)
+        binary target      -> BinaryDecisionTreeClassifier (F1)
         multiclass target  -> MulticlassDecisionTreeClassifier (macro F1)
         numeric target     -> LinearRegression (R^2)
 
     For classification we also report accuracy / precision (macro) / recall
-    (macro) / F1 (macro), which sdmetrics does not expose, computed from a
-    single sklearn DecisionTree fit (rows prefixed ``DecisionTree ·``) so the
-    four are mutually consistent and comparable.
+    (macro), which sdmetrics does not expose, computed from a single sklearn
+    DecisionTree fit (rows prefixed ``DecisionTree ·``).  These are distinct
+    lenses on the same predictions; F1 is left to the sdmetrics metric above so
+    it is not duplicated.
 
     Each metric's model is trained on (a) the real training split (TRTR
     reference) and (b) each synthesizer's data (TSTR), and always evaluated
@@ -209,9 +210,10 @@ def sdmetrics_ml_efficacy(
 
     nun = int(train_real[target].nunique(dropna=True))
     if task == "classification" and nun == 2:
+        # one sdmetrics F1 (decision tree) so binary and multiclass are
+        # symmetric; the second binary logistic model just duplicated F1.
         metric_classes = {
             "BinaryDecisionTreeClassifier (F1)": st.BinaryDecisionTreeClassifier,
-            "BinaryLogisticRegression (F1)": st.BinaryLogisticRegression,
         }
     elif task == "classification":
         metric_classes = {
@@ -253,15 +255,16 @@ def sdmetrics_ml_efficacy(
         return te, n_aligned
 
     # Extra classification metrics sdmetrics does not expose (accuracy /
-    # precision / recall / F1), all from ONE DecisionTree fit so they are
-    # mutually consistent.  Uses the shared mixed encoder (one-hot with
+    # precision / recall), from ONE DecisionTree fit so they are mutually
+    # consistent.  F1 is intentionally omitted here because the sdmetrics
+    # *DecisionTreeClassifier (F1)* metric already reports it -- keeping our own
+    # F1 too would just duplicate that.  Uses the shared mixed encoder (one-hot
     # handle_unknown='ignore'), matching sdmetrics' decision-tree family.
-    EXTRA_CLS = ["accuracy", "precision (macro)", "recall (macro)", "F1 (macro)"]
+    EXTRA_CLS = ["accuracy", "precision (macro)", "recall (macro)"]
 
     def _extra_scores(tr, te):
         from sklearn.tree import DecisionTreeClassifier
-        from sklearn.metrics import (accuracy_score, precision_score,
-                                     recall_score, f1_score)
+        from sklearn.metrics import accuracy_score, precision_score, recall_score
         feat_roles = ColumnRoles(
             numeric=[c for c in roles.numeric if c != target and c in tr.columns and c in te.columns],
             categorical=[c for c in roles.categorical if c != target and c in tr.columns and c in te.columns],
@@ -279,7 +282,6 @@ def sdmetrics_ml_efficacy(
             "accuracy": float(accuracy_score(yt, pred)),
             "precision (macro)": float(precision_score(yt, pred, average="macro", zero_division=0)),
             "recall (macro)": float(recall_score(yt, pred, average="macro", zero_division=0)),
-            "F1 (macro)": float(f1_score(yt, pred, average="macro", zero_division=0)),
         }
 
     rows = []

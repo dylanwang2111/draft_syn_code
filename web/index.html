@@ -715,15 +715,13 @@ function renderReport(res){
   }
 
   /* privacy */
-  let pv=fig(res.figures.privacy,"MIA AUC (ideal 0.5) · DCR ratio (ideal ≥ 1) · exact-match %");
+  let pv=fig(res.figures.privacy,"NewRowSynthesis (ideal 1) · Membership-Inference attacker AUC (ideal 0.5) · CategoricalCAP (ideal 1)");
   pv+=`<table class="rep"><thead><tr><th>synthesizer</th><th>table</th><th>check</th><th>status</th><th>detail</th></tr></thead><tbody>`;
   for(const [s,tabs] of Object.entries(res.privacy)) for(const [t,rep] of Object.entries(tabs))
     for(const [chk,v] of Object.entries(rep.verdicts||{}))
       pv+=`<tr><td class="mono">${s}</td><td class="mono dim">${t}</td><td class="mono">${chk}</td>
         <td>${pill(v.status)}</td><td class="dim" style="font-size:11.5px">${esc(v.detail)}</td></tr>`;
-  pv+=`</tbody></table><h4 class="block-title">Distance to Closest Record</h4>
-    <p class="note">Synthetic rows should sit no closer to real records than real records sit to each other (grey baseline).</p>`;
-  for(const [t,b64] of Object.entries(res.figures.dcr||{})) pv+=fig(b64,t);
+  pv+=`</tbody></table>`;
   $("#pane-privacy").innerHTML=pv;
 
   /* ml efficacy */

@@ -54,14 +54,18 @@ per-column real-vs-synthetic distribution plots; correlation heatmaps; SDV
 |---|---|---|---|
 | **NewRowSynthesis** | sdmetrics (`sdmetrics.single_table.NewRowSynthesis`) | Fraction of synthetic rows that are *not* copies of real rows (numeric tolerance 1%) | 0–1; **PASS ≥ 0.9**, WARN ≥ 0.7 |
 | **CategoricalCAP** | sdmetrics (`sdmetrics.single_table.CategoricalCAP`) | Correct Attribution Probability attack: risk that an attacker knowing key categorical fields infers a sensitive categorical field. Score is privacy protection (1 = safe). Run when ≥ 2 categorical columns exist | 0–1, higher better |
-| **Membership Inference Attack (MIA)** | custom (`synth_eval.membership_inference_attack`) | Hold out 25% of real rows *before* fitting; features = distances to the k=5 nearest synthetic records; a RandomForest attacker tries to distinguish training members from holdouts. Reports attack **AUC** and accuracy | AUC ≈ 0.5 = no leakage. **PASS \|AUC−0.5\| ≤ 0.10**, WARN ≤ 0.20, else FAIL |
-| **DCR (Distance to Closest Record)** | custom (`synth_eval.dcr_distributions`) | Nearest-neighbour distance real→synthetic vs a real→real baseline, in the mixed-encoded feature space. Ratio = median(real→synth) / median(real→real) | ratio ≥ 1 means synthetic rows sit no closer than real rows do to each other. **PASS ≥ 0.9**, WARN ≥ 0.5 |
-| **DCROverfittingProtection** | sdmetrics (`sdmetrics.single_table.DCROverfittingProtection`) | Official sdmetrics parallel to MIA/DCR: compares whether synthetic rows sit closer to the **training** split than to the pre-fit **validation holdout**. 1.0 = no closer to training than to unseen data (no memorization); lower = overfitting/leakage. Reuses the same 25% holdout | 0–1, higher better. **PASS ≥ 0.9**, WARN ≥ 0.5. Also folded into the leaderboard privacy score |
-| **DCRBaselineProtection** | sdmetrics (`sdmetrics.single_table.DCRBaselineProtection`) | Synthetic-vs-real DCR compared against a random-data baseline. Best-effort: skipped (with a note) when Excel-mangled numeric IDs overflow its random sampler | 0–1, higher better. **PASS ≥ 0.9**, WARN ≥ 0.5 |
-| **Exact-match rate** | custom | % of synthetic rows identical to a real row on all modelable columns | **PASS ≤ 0.1%**, WARN ≤ 1% |
+| **Membership Inference Attack (MIA)** | custom (`synth_eval.membership_inference_attack`) | Hold out 25% of real rows *before* fitting; features = distances to the k=5 nearest synthetic records; a RandomForest **attacker** tries to distinguish training members from holdouts. Reports attack **AUC** | AUC ≈ 0.5 = no leakage. **PASS \|AUC−0.5\| ≤ 0.10**, WARN ≤ 0.20, else FAIL |
 
-Visuals: 3-panel dashboard (MIA AUC with 0.5 safe band, DCR ratio with ideal-≥1 line,
-exact-match %); per-table DCR density overlays for all synthesizers vs baseline.
+> The privacy set is deliberately kept to **three** metrics — one per distinct
+> attack: **MIA** (membership inference), **NewRowSynthesis** (copying),
+> **CategoricalCAP** (attribute disclosure). MIA and sdmetrics'
+> `DCROverfittingProtection` test the same membership-inference threat; we report
+> the trained-attacker AUC framing. The other custom helpers (`dcr_distributions`,
+> `exact_match_rate`) remain in `synth_eval.privacy` for ad-hoc use but are not
+> reported.
+
+Visuals: 3-panel dashboard — NewRowSynthesis (ideal 1), MIA attacker AUC (ideal
+0.5, safe band), CategoricalCAP (ideal 1).
 
 ---
 
@@ -72,20 +76,22 @@ The target column per table is auto-selected (categorical with 2–20 classes �
 classification; else the highest-variance numeric → regression) and can be overridden
 via the `TARGETS` dict in the notebook.
 
-| Target type | sdmetrics metrics used | Score |
+| Target type | sdmetrics metric (headline) | Score |
 |---|---|---|
-| binary categorical | `BinaryDecisionTreeClassifier`, `BinaryLogisticRegression` | F1 |
+| binary categorical | `BinaryDecisionTreeClassifier` | F1 |
 | multiclass (3–20 classes) | `MulticlassDecisionTreeClassifier` | macro F1 |
 | numeric | `LinearRegression` | R² |
 
+One sdmetrics tree model per target type — binary and multiclass are symmetric
+(the previous second binary logistic model just duplicated F1 and was removed).
+
 **Additional classification metrics** (sdmetrics only reports F1). For every
-classification target we also report **accuracy**, **precision (macro)**,
-**recall (macro)** and **F1 (macro)** — rows prefixed `DecisionTree ·`. All four
-come from a *single* scikit-learn `DecisionTreeClassifier` fit (matching
-sdmetrics' decision-tree family) on the shared mixed encoder
-(median-impute + scale numeric; mode-impute + one-hot `handle_unknown='ignore'`
-categorical), so they are mutually consistent and directly comparable across
-training sources.
+classification target we also report **accuracy**, **precision (macro)** and
+**recall (macro)** — rows prefixed `DecisionTree ·` — from a *single* scikit-learn
+`DecisionTreeClassifier` fit on the shared mixed encoder (median-impute + scale
+numeric; mode-impute + one-hot `handle_unknown='ignore'` categorical). These are
+distinct lenses on the same predictions; **F1 is intentionally not repeated
+here** — it is the sdmetrics headline metric above.
 
 Robustness: before scoring, holdout rows whose **target class** never appeared
 in the training split are dropped (an unseen label can't be predicted), and any
@@ -111,7 +117,7 @@ One 0–1 score per synthesizer per axis, averaged over tables:
 | Dimension | Formula |
 |---|---|
 | **fidelity** | mean QualityReport overall score |
-| **privacy** | mean of [ 1 − 2·\|MIA AUC − 0.5\| , min(1, DCR ratio) , NewRowSynthesis , DCROverfittingProtection , 1 − exact-match rate ] |
+| **privacy** | mean of the three protection scores [ 1 − 2·\|MIA AUC − 0.5\| , NewRowSynthesis , CategoricalCAP ] |
 | **utility_tstr** | mean over (table × metric) of clip(TSTR score / TRTR score, 0, 1) |
 | **overall** | mean of the three dimensions |
 

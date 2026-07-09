@@ -152,10 +152,11 @@ def plot_pair_trends_heatmap(
 def plot_privacy_comparison(
     privacy_all: Dict[str, Dict[str, Dict]], out_png: str
 ) -> Optional[str]:
-    """Three-panel privacy dashboard across synthesizers.
+    """Three-panel privacy dashboard across synthesizers:
+    NewRowSynthesis (sdmetrics, ideal 1), Membership-Inference attacker AUC
+    (custom, ideal 0.5 with a safe band), CategoricalCAP (sdmetrics, ideal 1).
 
-    Panels: MIA AUC (ideal 0.5, green band = safe), DCR ratio (ideal >= 1),
-    exact-match %.  ``privacy_all`` = {synth: {table: privacy_report dict}}.
+    ``privacy_all`` = {synth: {table: privacy_report dict}}.
     """
     synths = list(privacy_all)
     tables = sorted({t for s in privacy_all.values() for t in s})
@@ -165,46 +166,44 @@ def plot_privacy_comparison(
     w = 0.8 / max(len(synths), 1)
     fig, axes = plt.subplots(1, 3, figsize=(17, 4.5))
 
-    def grab(s, t, path, default=np.nan):
-        d = privacy_all.get(s, {}).get(t, {})
-        for p in path:
-            d = d.get(p, {}) if isinstance(d, dict) else {}
-        return d if isinstance(d, (int, float)) else default
+    def grab_sdm(s, t, key):
+        v = privacy_all.get(s, {}).get(t, {}).get("sdmetrics", {}).get(key)
+        return float(v) if isinstance(v, (int, float)) else np.nan
 
-    # -- panel 1: MIA AUC
+    def grab_auc(s, t):
+        v = privacy_all.get(s, {}).get(t, {}).get("membership_inference", {}).get("auc")
+        return float(v) if isinstance(v, (int, float)) else np.nan
+
+    # panel 1: NewRowSynthesis
     ax = axes[0]
+    ax.axhline(0.9, color="green", lw=1.0, ls="--", alpha=0.6, label="pass ≥ 0.9")
+    for i, s in enumerate(synths):
+        ax.bar(x + i * w - 0.4 + w / 2, [grab_sdm(s, t, "NewRowSynthesis") for t in tables],
+               width=w, label=s, color=_color_for(s, i))
+    _annotate_bars(ax); ax.set_ylim(0, 1.05)
+    ax.set_xticks(x); ax.set_xticklabels(tables, rotation=15)
+    ax.set_title("NewRowSynthesis (novel rows, ideal = 1)", fontsize=10); ax.legend(fontsize=7)
+
+    # panel 2: Membership Inference attacker AUC (ideal 0.5)
+    ax = axes[1]
     ax.axhspan(0.4, 0.6, color="green", alpha=0.10, label="safe zone")
     ax.axhline(0.5, color="green", lw=1.2, ls="--")
     for i, s in enumerate(synths):
-        vals = [grab(s, t, ["membership_inference", "auc"]) for t in tables]
-        ax.bar(x + i * w - 0.4 + w / 2, vals, width=w, label=s, color=_color_for(s, i))
-    _annotate_bars(ax)
-    ax.set_ylim(0, 1.0)
+        ax.bar(x + i * w - 0.4 + w / 2, [grab_auc(s, t) for t in tables],
+               width=w, label=s, color=_color_for(s, i))
+    _annotate_bars(ax); ax.set_ylim(0, 1.0)
     ax.set_xticks(x); ax.set_xticklabels(tables, rotation=15)
-    ax.set_title("Membership Inference AUC (ideal = 0.5)")
-    ax.legend(fontsize=7)
+    ax.set_title("Membership Inference AUC (ideal = 0.5)", fontsize=10); ax.legend(fontsize=7)
 
-    # -- panel 2: DCR ratio
-    ax = axes[1]
-    ax.axhline(1.0, color="green", lw=1.2, ls="--", label="ideal >= 1")
-    for i, s in enumerate(synths):
-        vals = [grab(s, t, ["dcr", "dcr_ratio_median"]) for t in tables]
-        ax.bar(x + i * w - 0.4 + w / 2, vals, width=w, label=s, color=_color_for(s, i))
-    _annotate_bars(ax)
-    ax.set_xticks(x); ax.set_xticklabels(tables, rotation=15)
-    ax.set_title("DCR ratio: median d(real→synth) / d(real→real)")
-    ax.legend(fontsize=7)
-
-    # -- panel 3: exact match rate (%)
+    # panel 3: CategoricalCAP
     ax = axes[2]
+    ax.axhline(0.9, color="green", lw=1.0, ls="--", alpha=0.6, label="pass ≥ 0.9")
     for i, s in enumerate(synths):
-        vals = [100 * grab(s, t, ["exact_match", "exact_match_rate"], 0.0) for t in tables]
-        ax.bar(x + i * w - 0.4 + w / 2, vals, width=w, label=s, color=_color_for(s, i))
-    _annotate_bars(ax, fmt="{:.2f}")
+        ax.bar(x + i * w - 0.4 + w / 2, [grab_sdm(s, t, "CategoricalCAP") for t in tables],
+               width=w, label=s, color=_color_for(s, i))
+    _annotate_bars(ax); ax.set_ylim(0, 1.05)
     ax.set_xticks(x); ax.set_xticklabels(tables, rotation=15)
-    ax.set_title("Exact-match rate (% synthetic rows copying a real row)")
-    ax.set_ylabel("%")
-    ax.legend(fontsize=7)
+    ax.set_title("CategoricalCAP (attribute privacy, ideal = 1)", fontsize=10); ax.legend(fontsize=7)
 
     fig.suptitle("Privacy metrics by synthesizer", y=1.03)
     fig.tight_layout()
@@ -345,9 +344,8 @@ def compute_leaderboard(
     """One row per synthesizer with 0-1 scores: fidelity / privacy / utility.
 
     * fidelity  = mean QualityReport overall score across tables
-    * privacy   = mean of [1-2|AUC-0.5| (MIA), min(1, DCR ratio),
-                  NewRowSynthesis, DCROverfittingProtection (sdmetrics),
-                  1-exact_match_rate]
+    * privacy   = mean of three 0-1 protection scores
+                  (1-2|MIA AUC-0.5|, NewRowSynthesis, CategoricalCAP)
     * utility   = mean over tables of clip(synth_score / real_score, 0, 1)
                   using the RandomForest TSTR metric (accuracy or R²)
     """
@@ -357,24 +355,18 @@ def compute_leaderboard(
         fid = [v.get("overall") for v in quality_scores[s].values() if v.get("overall") is not None]
         row["fidelity"] = float(np.mean(fid)) if fid else np.nan
 
+        # privacy = mean of three 0-1 protection scores (higher = safer):
+        #   MIA -> 1-2|AUC-0.5|, NewRowSynthesis, CategoricalCAP
         parts: List[float] = []
         for rep in (privacy_all.get(s) or {}).values():
             auc = rep.get("membership_inference", {}).get("auc")
             if auc is not None and not (isinstance(auc, float) and np.isnan(auc)):
                 parts.append(max(0.0, 1.0 - 2.0 * abs(float(auc) - 0.5)))
-            ratio = rep.get("dcr", {}).get("dcr_ratio_median")
-            if ratio is not None:
-                parts.append(float(min(1.0, ratio)))
-            nrs = rep.get("sdmetrics", {}).get("NewRowSynthesis")
-            if nrs is not None:
-                parts.append(float(nrs))
-            # sdmetrics DCROverfittingProtection: already a 0-1 protection score
-            dop = rep.get("sdmetrics", {}).get("DCROverfittingProtection")
-            if dop is not None:
-                parts.append(float(min(1.0, max(0.0, dop))))
-            emr = rep.get("exact_match", {}).get("exact_match_rate")
-            if emr is not None:
-                parts.append(float(max(0.0, 1.0 - emr)))
+            sdm = rep.get("sdmetrics", {})
+            for key in ("NewRowSynthesis", "CategoricalCAP"):
+                v = sdm.get(key)
+                if v is not None:
+                    parts.append(float(min(1.0, max(0.0, v))))
         row["privacy"] = float(np.mean(parts)) if parts else np.nan
 
         utils: List[float] = []
