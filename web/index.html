@@ -282,26 +282,26 @@ table.rep tr:hover td{background:var(--panel-2)}
       <div id="seed-list"><div class="empty">No tables yet — Upload or Load Sample.</div></div>
     </div>
 
-    <div class="panel" id="strategy-panel" style="display:none">
+    <div class="panel collapsed" id="strategy-panel" style="display:none">
       <div class="panel-h"><h2>Recommended strategy</h2></div>
       <div id="strategy-body"></div>
     </div>
 
-    <div class="panel" id="rel-panel" style="display:none">
+    <div class="panel collapsed" id="rel-panel" style="display:none">
       <div class="panel-h"><h2>Relationships</h2></div>
       <div id="rel-rows"></div>
       <button class="mini-btn" id="btn-add-rel">+ add relationship</button>
       <p class="hint">parent key → child FK. Empty = independent tables.</p>
     </div>
 
-    <div class="panel" id="constraint-panel" style="display:none">
+    <div class="panel collapsed" id="constraint-panel" style="display:none">
       <div class="panel-h"><h2>Constraints</h2></div>
       <div id="constraint-rows"></div>
       <button class="mini-btn" id="btn-add-constraint">+ add constraint</button>
       <p class="hint">enforced during synthesis (SDV cag). e.g. EFFECTIVE_DATE ≤ END_DATE.</p>
     </div>
 
-    <div class="panel" id="settings-panel" style="display:none">
+    <div class="panel collapsed" id="settings-panel" style="display:none">
       <div class="panel-h"><h2>Run Settings</h2></div>
       <div class="field" id="field-entity">
         <label>Entity key — referential integrity</label>
@@ -626,20 +626,32 @@ function renderRecipe(){
   const shared={};
   for(const v of Object.values(DATA.tables)) for(const c of v.columns) shared[c.name]=(shared[c.name]||0)+1;
   const cands=Object.keys(shared).filter(c=>shared[c]>=2).sort();
-  const sug=(DATA.profile&&DATA.profile.recommendation&&(DATA.profile.recommendation.relationships||[])[0]||{}).parent_primary_key;
+  const sk=suggestedEntityKey(DATA.profile); const sug=cands.includes(sk)?sk:"";
   $("#in-entity").innerHTML=`<option value="">(none — tables independent)</option>`+
     cands.map(c=>`<option value="${esc(c)}" ${c===sug?"selected":""}>${esc(c)} (in ${shared[c]} tables)</option>`).join("");
-  // SCD timeline columns: all column names (date-ish first)
+  // SCD timeline columns: all column names (date-ish first), effective/end pre-selected
   const allCols=[...new Set(Object.values(DATA.tables).flatMap(v=>v.columns.map(c=>c.name)))];
   const dateish=c=>/(_dt|_date|eff|end|start|expiry|since|left)/i.test(c);
   const ordered=allCols.slice().sort((a,b)=>(dateish(b)-dateish(a))||a.localeCompare(b));
-  const opt=(ph)=>`<option value="">${ph}</option>`+ordered.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join("");
-  $("#in-scd-eff").innerHTML=opt("effective-date column…");
-  $("#in-scd-end").innerHTML=opt("end-date column…");
-  $("#in-scd-cur").innerHTML=opt("current-flag column (optional)…");
+  const effSug=ordered.find(c=>/eff|effective|start|since|from/i.test(c))||"";
+  const endSug=ordered.find(c=>/(^|_)end|expire|expiry|left|thru/i.test(c))||"";
+  const opt=(ph,sel)=>`<option value="">${ph}</option>`+
+    ordered.map(c=>`<option value="${esc(c)}" ${c===sel?"selected":""}>${esc(c)}</option>`).join("");
+  $("#in-scd-eff").innerHTML=opt("effective-date column…",effSug);
+  $("#in-scd-end").innerHTML=opt("end-date column…",endSug);
+  $("#in-scd-cur").innerHTML=opt("current-flag column (optional)…","");
   updateScdVisibility();
   $("#in-entity").addEventListener("change",updateScdVisibility);
   $("#btn-run").disabled=!selectedSynths.size;
+}
+/* entity-key suggestion from the profiler recommendation, across all tiers */
+function suggestedEntityKey(profile){
+  const r=profile&&profile.recommendation; if(!r) return "";
+  if((r.relationships||[]).length) return r.relationships[0].parent_primary_key||"";
+  if(r.sequence_specs){ const v=Object.values(r.sequence_specs)[0]; if(v&&v.sequence_key) return v.sequence_key; }
+  const dl=(profile.links||[]).filter(l=>l.linkable_via_durable);
+  if(dl.length) return dl[0].parent_column||"";
+  return "";
 }
 function updateScdVisibility(){ $("#field-scd").style.display=$("#in-entity").value?"block":"none"; }
 function updateEpochsVisibility(){
