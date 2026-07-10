@@ -103,7 +103,27 @@ button{font-family:var(--mono); cursor:pointer; border-radius:8px; transition:.1
 .strat-list li{font-size:11.5px; color:var(--muted); padding:3px 0 3px 15px; position:relative; line-height:1.4}
 .strat-list li::before{content:"›"; position:absolute; left:2px; color:var(--blue)}
 .strat-list li.warn{color:var(--warn)} .strat-list li.warn::before{content:"⚠"; left:0; font-size:9px}
-.strat-apply{margin-top:9px}
+/* advisor — the profiler's recommendation, framed as guidance not a config step */
+.advisor{background:var(--tint); border:1px solid var(--line-soft); border-left:3px solid var(--blue);
+  border-radius:11px; padding:12px 14px; margin-bottom:22px}
+.advisor-eyebrow{display:flex; align-items:center; gap:6px; font-family:var(--mono); font-size:9px;
+  letter-spacing:.12em; text-transform:uppercase; color:var(--blue); font-weight:700; margin-bottom:9px}
+.advisor .strat-head{margin-bottom:6px}
+.advisor .strat-list li{color:var(--ink)}
+.advisor-note{font-size:11.5px; color:var(--muted); line-height:1.45; margin-top:7px}
+.advisor-actions{display:flex; flex-wrap:wrap; gap:8px; margin-top:11px}
+.advisor-actions .mini-btn{margin:0}
+.mini-btn.primary{background:var(--blue); border-color:var(--blue); color:#fff}
+.mini-btn.primary:hover{background:var(--blue-deep); border-color:var(--blue-deep); color:#fff}
+.mini-btn.done{color:var(--pass); border-color:var(--line-soft); background:transparent; cursor:default}
+/* one-click suggested-key chip inside Structure & keys */
+.key-suggest{display:flex; align-items:center; gap:7px; flex-wrap:wrap; margin:0 0 8px}
+.key-suggest .kchip{font-family:var(--mono); font-size:11px; border:1px solid var(--blue); color:var(--blue);
+  background:var(--tint); border-radius:999px; padding:3px 11px; cursor:pointer}
+.key-suggest .kchip:hover{background:var(--blue); color:#fff}
+.key-suggest .klbl{font-family:var(--mono); font-size:9.5px; letter-spacing:.06em; text-transform:uppercase; color:var(--muted)}
+select.flash{animation:flash 1.2s ease}
+@keyframes flash{0%,100%{box-shadow:0 0 0 0 rgba(0,121,193,0)} 30%{box-shadow:0 0 0 3px rgba(0,121,193,.35)}}
 
 /* file tables */
 .ftable{width:100%; border-collapse:collapse; font-size:12.5px}
@@ -299,18 +319,19 @@ table.rep tr:hover td{background:var(--panel-2)}
       <div id="seed-list"><div class="empty">No tables yet — Upload or Load Sample.</div></div>
     </div>
 
-    <div class="panel collapsed" id="strategy-panel" style="display:none">
-      <div class="panel-h"><h2><span class="step">1 ·</span> Strategy</h2><span class="panel-sum" id="sum-strategy"></span></div>
-      <div id="strategy-body"></div>
+    <div class="advisor" id="advisor" style="display:none">
+      <div class="advisor-eyebrow">◆ Recommended approach</div>
+      <div id="advisor-body"></div>
     </div>
 
     <div class="panel collapsed" id="structure-panel" style="display:none">
-      <div class="panel-h"><h2><span class="step">2 ·</span> Structure &amp; keys</h2><span class="panel-sum" id="sum-structure"></span></div>
+      <div class="panel-h"><h2><span class="step">1 ·</span> Structure &amp; keys</h2><span class="panel-sum" id="sum-structure"></span></div>
       <p class="hint">How are your tables related? Choose a shared <b>entity key</b> for versioned /
         SCD data, or declare explicit parent → child <b>relationships</b> if a table has a true
         primary key. Leave both empty to treat the tables as independent.</p>
       <div class="sub-label">Entity key (referential integrity)</div>
       <div class="field" id="field-entity" style="margin-top:0">
+        <div class="key-suggest" id="key-suggest" style="display:none"></div>
         <select id="in-entity"><option value="">(none — tables independent)</option></select>
         <p class="hint" id="entity-hint">a business key shared across tables (e.g. CONT_ID) that
           identifies one entity across its versions. Set it and HMA keeps the tables joinable on it.</p></div>
@@ -326,14 +347,14 @@ table.rep tr:hover td{background:var(--panel-2)}
     </div>
 
     <div class="panel collapsed" id="constraint-panel" style="display:none">
-      <div class="panel-h"><h2><span class="step">3 ·</span> Constraints</h2><span class="panel-sum" id="sum-constraints"></span></div>
+      <div class="panel-h"><h2><span class="step">2 ·</span> Constraints</h2><span class="panel-sum" id="sum-constraints"></span></div>
       <div id="constraint-rows"></div>
       <button class="mini-btn" id="btn-add-constraint">+ add constraint</button>
       <p class="hint">rules enforced during synthesis (SDV cag), e.g. EFFECTIVE_DATE ≤ END_DATE.</p>
     </div>
 
     <div class="panel collapsed" id="synth-panel" style="display:none">
-      <div class="panel-h"><h2><span class="step">4 ·</span> Synthesizers</h2><span class="panel-sum" id="sum-synths"></span></div>
+      <div class="panel-h"><h2><span class="step">3 ·</span> Synthesizers</h2><span class="panel-sum" id="sum-synths"></span></div>
       <div class="field" style="margin-top:0"><div class="chips" id="synth-chips"></div>
         <p class="hint">HMA = multi-table; the rest are single-table. CTGAN/TVAE/CopulaGAN are neural (slower).</p></div>
       <div class="field" id="field-epochs" style="display:none">
@@ -342,7 +363,7 @@ table.rep tr:hover td{background:var(--panel-2)}
     </div>
 
     <div class="panel collapsed" id="params-panel" style="display:none">
-      <div class="panel-h"><h2><span class="step">5 ·</span> Run parameters</h2><span class="panel-sum" id="sum-params"></span></div>
+      <div class="panel-h"><h2><span class="step">4 ·</span> Run parameters</h2><span class="panel-sum" id="sum-params"></span></div>
       <div class="field" style="margin-top:0"><label>Sample scale ×rows <output id="out-scale">1.0</output></label>
         <input type="range" id="in-scale" min="0.25" max="2" step="0.25" value="1"></div>
       <div class="field"><label>Holdout fraction (privacy / TSTR) <output id="out-holdout">0.25</output></label>
@@ -466,7 +487,7 @@ function init(payload){
   $("#synthetic-panel").style.display="none"; $("#synth-list").innerHTML="";
   $("#synth-count").textContent="0"; $("#synth-count").className="count zero";
   lockReportTabs(true);
-  renderSeedList(); renderSchemaBlocks(); renderStrategy(payload.profile);
+  renderSeedList(); renderSchemaBlocks(); renderAdvisor(payload.profile);
   renderRels(payload.relationships); renderRecipe();
   updateSummaries();
   selectTable(Object.keys(DATA.tables)[0]);
@@ -475,8 +496,6 @@ function init(payload){
 /* compact state chips shown in each collapsed panel header */
 function updateSummaries(){
   if(!DATA) return;
-  const r=DATA.profile&&DATA.profile.recommendation;
-  $("#sum-strategy").textContent=r?("tier "+r.tier):"";
   const ek=$("#in-entity").value;
   const nrel=$$(".rel-row").filter(x=>x.querySelector(".rel-parent").value&&x.querySelector(".rel-child").value).length;
   $("#sum-structure").textContent = ek ? ("key: "+ek) : nrel ? (nrel+" link"+(nrel>1?"s":"")) : "independent";
@@ -632,24 +651,39 @@ const STRATEGY_LABEL={independent:"each table on its own",
   sequential:"model each entity's history over time",
   temporal_statistical:"copy the history patterns, not identities"};
 let RECOMMENDED_RELS=[];
-function renderStrategy(profile){
-  const panel=$("#strategy-panel"), body=$("#strategy-body");
-  if(!profile||profile.error||!profile.recommendation){ panel.style.display="none"; return; }
+function renderAdvisor(profile){
+  const banner=$("#advisor"), body=$("#advisor-body");
+  if(!profile||profile.error||!profile.recommendation){ banner.style.display="none"; return; }
   const r=profile.recommendation; RECOMMENDED_RELS=r.relationships||[];
-  panel.style.display="block";
+  banner.style.display="block";
   let h=`<div class="strat-head"><span class="tier-badge tier-${r.tier}">${TIER_LABEL[r.tier]||("TIER "+r.tier)}</span>
     <span class="strat-name">${STRATEGY_LABEL[r.strategy]||r.strategy}</span></div><ul class="strat-list">`;
   (r.reasons||[]).forEach(x=>h+=`<li>${esc(x)}</li>`);
   (r.warnings||[]).forEach(x=>h+=`<li class="warn">${esc(x)}</li>`);
   h+=`</ul>`;
+  // A recommendation, never a wall: whatever the tier, the user can still set an
+  // entity key or relationships by hand. Offer that as an explicit next action.
+  h+=`<p class="advisor-note">This is a suggestion from the profiler — you can override it below.
+    You can always set an <b>entity key</b> yourself if you know a business key that ties an
+    entity's rows together.</p><div class="advisor-actions">`;
   if(RECOMMENDED_RELS.length)
-    h+=`<button class="mini-btn strat-apply" id="btn-apply-rels">apply ${RECOMMENDED_RELS.length} recommended relationship(s)</button>`;
+    h+=`<button class="mini-btn primary" id="btn-apply-rels">Apply ${RECOMMENDED_RELS.length} recommended link${RECOMMENDED_RELS.length>1?"s":""}</button>`;
+  h+=`<button class="mini-btn" id="btn-goto-key">${RECOMMENDED_RELS.length?"Or choose an entity key":"Choose an entity key"} →</button></div>`;
   body.innerHTML=h;
-  const btn=$("#btn-apply-rels");
-  if(btn) btn.addEventListener("click",()=>{ renderRels(RECOMMENDED_RELS);
-    $("#structure-panel").classList.remove("collapsed"); updateSummaries();
-    btn.textContent="✓ applied — see Structure & keys"; btn.disabled=true; });
+  const apply=$("#btn-apply-rels");
+  if(apply) apply.addEventListener("click",()=>{ renderRels(RECOMMENDED_RELS);
+    openStructure(false); updateSummaries();
+    apply.className="mini-btn done"; apply.textContent="✓ links applied below"; apply.disabled=true; });
+  $("#btn-goto-key").addEventListener("click",()=>openStructure(true));
   updateSummaries();
+}
+/* expand Structure & keys and scroll it into view; optionally focus the entity picker */
+function openStructure(focusEntity){
+  const p=$("#structure-panel"); p.classList.remove("collapsed");
+  p.scrollIntoView({behavior:"smooth", block:"start"});
+  if(focusEntity){ const sel=$("#in-entity");
+    setTimeout(()=>{ sel.focus(); sel.classList.add("flash");
+      setTimeout(()=>sel.classList.remove("flash"),1200); },350); }
 }
 
 /* ---------------- recipe ---------------- */
@@ -684,6 +718,7 @@ function renderRecipe(){
       + "The tool can't detect this reliably, so it's your call based on the data's meaning."
     : "An <b>entity key</b> is a business key shared across tables that identifies one entity across all its "
       + "rows/versions (e.g. CONT_ID). Choose it if you know one holds — the tables are then kept joinable on it.";
+  renderKeySuggest(cands);
   // SCD timeline columns: all column names (date-ish first), effective/end pre-selected
   const allCols=[...new Set(Object.values(DATA.tables).flatMap(v=>v.columns.map(c=>c.name)))];
   const dateish=c=>/(_dt|_date|eff|end|start|expiry|since|left)/i.test(c);
@@ -698,6 +733,24 @@ function renderRecipe(){
   updateScdVisibility();
   $("#in-entity").addEventListener("change",()=>{updateScdVisibility();updateSummaries();});
   $("#btn-run").disabled=!selectedSynths.size;
+}
+/* one-click chips for likely entity keys — the durable columns the profiler saw
+   repeat across tables. Not a decision made for the user: just faster than the
+   dropdown, and always alongside it. */
+function renderKeySuggest(cands){
+  const box=$("#key-suggest"); if(!box) return;
+  const seen=new Set(), keys=[];
+  const sk=suggestedEntityKey(DATA.profile); if(sk&&cands.includes(sk)){keys.push(sk);seen.add(sk);}
+  for(const l of (DATA.profile&&DATA.profile.links)||[]){
+    const c=l.parent_column||l.child_column;
+    if(c&&cands.includes(c)&&!seen.has(c)){keys.push(c);seen.add(c);}
+  }
+  if(!keys.length){ box.style.display="none"; box.innerHTML=""; return; }
+  box.style.display="flex";
+  box.innerHTML=`<span class="klbl">try:</span>`+
+    keys.slice(0,3).map(k=>`<span class="kchip" data-k="${esc(k)}">${esc(k)}</span>`).join("");
+  box.querySelectorAll(".kchip").forEach(ch=>ch.addEventListener("click",()=>{
+    $("#in-entity").value=ch.dataset.k; updateScdVisibility(); updateSummaries(); }));
 }
 /* entity-key suggestion — ONLY when the profiler found a real primary/foreign
    key link (Tier 1). For versioned (SCD, Tier 2/3) data the true durable key is
