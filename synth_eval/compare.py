@@ -2,10 +2,15 @@
 from __future__ import annotations
 
 import os
+import warnings
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
+
+# Dense heatmaps with many long tick labels can't always satisfy tight_layout;
+# the figure still renders fine, so silence that specific cosmetic warning.
+warnings.filterwarnings("ignore", message="Tight layout not applied")
 
 from ._common import plt, sns, _HAS_SNS, _save_fig, _color_for, SYNTH_PALETTE
 from .columns import ColumnRoles, classify_columns
@@ -15,6 +20,49 @@ from .viz import plot_column_distribution, visualize_table
 # ---------------------------------------------------------------------------
 # 6. COMPARISON VISUALIZATIONS (fidelity / privacy / utility / leaderboard)
 # ---------------------------------------------------------------------------
+
+def cardinality_report(metadata, real_tables, suite) -> dict:
+    """sdmetrics cardinality similarity per synthesizer (needs relationships).
+
+    Cardinality = the distribution of *child rows per parent* (including parents
+    with zero children).  These metrics compare that distribution between real
+    and synthetic data, so they catch a synthesizer that over- or under-generates
+    child rows even when forward referential integrity is a perfect 1.0.
+
+    * ``shape``     — CardinalityShapeSimilarity (KS-style on the count distribution)
+    * ``statistic`` — CardinalityStatisticSimilarity (mean-count similarity)
+
+    Returns ``{synth: {"shape": float|None, "statistic": float|None,
+    "per_relationship": {"child → parent": shape_score}}}``.  Safe no-op ({}) if
+    the metadata has no relationships or sdmetrics is unavailable.
+    """
+    md = metadata.to_dict() if hasattr(metadata, "to_dict") else metadata
+    if not md.get("relationships"):
+        return {}
+    try:
+        from sdmetrics.multi_table import (
+            CardinalityShapeSimilarity,
+            CardinalityStatisticSimilarity,
+        )
+    except Exception:
+        return {}
+
+    out: dict = {}
+    for name, synth in suite.items():
+        entry: dict = {"shape": None, "statistic": None, "per_relationship": {}}
+        try:
+            entry["shape"] = float(CardinalityShapeSimilarity.compute(real_tables, synth, md))
+            entry["statistic"] = float(CardinalityStatisticSimilarity.compute(real_tables, synth, md))
+            bd = CardinalityShapeSimilarity.compute_breakdown(real_tables, synth, md)
+            for (parent, child), v in bd.items():
+                score = v.get("score") if isinstance(v, dict) else v
+                entry["per_relationship"][f"{child} → {parent}"] = (
+                    None if score is None else float(score))
+        except Exception as e:  # pragma: no cover - defensive
+            entry["error"] = str(e)
+        out[name] = entry
+    return out
+
 
 def _annotate_bars(ax, fmt="{:.2f}", fontsize=7):
     for p in ax.patches:

@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Synth/Lab - synthetic data studio</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20viewBox%3D%270%200%2048%2048%27%3E%3Crect%20width%3D%2748%27%20height%3D%2748%27%20rx%3D%2712%27%20fill%3D%27%230079c1%27%2F%3E%3Crect%20x%3D%2710%27%20y%3D%2727%27%20width%3D%277%27%20height%3D%2710%27%20rx%3D%272.2%27%20fill%3D%27%23ffffff%27%2F%3E%3Crect%20x%3D%2720.5%27%20y%3D%2719%27%20width%3D%277%27%20height%3D%2718%27%20rx%3D%272.2%27%20fill%3D%27%23ffffff%27%2F%3E%3Crect%20x%3D%2731%27%20y%3D%2711%27%20width%3D%277%27%20height%3D%2726%27%20rx%3D%272.2%27%20fill%3D%27%23e31837%27%2F%3E%3C%2Fsvg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400..700&family=Spline+Sans:wght@300..700&family=Spline+Sans+Mono:ital,wght@0,400..600;1,400..600&display=swap" rel="stylesheet">
@@ -56,6 +57,9 @@ button{font-family:var(--mono); cursor:pointer; border-radius:8px; transition:.1
   box-shadow:0 4px 12px rgba(0,121,193,.32)}
 .tbtn.primary:hover{background:#0a86cf}
 .tbtn.primary:disabled{opacity:.45; cursor:not-allowed; box-shadow:none}
+.tbtn.danger{background:var(--red); border-color:var(--red); color:#fff; box-shadow:0 4px 12px rgba(227,24,55,.28)}
+.tbtn.danger:hover{background:var(--red-deep)}
+.tbtn.danger:disabled{opacity:.5; cursor:not-allowed; box-shadow:none}
 .tbtn input{display:none}
 .tbtn.icon{padding:9px 11px; font-size:15px; line-height:1}
 .status-dot{width:8px;height:8px;border-radius:50%;background:var(--faint);margin-left:4px}
@@ -116,14 +120,6 @@ button{font-family:var(--mono); cursor:pointer; border-radius:8px; transition:.1
 .mini-btn.primary{background:var(--blue); border-color:var(--blue); color:#fff}
 .mini-btn.primary:hover{background:var(--blue-deep); border-color:var(--blue-deep); color:#fff}
 .mini-btn.done{color:var(--pass); border-color:var(--line-soft); background:transparent; cursor:default}
-/* one-click suggested-key chip inside Structure & keys */
-.key-suggest{display:flex; align-items:center; gap:7px; flex-wrap:wrap; margin:0 0 8px}
-.key-suggest .kchip{font-family:var(--mono); font-size:11px; border:1px solid var(--blue); color:var(--blue);
-  background:var(--tint); border-radius:999px; padding:3px 11px; cursor:pointer}
-.key-suggest .kchip:hover{background:var(--blue); color:#fff}
-.key-suggest .klbl{font-family:var(--mono); font-size:9.5px; letter-spacing:.06em; text-transform:uppercase; color:var(--muted)}
-select.flash{animation:flash 1.2s ease}
-@keyframes flash{0%,100%{box-shadow:0 0 0 0 rgba(0,121,193,0)} 30%{box-shadow:0 0 0 3px rgba(0,121,193,.35)}}
 
 /* file tables */
 .ftable{width:100%; border-collapse:collapse; font-size:12.5px}
@@ -167,10 +163,6 @@ select:hover{border-color:var(--sky)} select:focus{outline:none; border-color:va
 .con-del{background:var(--panel); border:1px solid var(--line); color:var(--faint); border-radius:6px; height:30px}
 .con-del:hover{color:#fff; background:var(--red); border-color:var(--red)}
 .con-strict{display:flex; align-items:center; gap:6px; font-family:var(--mono); font-size:10.5px; color:var(--muted); margin-top:6px}
-.rel-row{display:grid; grid-template-columns:1fr 18px 1fr 26px; gap:6px; align-items:center; margin-bottom:7px}
-.rel-row .arrow-lbl{text-align:center; color:var(--blue); font-weight:700; font-size:13px}
-.rel-del{background:var(--panel); border:1px solid var(--line); color:var(--faint); border-radius:6px; height:30px}
-.rel-del:hover{color:#fff; background:var(--red); border-color:var(--red)}
 .mini-btn{background:var(--panel); border:1px solid var(--line); color:var(--navy); font-size:11px;
   font-weight:500; padding:7px 13px; letter-spacing:.03em; margin-top:4px}
 .mini-btn:hover{border-color:var(--blue); color:var(--blue)}
@@ -196,6 +188,38 @@ select:hover{border-color:var(--sky)} select:focus{outline:none; border-color:va
 .welcome .up{width:54px;height:54px;color:var(--blue);margin-bottom:16px}
 .welcome h3{font-family:var(--disp); font-weight:600; font-size:23px; color:var(--ink); margin-bottom:6px}
 .welcome p{font-size:13.5px; max-width:420px}
+
+/* report pane: content + right-side section nav */
+#pane-report{padding:0}
+.rep-wrap{display:flex; align-items:stretch; min-height:100%}
+.rep-body{flex:1; min-width:0; padding:24px 28px}
+.rep-sec{display:none} .rep-sec.active{display:block; animation:fade .3s ease}
+.rep-nav{flex:none; width:190px; border-left:1px solid var(--line); background:var(--panel);
+  padding:14px 12px; position:sticky; top:0; align-self:flex-start; display:flex; flex-direction:column; gap:1px;
+  transition:width .18s ease; overflow:hidden}
+.rep-fold{align-self:flex-end; background:none; border:none; color:var(--muted); cursor:pointer;
+  font-size:16px; line-height:1; padding:3px 7px; border-radius:6px; margin-bottom:6px; transition:transform .18s}
+.rep-fold:hover{background:var(--panel-2); color:var(--ink)}
+.rep-navbtn{display:flex; align-items:center; gap:9px; width:100%; text-align:left; background:none;
+  border:none; border-radius:8px; font-family:var(--sans); font-size:13px; color:var(--muted);
+  padding:8px 11px; cursor:pointer; border-left:3px solid transparent}
+.rep-navbtn:hover{background:var(--panel-2); color:var(--ink)}
+.rep-navbtn.group{margin-top:12px; color:var(--ink); font-weight:600}
+.rep-navbtn.child{padding-left:22px; font-size:12.5px}
+.rep-navbtn.active{color:var(--blue); background:var(--tint); border-left-color:var(--blue); font-weight:600}
+.rep-navbtn .ic{width:17px; height:17px; flex:none; fill:none; stroke:currentColor; stroke-width:1.8;
+  stroke-linecap:round; stroke-linejoin:round}
+.rep-navbtn .txt{white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+/* collapsed: a right-edge icon rail; hovering it expands to reveal the labels */
+.rep-nav.collapsed{width:54px}
+.rep-nav.collapsed .rep-fold{align-self:center; transform:rotate(180deg)}
+.rep-nav.collapsed .rep-navbtn{justify-content:center; padding-left:0; padding-right:0}
+.rep-nav.collapsed .rep-navbtn .txt{display:none}
+.rep-nav.collapsed:hover{width:190px; box-shadow:-10px 0 22px rgba(1,58,99,.06)}
+.rep-nav.collapsed:hover .rep-fold{align-self:flex-end; transform:none}
+.rep-nav.collapsed:hover .rep-navbtn{justify-content:flex-start; padding-left:11px}
+.rep-nav.collapsed:hover .rep-navbtn.child{padding-left:22px}
+.rep-nav.collapsed:hover .rep-navbtn .txt{display:inline}
 
 /* schema editor pane */
 .schema-block{display:none} .schema-block.show{display:block}
@@ -252,6 +276,13 @@ table.rep tr:hover td{background:var(--panel-2)}
 .pill.WARN{color:var(--warn); border-color:rgba(207,138,18,.4); background:rgba(207,138,18,.1)}
 .pill.FAIL{color:var(--fail); border-color:rgba(227,24,55,.4); background:rgba(227,24,55,.1)}
 .pill.SKIP{color:var(--faint); border-color:var(--line); background:var(--panel-2)}
+/* "Δ vs real" badge in the referential-integrity table */
+.delta-badge{display:inline-flex; align-items:center; gap:3px; font-family:var(--mono); font-size:9.5px;
+  font-weight:600; letter-spacing:.02em; padding:1px 7px; border-radius:999px; border:1px solid;
+  margin-left:7px; vertical-align:middle; white-space:nowrap}
+.delta-badge.ok{color:var(--pass); border-color:rgba(26,143,90,.4); background:rgba(26,143,90,.1)}
+.delta-badge.warn{color:var(--warn); border-color:rgba(207,138,18,.4); background:rgba(207,138,18,.1)}
+.delta-badge.bad{color:var(--fail); border-color:rgba(227,24,55,.4); background:rgba(227,24,55,.1)}
 .fig{margin:18px 0; text-align:center}
 .fig img{max-width:100%; border:1px solid var(--line); border-radius:11px; background:var(--fig-bg);
   padding:0}
@@ -269,6 +300,92 @@ table.rep tr:hover td{background:var(--panel-2)}
   border:1px solid rgba(207,138,18,.35); border-radius:8px; padding:8px 12px; margin:2px 0 14px;
   white-space:pre-wrap; word-break:break-word}
 .score-cell.err{color:var(--fail)}
+
+/* ---------------- data-model canvas (PowerBI-style) ---------------- */
+/* NB: the flex layout must be scoped to .active — a bare `#pane-model{display:flex}`
+   (id specificity) would beat `.pane{display:none}` and show the canvas on EVERY tab */
+#pane-model{padding:0; height:100%}
+#pane-model.active{display:flex; flex-direction:column}
+.dm-bar{display:flex; align-items:center; gap:12px; flex-wrap:wrap; padding:14px 18px;
+  border-bottom:1px solid var(--line); background:var(--panel); flex:none}
+.dm-bar h4{font-family:var(--disp); font-weight:600; font-size:15px; color:var(--ink); margin-right:2px}
+.dm-bar .dm-hint{font-size:11.5px; color:var(--muted); flex:1 1 240px; min-width:200px}
+.dm-hub{display:flex; align-items:center; gap:9px; flex-wrap:wrap; padding:11px 18px;
+  border-bottom:1px solid var(--line-soft); background:var(--panel-2); flex:none}
+.dm-hub .lbl{font-family:var(--mono); font-size:9.5px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); font-weight:600}
+.dm-hub select{min-width:150px}
+.dm-childs{display:flex; align-items:center; gap:5px; flex-wrap:wrap}
+.dm-childchip{font-family:var(--mono); font-size:11px; border:1px solid var(--line); color:var(--muted);
+  background:var(--panel); border-radius:999px; padding:3px 10px; cursor:pointer; user-select:none}
+.dm-childchip.on{border-color:var(--blue); color:var(--blue); background:var(--tint)}
+.dm-childchip.off{opacity:.5; cursor:not-allowed}
+.dm-canvas-wrap{position:relative; flex:1; min-height:0; overflow:hidden}
+.dm-canvas{position:absolute; inset:0; overflow:auto; background:
+  radial-gradient(var(--line-soft) 1px, transparent 1px); background-size:22px 22px; background-color:var(--bg)}
+.dm-svg{position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none; overflow:visible}
+.dm-svg path{fill:none; stroke:var(--sky); stroke-width:2; pointer-events:stroke; cursor:pointer}
+.dm-svg path.hub{stroke:var(--blue); stroke-dasharray:5 4}
+.dm-svg path:hover{stroke:var(--blue); stroke-width:3}
+.dm-svg .plug{fill:var(--sky)}
+.dm-svg .plug.hub{fill:var(--blue)}
+.dm-svg .card-mark{fill:var(--ink); font-family:var(--mono); font-size:12px; font-weight:700; pointer-events:none}
+.dm-card{position:absolute; width:186px; background:var(--panel); border:1px solid var(--line);
+  border-radius:11px; box-shadow:var(--shadow); user-select:none}
+.dm-card.hubnode{border-color:var(--blue); box-shadow:0 0 0 1px var(--blue),var(--shadow)}
+.dm-card.drop-ok{border-color:var(--pass); box-shadow:0 0 0 2px var(--pass)}
+.dm-head{display:flex; align-items:center; gap:7px; padding:9px 11px; cursor:grab;
+  background:var(--tint); border-bottom:1px solid var(--line-soft); font-family:var(--disp);
+  font-weight:600; font-size:13px; color:var(--ink)}
+.dm-head:active{cursor:grabbing}
+.dm-card.hubnode .dm-head{background:var(--blue); color:#fff}
+.dm-head .tag{margin-left:auto; font-family:var(--mono); font-size:8.5px; letter-spacing:.06em;
+  text-transform:uppercase; color:var(--muted)}
+.dm-card.hubnode .dm-head .tag{color:#dceefb}
+.dm-cols{max-height:220px; overflow-y:auto}
+.dm-col{display:flex; align-items:center; gap:7px; padding:4px 11px; font-family:var(--mono);
+  font-size:11px; color:var(--muted); position:relative}
+.dm-col:hover{background:var(--panel-2)}
+.dm-col.iskey{color:var(--ink); font-weight:600}
+.dm-port{width:11px; height:11px; border-radius:50%; border:2px solid var(--sky); background:var(--panel);
+  cursor:crosshair; flex:none; margin-left:auto}
+.dm-port:hover{background:var(--blue); border-color:var(--blue)}
+.dm-col.linked .dm-port{background:var(--sky)}
+.dm-card{overflow:hidden}
+/* resize handle (expand a table pane H/V) */
+.dm-resize{position:absolute; right:2px; bottom:2px; width:14px; height:14px; cursor:nwse-resize;
+  color:var(--faint); z-index:2}
+.dm-resize::after{content:""; position:absolute; right:2px; bottom:2px; width:8px; height:8px;
+  border-right:2px solid currentColor; border-bottom:2px solid currentColor; opacity:.6}
+.dm-empty-model{color:var(--muted); font-style:italic; padding:40px; text-align:center; font-size:13px}
+/* relationship editor sidebar */
+.dm-side{position:absolute; top:0; right:0; width:290px; height:100%; background:var(--panel);
+  border-left:1px solid var(--line); box-shadow:var(--shadow-lg); transform:translateX(100%);
+  transition:transform .2s ease; z-index:5; display:flex; flex-direction:column; padding:16px 16px 18px}
+.dm-side.open{transform:none}
+.dm-side h4{font-family:var(--disp); font-weight:600; font-size:15px; color:var(--ink); margin-bottom:3px}
+.dm-side .sub{font-size:11.5px; color:var(--muted); margin-bottom:14px}
+.dm-side label{display:block; font-family:var(--mono); font-size:9.5px; letter-spacing:.08em;
+  text-transform:uppercase; color:var(--muted); font-weight:600; margin:12px 0 5px}
+.dm-side select{width:100%}
+.dm-side .card-viz{display:flex; align-items:center; justify-content:center; gap:9px; margin:14px 0 2px;
+  font-family:var(--mono); font-size:20px; font-weight:700; color:var(--blue)}
+.dm-side .err{color:var(--fail); font-size:11.5px; margin-top:10px; min-height:14px}
+.dm-side .actions{display:flex; gap:8px; margin-top:auto; padding-top:14px}
+.dm-side .actions .mini-btn{margin:0}
+.dm-side .grow{flex:1}
+/* validation results strip */
+.dm-validate{padding:10px 18px; border-bottom:1px solid var(--line-soft); background:var(--panel-2);
+  display:none; flex:none; max-height:160px; overflow-y:auto}
+.dm-validate.show{display:block}
+.dm-vrow{display:flex; align-items:center; gap:9px; font-family:var(--mono); font-size:11px; padding:2px 0}
+.dm-vrow .vdetail{color:var(--muted)}
+/* left-panel read-only mirror of the model */
+#structure-mirror .sm-row{display:flex; align-items:center; gap:7px; margin:6px 0; font-family:var(--mono); font-size:11px}
+#structure-mirror .sm-chip{border:1px solid var(--line); background:var(--panel-2); border-radius:999px;
+  padding:2px 10px; color:var(--muted)}
+#structure-mirror .sm-chip.key{border-color:var(--blue); color:var(--blue); background:var(--tint)}
+#structure-mirror .sm-none{font-style:italic; color:var(--faint); font-size:12px}
+#structure-mirror .sm-lbl{font-family:var(--mono); font-size:9px; letter-spacing:.08em; text-transform:uppercase; color:var(--faint)}
 
 /* console drawer */
 .console{flex:none; max-height:0; overflow:hidden; background:#04283f; color:#9ec7e4;
@@ -306,6 +423,7 @@ table.rep tr:hover td{background:var(--panel-2)}
       Upload<input type="file" id="file-input" multiple accept=".csv"></label>
     <button class="tbtn" id="btn-sample">Load Sample</button>
     <button class="tbtn primary" id="btn-run" disabled>▶ Synthesize</button>
+    <button class="tbtn danger" id="btn-cancel" style="display:none">■ Cancel</button>
     <span class="status-dot" id="status-dot" title="idle"></span>
     <button class="tbtn icon" id="btn-theme" title="Toggle dark mode" aria-label="Toggle dark mode"></button>
   </div>
@@ -326,24 +444,17 @@ table.rep tr:hover td{background:var(--panel-2)}
 
     <div class="panel collapsed" id="structure-panel" style="display:none">
       <div class="panel-h"><h2><span class="step">1 ·</span> Structure &amp; keys</h2><span class="panel-sum" id="sum-structure"></span></div>
-      <p class="hint">How are your tables related? Choose a shared <b>entity key</b> for versioned /
-        SCD data, or declare explicit parent → child <b>relationships</b> if a table has a true
-        primary key. Leave both empty to treat the tables as independent.</p>
-      <div class="sub-label">Entity key (referential integrity)</div>
-      <div class="field" id="field-entity" style="margin-top:0">
-        <div class="key-suggest" id="key-suggest" style="display:none"></div>
-        <select id="in-entity"><option value="">(none — tables independent)</option></select>
-        <p class="hint" id="entity-hint">a business key shared across tables (e.g. CONT_ID) that
-          identifies one entity across its versions. Set it and HMA keeps the tables joinable on it.</p></div>
-      <div class="field" id="field-scd" style="display:none; margin-top:0">
+      <p class="hint">Relationships and the entity-key hub are edited visually in the
+        <b>Data Model</b> tab. This is a summary of what's set there.</p>
+      <div id="structure-mirror"></div>
+      <select id="in-entity" style="display:none"><option value="">(none)</option></select>
+      <button class="mini-btn" id="btn-open-model" style="margin-top:10px">Open Data Model →</button>
+      <div class="field" id="field-scd" style="display:none; margin-top:14px">
         <div class="sub-label">SCD timeline (effective / end / current)</div>
         <div class="tgt-row" style="grid-template-columns:1fr 1fr"><select id="in-scd-eff"></select><select id="in-scd-end"></select></div>
         <select id="in-scd-cur" style="margin-top:6px"></select>
         <p class="hint">needs the entity key + real date columns. Rewrites each entity's versions
           into non-overlapping, contiguous windows and marks one current row.</p></div>
-      <div class="sub-label">Relationships (parent key → child FK)</div>
-      <div id="rel-rows"></div>
-      <button class="mini-btn" id="btn-add-rel">+ add relationship</button>
     </div>
 
     <div class="panel collapsed" id="constraint-panel" style="display:none">
@@ -381,11 +492,8 @@ table.rep tr:hover td{background:var(--panel-2)}
   <main class="right">
     <div class="tabbar" id="tabbar">
       <button class="tab active" data-pane="pane-schema">Schema</button>
-      <button class="tab locked" data-pane="pane-lb">Leaderboard</button>
-      <button class="tab locked" data-pane="pane-quality">Quality</button>
-      <button class="tab locked" data-pane="pane-ri">Referential</button>
-      <button class="tab locked" data-pane="pane-privacy">Privacy</button>
-      <button class="tab locked" data-pane="pane-ml">ML efficacy</button>
+      <button class="tab locked" data-pane="pane-model">Data Model</button>
+      <button class="tab locked" data-pane="pane-report">Report</button>
     </div>
     <div class="panes">
       <div class="pane active" id="pane-schema">
@@ -398,11 +506,84 @@ table.rep tr:hover td{background:var(--panel-2)}
         </div>
         <div id="schema-blocks"></div>
       </div>
-      <div class="pane" id="pane-lb"></div>
-      <div class="pane" id="pane-quality"></div>
-      <div class="pane" id="pane-ri"></div>
-      <div class="pane" id="pane-privacy"></div>
-      <div class="pane" id="pane-ml"></div>
+      <div class="pane" id="pane-model">
+        <div class="dm-bar">
+          <h4>Data Model</h4>
+          <span class="dm-hint">Drag a table by its header to move it; drag its corner to resize.
+            Drag the ● beside a column onto another table's column to link them — an editor opens
+            so you can set the columns and cardinality. Click a link to edit it.</span>
+          <button class="mini-btn" id="dm-validate-btn" style="margin:0">Validate</button>
+          <button class="mini-btn" id="dm-autolayout" style="margin:0">Auto-layout</button>
+        </div>
+        <div class="dm-hub">
+          <span class="lbl">Entity-key hub</span>
+          <select id="dm-hub-key"><option value="">(choose a shared key…)</option></select>
+          <span class="lbl">children</span>
+          <div class="dm-childs" id="dm-hub-childs"></div>
+          <button class="mini-btn" id="dm-hub-gen" style="margin:0" disabled>Generate hub</button>
+          <button class="mini-btn" id="dm-hub-clear" style="margin:0; display:none">Remove hub</button>
+        </div>
+        <div class="dm-validate" id="dm-validate"></div>
+        <div class="dm-canvas-wrap">
+          <div class="dm-canvas" id="dm-canvas">
+            <svg class="dm-svg" id="dm-svg"></svg>
+            <div class="dm-empty-model" id="dm-empty">Load data to model its tables here.</div>
+          </div>
+          <div class="dm-side" id="dm-side">
+            <h4 id="dm-side-title">Relationship</h4>
+            <div class="sub">Parent (the “one”/key side) is generated from the cardinality you pick.</div>
+            <label>First table · column</label>
+            <select id="dm-e-ftable"></select>
+            <select id="dm-e-fcol" style="margin-top:6px"></select>
+            <label>Cardinality</label>
+            <select id="dm-e-card">
+              <option value="one-to-many">one → many (1 : ∗)</option>
+              <option value="many-to-one">many → one (∗ : 1)</option>
+              <option value="one-to-one">one → one (1 : 1)</option>
+            </select>
+            <div class="card-viz" id="dm-e-viz">1 &nbsp;—∗</div>
+            <label>Second table · column</label>
+            <select id="dm-e-ttable"></select>
+            <select id="dm-e-tcol" style="margin-top:6px"></select>
+            <div class="err" id="dm-e-err"></div>
+            <div class="actions">
+              <button class="mini-btn primary grow" id="dm-e-save">Save</button>
+              <button class="mini-btn" id="dm-e-del" style="display:none">Delete</button>
+              <button class="mini-btn" id="dm-e-cancel">Cancel</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="pane" id="pane-report">
+        <div class="rep-wrap">
+          <div class="rep-body">
+            <section class="rep-sec active" id="sec-overview"></section>
+            <section class="rep-sec" id="sec-quality"></section>
+            <section class="rep-sec" id="sec-shapes"></section>
+            <section class="rep-sec" id="sec-pairs"></section>
+            <section class="rep-sec" id="sec-ri"></section>
+            <section class="rep-sec" id="sec-utility"></section>
+            <section class="rep-sec" id="sec-privacy"></section>
+          </div>
+          <nav class="rep-nav" id="rep-nav">
+            <button class="rep-fold" id="rep-fold" title="Collapse panel" aria-label="Collapse panel">›</button>
+            <button class="rep-navbtn active" data-sec="sec-overview" title="Leaderboard">
+              <svg class="ic" viewBox="0 0 24 24"><path d="M5 20v-6M12 20V5M19 20v-9"/></svg><span class="txt">Leaderboard</span></button>
+            <button class="rep-navbtn group" data-sec="sec-quality" title="Quality">
+              <svg class="ic" viewBox="0 0 24 24"><path d="M4 15a8 8 0 0 1 16 0"/><path d="M12 15l4.5-3.5"/></svg><span class="txt">Quality</span></button>
+            <button class="rep-navbtn child" data-sec="sec-shapes" title="Column Shapes">
+              <svg class="ic" viewBox="0 0 24 24"><path d="M4 20v-7M9 20V8M14 20v-5M19 20V5"/></svg><span class="txt">Column Shapes</span></button>
+            <button class="rep-navbtn child" data-sec="sec-pairs" title="Column Pair Trends">
+              <svg class="ic" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="1.5"/><path d="M4 12h16M12 4v16"/></svg><span class="txt">Column Pair Trends</span></button>
+            <button class="rep-navbtn child" data-sec="sec-ri" title="Referential Integrity">
+              <svg class="ic" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7 0l2-2a5 5 0 0 0-7-7l-1 1"/><path d="M14 11a5 5 0 0 0-7 0l-2 2a5 5 0 0 0 7 7l1-1"/></svg><span class="txt">Referential Integrity</span></button>
+            <button class="rep-navbtn" data-sec="sec-utility" title="Utility">
+              <svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3.6"/></svg><span class="txt">Utility</span></button>
+            <button class="rep-navbtn" data-sec="sec-privacy" title="Privacy">
+              <svg class="ic" viewBox="0 0 24 24"><path d="M12 3l7 3v5c0 4.6-3 7.7-7 9-4-1.3-7-4.4-7-9V6z"/></svg><span class="txt">Privacy</span></button>
+          </nav>
+        </div>
+      </div>
     </div>
     <div class="jobbar" id="jobbar"><div class="jobbar-fill" id="jobbar-fill"></div>
       <span class="jobbar-lbl" id="jobbar-lbl"></span></div>
@@ -413,6 +594,19 @@ table.rep tr:hover td{background:var(--panel-2)}
 <script>
 "use strict";
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
+
+/* Per-TAB session id: sessionStorage is scoped to this tab (not shared with
+   other tabs), so each tab gets its own server-side data + job. It survives a
+   reload so results persist across F5. Every API call carries it. */
+const SID=(()=>{ let s=null;
+  try{ s=sessionStorage.getItem("synthlab-sid"); }catch(e){}
+  if(!s){ s=(window.crypto&&crypto.randomUUID)?crypto.randomUUID():("t"+Date.now()+Math.random().toString(16).slice(2));
+    try{ sessionStorage.setItem("synthlab-sid",s); }catch(e){} }
+  return s; })();
+function apiFetch(url,opts={}){
+  const o={...opts}; o.headers={...(opts.headers||{}),"X-Session-Id":SID};
+  return fetch(url,o);
+}
 const SDTYPES=["categorical","numerical","datetime","boolean","id","unknown"];
 const SYNTHS=["HMA","GaussianCopula","CTGAN","TVAE","CopulaGAN"];
 const GAN_SYNTHS=new Set(["CTGAN","TVAE","CopulaGAN"]);
@@ -460,7 +654,7 @@ document.querySelector(".left").addEventListener("click",e=>{
 $("#file-input").addEventListener("change",e=>sendFiles(e.target.files));
 $("#btn-sample").addEventListener("click",async()=>{
   $("#btn-sample").textContent="Detecting…";
-  try{const r=await fetch("/api/sample",{method:"POST"});
+  try{const r=await apiFetch("/api/sample",{method:"POST"});
     if(r.ok) init(await r.json());
     else alert("No sample data in sdg/seed/ — start the server from the project root.");
   }catch(e){alert(BACKEND_HELP);}
@@ -474,7 +668,7 @@ async function sendFiles(files){
   if(!files||!files.length) return;
   const fd=new FormData(); [...files].forEach(f=>fd.append("files",f));
   $("#welcome").querySelector("h3").textContent="Detecting schema…";
-  try{const r=await fetch("/api/upload",{method:"POST",body:fd});
+  try{const r=await apiFetch("/api/upload",{method:"POST",body:fd});
     if(r.ok) init(await r.json()); else alert("Upload failed ("+r.status+").");
   }catch(e){alert(BACKEND_HELP);}
   finally{$("#welcome").querySelector("h3").textContent="Drop CSV files here";}
@@ -488,16 +682,15 @@ function init(payload){
   $("#synth-count").textContent="0"; $("#synth-count").className="count zero";
   lockReportTabs(true);
   renderSeedList(); renderSchemaBlocks(); renderAdvisor(payload.profile);
-  renderRels(payload.relationships); renderRecipe();
-  updateSummaries();
+  renderRecipe(); initModel(payload.relationships);
+  syncEntity(); renderStructureMirror(); updateSummaries();
   selectTable(Object.keys(DATA.tables)[0]);
   activateTab("pane-schema");
 }
 /* compact state chips shown in each collapsed panel header */
 function updateSummaries(){
   if(!DATA) return;
-  const ek=$("#in-entity").value;
-  const nrel=$$(".rel-row").filter(x=>x.querySelector(".rel-parent").value&&x.querySelector(".rel-child").value).length;
+  const ek=MODEL.hub.key, nrel=MODEL.rels.length;
   $("#sum-structure").textContent = ek ? ("key: "+ek) : nrel ? (nrel+" link"+(nrel>1?"s":"")) : "independent";
   const nc=$$(".con-row").length;
   $("#sum-constraints").textContent = nc ? (nc+" rule"+(nc>1?"s":"")) : "none";
@@ -524,7 +717,13 @@ function renderSeedList(){
 function removeTable(t){
   delete DATA.tables[t];
   if(!Object.keys(DATA.tables).length){ location.reload(); return; }
+  // prune the data model of anything referencing the removed table
+  MODEL.rels=MODEL.rels.filter(r=>r.parent_table_name!==t&&r.child_table_name!==t);
+  MODEL.hub.children=MODEL.hub.children.filter(c=>c!==t);
+  if(MODEL.hub.key && !keyTables(MODEL.hub.key).length) MODEL.hub={key:"",children:[]};
+  delete MODEL.pos[t];
   renderSeedList(); renderSchemaBlocks(); renderRecipe();
+  buildHubBar(); afterModelChange();
   if(selectedTable===t) selectTable(Object.keys(DATA.tables)[0]);
 }
 function selectTable(t){
@@ -570,23 +769,302 @@ function renderSchemaBlocks(){
   });
 }
 
-/* ---------------- relationships ---------------- */
-function allCols(){return Object.entries(DATA.tables).flatMap(([t,v])=>v.columns.map(c=>`${t}.${c.name}`));}
-function relRow(parent="",child=""){
-  const opts=sel=>['<option value=""></option>',...allCols().map(c=>`<option ${c===sel?"selected":""}>${c}</option>`)].join("");
-  const div=document.createElement("div"); div.className="rel-row";
-  div.innerHTML=`<select class="rel-parent">${opts(parent)}</select><span class="arrow-lbl">→</span>
-    <select class="rel-child">${opts(child)}</select><button class="rel-del" title="remove">✕</button>`;
-  div.querySelector(".rel-del").addEventListener("click",()=>{div.remove();updateSummaries();});
-  div.querySelectorAll("select").forEach(s=>s.addEventListener("change",updateSummaries));
-  return div;
+/* ===================== data model (PowerBI-style canvas) =====================
+   MODEL is the single source of truth for relationships + the entity-key hub.
+   The left "Structure & keys" panel and the run config both read from it. */
+let MODEL={pos:{}, size:{}, rels:[], hub:{key:"", children:[]}};
+const hubName=()=>MODEL.hub.key?`${MODEL.hub.key}_HUB`:"";
+function colStat(t,col){ return (DATA.tables[t]&&DATA.tables[t].columns||[]).find(c=>c.name===col); }
+function isUnique(t,col){ const c=colStat(t,col); const n=DATA.tables[t]&&DATA.tables[t].rows;
+  return !!(c&&n&&c.distinct>=n); }
+function sharedKeys(){ const s={};
+  for(const v of Object.values(DATA.tables)) for(const c of v.columns) s[c.name]=(s[c.name]||0)+1;
+  return Object.keys(s).filter(k=>s[k]>=2).sort(); }
+function keyTables(key){ return Object.entries(DATA.tables).filter(([,v])=>v.columns.some(c=>c.name===key)).map(([t])=>t); }
+
+function initModel(seedRels){
+  MODEL={pos:{}, size:{}, rels:(seedRels||[]).slice(), hub:{key:"", children:[]}};
+  layoutNodes(true);
+  buildHubBar();
+  renderModel();
+  $('.tab[data-pane="pane-model"]').classList.remove("locked");
 }
-function renderRels(rels){
-  const host=$("#rel-rows"); host.innerHTML="";
-  (rels||[]).forEach(r=>host.appendChild(relRow(
-    `${r.parent_table_name}.${r.parent_primary_key}`,`${r.child_table_name}.${r.child_foreign_key}`)));
+/* grid auto-layout for any node without a stored position */
+function layoutNodes(reset){
+  if(reset) MODEL.pos={};
+  const names=[...Object.keys(DATA.tables), ...(hubName()?[hubName()]:[])];
+  const per=Math.max(1, Math.floor((($("#dm-canvas").clientWidth||900)-40)/230))||3;
+  let i=0;
+  for(const n of names){ if(MODEL.pos[n]) continue;
+    MODEL.pos[n]={x:20+(i%per)*230, y:20+Math.floor(i/per)*250}; i++; }
 }
-$("#btn-add-rel").addEventListener("click",()=>{$("#rel-rows").appendChild(relRow());updateSummaries();});
+function afterModelChange(){ renderModel(); syncEntity(); renderStructureMirror(); updateSummaries();
+  const b=$("#dm-validate"); if(b) b.classList.remove("show"); }   // results are now stale
+
+function linkedSet(){ const s=new Set();
+  for(const r of MODEL.rels){ s.add(r.parent_table_name+"::"+r.parent_primary_key); s.add(r.child_table_name+"::"+r.child_foreign_key); }
+  if(MODEL.hub.key){ s.add(hubName()+"::"+MODEL.hub.key); for(const t of MODEL.hub.children) s.add(t+"::"+MODEL.hub.key); }
+  return s; }
+
+function renderModel(){
+  const canvas=$("#dm-canvas"); if(!canvas) return;
+  $("#dm-empty").style.display = DATA?"none":"block";
+  if(!DATA) return;
+  canvas.querySelectorAll(".dm-card").forEach(c=>c.remove());
+  const linked=linkedSet();
+  const nodes=[...Object.keys(DATA.tables)];
+  if(hubName()) nodes.push(hubName());
+  for(const name of nodes){
+    const hub = name===hubName();
+    const cols = hub ? [MODEL.hub.key] : DATA.tables[name].columns.map(c=>c.name);
+    const el=document.createElement("div");
+    el.className="dm-card"+(hub?" hubnode":""); el.dataset.node=name;
+    const pos=MODEL.pos[name]||{x:20,y:20}; el.style.left=pos.x+"px"; el.style.top=pos.y+"px";
+    const sz=MODEL.size[name]; if(sz){ el.style.width=sz.w+"px"; }
+    const colsStyle = sz ? ` style="max-height:${Math.max(40,sz.h)}px"` : "";
+    el.innerHTML=`<div class="dm-head" data-drag="${esc(name)}">${esc(name)}
+        <span class="tag">${hub?"derived hub":(DATA.tables[name].rows.toLocaleString()+" rows")}</span></div>
+      <div class="dm-cols"${colsStyle}>${cols.map(c=>{
+        const iskey = hub || linked.has(name+"::"+c) || (MODEL.hub.key&&c===MODEL.hub.key);
+        return `<div class="dm-col ${iskey?"iskey linked":""}"><span>${esc(c)}</span>
+          <span class="dm-port" data-port="${esc(name)}::${esc(c)}" data-t="${esc(name)}" data-col="${esc(c)}"></span></div>`;
+      }).join("")}</div><div class="dm-resize" data-resize="${esc(name)}"></div>`;
+    canvas.appendChild(el);
+  }
+  drawLinks();
+}
+/* ---- link geometry: attach connectors to the CARD EDGE at the column's row,
+   clamped into the card body (so a scrolled-out key column still connects) ---- */
+function cssEsc(s){ return (window.CSS&&CSS.escape)?CSS.escape(s):s.replace(/"/g,'\\"'); }
+function canvasXY(){ const canvas=$("#dm-canvas"); const cr=canvas.getBoundingClientRect();
+  return {cr, sx:canvas.scrollLeft, sy:canvas.scrollTop}; }
+function nodeRect(node){ const canvas=$("#dm-canvas");
+  const el=canvas.querySelector(`.dm-card[data-node="${cssEsc(node)}"]`); if(!el) return null;
+  const {cr,sx,sy}=canvasXY(); const r=el.getBoundingClientRect();
+  const L=r.left-cr.left+sx, T=r.top-cr.top+sy, R=r.right-cr.left+sx, B=r.bottom-cr.top+sy;
+  return {L,T,R,B, cx:(L+R)/2, cy:(T+B)/2}; }
+function colY(node,col,nr){ const canvas=$("#dm-canvas");
+  const p=canvas.querySelector(`[data-port="${cssEsc(node+"::"+col)}"]`);
+  if(!p) return nr.cy;
+  const {cr,sy}=canvasXY(); const r=p.getBoundingClientRect();
+  const y=r.top-cr.top+sy+r.height/2;
+  return Math.max(nr.T+30, Math.min(nr.B-10, y));   // clamp inside the card body
+}
+function endpoint(node,col,peerCx){ const nr=nodeRect(node); if(!nr) return null;
+  const side = peerCx>=nr.cx ? "right" : "left";
+  return {x: side==="right"?nr.R:nr.L, y: colY(node,col,nr), side}; }
+function bezierD(a,b){ const K=Math.max(38, Math.abs(b.x-a.x)/2);
+  const ax=a.side==="right"?a.x+K:a.x-K, bx=b.side==="right"?b.x+K:b.x-K;
+  return `M${a.x} ${a.y} C${ax} ${a.y}, ${bx} ${b.y}, ${b.x} ${b.y}`; }
+function relCard(r){ return r.card || (isUnique(r.child_table_name,r.child_foreign_key)?"1-1":"1-*"); }
+
+function drawLinks(){
+  const canvas=$("#dm-canvas"), svg=$("#dm-svg"); if(!canvas||!svg) return;
+  svg.setAttribute("width", Math.max(canvas.clientWidth, canvas.scrollWidth));
+  svg.setAttribute("height", Math.max(canvas.clientHeight, canvas.scrollHeight));
+  const seg=(pNode,pCol,cNode,cCol,cls,pMark,cMark,idx)=>{
+    const pr=nodeRect(pNode), cr2=nodeRect(cNode); if(!pr||!cr2) return "";
+    const a=endpoint(pNode,pCol,cr2.cx), b=endpoint(cNode,cCol,pr.cx); if(!a||!b) return "";
+    const plug=cls==="hub"?"plug hub":"plug";
+    const mark=(pt,txt)=>{ const dx=pt.side==="right"?13:-13;
+      return `<text class="card-mark" x="${pt.x+dx}" y="${pt.y-6}" text-anchor="middle">${txt}</text>`; };
+    return `<path class="${cls}" ${idx!=null?`data-rel="${idx}"`:""} d="${bezierD(a,b)}"></path>`
+      + `<circle class="${plug}" cx="${a.x}" cy="${a.y}" r="3.2"></circle>`
+      + `<circle class="${plug}" cx="${b.x}" cy="${b.y}" r="3.2"></circle>`
+      + mark(a,pMark) + mark(b,cMark);
+  };
+  let out="";
+  MODEL.rels.forEach((r,i)=>{ const cm=relCard(r)==="1-1"?"1":"∗";
+    out+=seg(r.parent_table_name,r.parent_primary_key,r.child_table_name,r.child_foreign_key,"","1",cm,i); });
+  if(MODEL.hub.key){ for(const t of MODEL.hub.children)
+    out+=seg(hubName(),MODEL.hub.key,t,MODEL.hub.key,"hub","1","∗",null); }
+  svg.innerHTML=out;
+  svg.querySelectorAll('path[data-rel]').forEach(p=>p.addEventListener("click",()=>openRelEditor(+p.dataset.rel)));
+}
+function refreshModel(){ layoutNodes(false); positionCards(); drawLinks(); }
+function positionCards(){ $("#dm-canvas").querySelectorAll(".dm-card").forEach(el=>{
+  const p=MODEL.pos[el.dataset.node]; if(p){ el.style.left=p.x+"px"; el.style.top=p.y+"px"; } }); }
+
+/* ---- pointer interactions: drag cards, resize cards, drag ports to link ---- */
+let dragCard=null, dragStart=null, linkFrom=null, resizeCard=null, resizeStart=null;
+$("#dm-canvas").addEventListener("pointerdown",e=>{
+  const handle=e.target.closest(".dm-resize");
+  if(handle){ e.preventDefault(); const node=handle.dataset.resize;
+    const el=$("#dm-canvas").querySelector(`.dm-card[data-node="${cssEsc(node)}"]`);
+    const cols=el.querySelector(".dm-cols");
+    resizeCard=node; resizeStart={px:e.clientX, py:e.clientY, w:el.offsetWidth, h:cols.clientHeight};
+    handle.setPointerCapture&&handle.setPointerCapture(e.pointerId); return; }
+  const port=e.target.closest(".dm-port");
+  if(port){ e.preventDefault(); linkFrom={t:port.dataset.t, col:port.dataset.col, el:port}; return; }
+  const head=e.target.closest(".dm-head");
+  if(head){ e.preventDefault(); const node=head.dataset.drag;
+    dragCard=node; const p=MODEL.pos[node]||{x:20,y:20}; MODEL.pos[node]=p;
+    dragStart={px:e.clientX, py:e.clientY, x:p.x, y:p.y}; head.setPointerCapture&&head.setPointerCapture(e.pointerId); }
+});
+document.addEventListener("pointermove",e=>{
+  if(resizeCard){ const el=$("#dm-canvas").querySelector(`.dm-card[data-node="${cssEsc(resizeCard)}"]`);
+    const w=Math.max(150, resizeStart.w+(e.clientX-resizeStart.px));
+    const h=Math.max(40, resizeStart.h+(e.clientY-resizeStart.py));
+    MODEL.size[resizeCard]={w,h};
+    el.style.width=w+"px"; el.querySelector(".dm-cols").style.maxHeight=h+"px"; drawLinks(); return; }
+  if(dragCard){ const p=MODEL.pos[dragCard];
+    p.x=Math.max(0, dragStart.x+(e.clientX-dragStart.px)); p.y=Math.max(0, dragStart.y+(e.clientY-dragStart.py));
+    const el=$("#dm-canvas").querySelector(`.dm-card[data-node="${cssEsc(dragCard)}"]`);
+    if(el){ el.style.left=p.x+"px"; el.style.top=p.y+"px"; } drawLinks(); return; }
+  if(linkFrom){ drawTempLink(e); }
+});
+document.addEventListener("pointerup",e=>{
+  if(resizeCard){ resizeCard=null; drawLinks(); }
+  if(dragCard){ dragCard=null; updateSummaries(); }
+  if(linkFrom){ const tgt=document.elementFromPoint(e.clientX,e.clientY);
+    const port=tgt&&tgt.closest&&tgt.closest(".dm-port");
+    const from=linkFrom; linkFrom=null; const t=$("#dm-drag"); if(t) t.remove();
+    if(port && port.dataset.t!==from.t) beginNewRelationship(from,{t:port.dataset.t,col:port.dataset.col});
+    drawLinks(); }
+});
+function drawTempLink(e){
+  const canvas=$("#dm-canvas"), svg=$("#dm-svg"); const {cr,sx,sy}=canvasXY();
+  const r=linkFrom.el.getBoundingClientRect();
+  const a={x:r.left-cr.left+sx+r.width/2, y:r.top-cr.top+sy+r.height/2};
+  const b={x:e.clientX-cr.left+sx, y:e.clientY-cr.top+sy};
+  let t=$("#dm-drag"); if(!t){ t=document.createElementNS("http://www.w3.org/2000/svg","path"); t.id="dm-drag"; svg.appendChild(t); }
+  const K=Math.max(30,Math.abs(b.x-a.x)/2);
+  t.setAttribute("d",`M${a.x} ${a.y} C${a.x+K} ${a.y}, ${b.x-K} ${b.y}, ${b.x} ${b.y}`);
+  t.setAttribute("stroke","var(--blue)"); t.setAttribute("stroke-dasharray","4 4"); t.setAttribute("fill","none");
+}
+$("#dm-autolayout").addEventListener("click",()=>{ layoutNodes(true); positionCards(); drawLinks(); });
+
+/* ---- relationship editor sidebar ---- */
+let editIdx=-1;   // -1 = editing a brand-new (not-yet-saved) relationship
+function tableCols(t){ return (DATA.tables[t]?DATA.tables[t].columns.map(c=>c.name):[]); }
+function fillColSelect(sel,table,val){ sel.innerHTML=tableCols(table).map(c=>`<option ${c===val?"selected":""}>${esc(c)}</option>`).join(""); }
+function relToForm(from,to,card){
+  const tabs=Object.keys(DATA.tables);
+  const tOpts=t2=>tabs.map(t=>`<option ${t===t2?"selected":""}>${esc(t)}</option>`).join("");
+  $("#dm-e-ftable").innerHTML=tOpts(from.t); $("#dm-e-ttable").innerHTML=tOpts(to.t);
+  fillColSelect($("#dm-e-fcol"),from.t,from.col); fillColSelect($("#dm-e-tcol"),to.t,to.col);
+  $("#dm-e-card").value=card; updateCardViz();
+}
+function updateCardViz(){ const v=$("#dm-e-card").value;
+  $("#dm-e-viz").textContent = v==="one-to-many"?"1  —  ∗" : v==="many-to-one"?"∗  —  1" : "1  —  1"; }
+function openRelEditor(idx){
+  editIdx=idx; const r=MODEL.rels[idx];
+  const card = relCard(r)==="1-1" ? "one-to-one" : "one-to-many";
+  relToForm({t:r.parent_table_name,col:r.parent_primary_key},{t:r.child_table_name,col:r.child_foreign_key},card);
+  $("#dm-side-title").textContent="Edit relationship"; $("#dm-e-del").style.display="inline-block";
+  $("#dm-e-err").textContent=""; $("#dm-side").classList.add("open");
+}
+function beginNewRelationship(from,to){
+  editIdx=-1;
+  // sensible default cardinality from column uniqueness
+  let card="one-to-many";
+  if(isUnique(to.t,to.col)&&!isUnique(from.t,from.col)) card="many-to-one";
+  else if(isUnique(from.t,from.col)&&isUnique(to.t,to.col)) card="one-to-one";
+  relToForm(from,to,card);
+  $("#dm-side-title").textContent="New relationship"; $("#dm-e-del").style.display="none";
+  $("#dm-e-err").textContent=""; $("#dm-side").classList.add("open");
+}
+function closeRelEditor(){ $("#dm-side").classList.remove("open"); editIdx=-1; }
+function formToRel(){
+  const ft=$("#dm-e-ftable").value, fc=$("#dm-e-fcol").value;
+  const tt=$("#dm-e-ttable").value, tc=$("#dm-e-tcol").value, card=$("#dm-e-card").value;
+  // parent = the "one" side; many-to-one flips first/second
+  let parent={t:ft,col:fc}, child={t:tt,col:tc}, ctype="1-*";
+  if(card==="many-to-one"){ parent={t:tt,col:tc}; child={t:ft,col:fc}; }
+  if(card==="one-to-one") ctype="1-1";
+  return {parent_table_name:parent.t, parent_primary_key:parent.col,
+    child_table_name:child.t, child_foreign_key:child.col, card:ctype};
+}
+$("#dm-e-ftable").addEventListener("change",()=>fillColSelect($("#dm-e-fcol"),$("#dm-e-ftable").value));
+$("#dm-e-ttable").addEventListener("change",()=>fillColSelect($("#dm-e-tcol"),$("#dm-e-ttable").value));
+$("#dm-e-card").addEventListener("change",updateCardViz);
+$("#dm-e-cancel").addEventListener("click",closeRelEditor);
+$("#dm-e-del").addEventListener("click",()=>{ if(editIdx>=0){ MODEL.rels.splice(editIdx,1); afterModelChange(); } closeRelEditor(); });
+$("#dm-e-save").addEventListener("click",()=>{
+  const rel=formToRel(), err=$("#dm-e-err");
+  if(rel.parent_table_name===rel.child_table_name){ err.textContent="Pick two different tables."; return; }
+  if(!rel.parent_primary_key||!rel.child_foreign_key){ err.textContent="Pick a column on each side."; return; }
+  const dup=MODEL.rels.findIndex((r,i)=>i!==editIdx && r.parent_table_name===rel.parent_table_name
+    && r.parent_primary_key===rel.parent_primary_key && r.child_table_name===rel.child_table_name
+    && r.child_foreign_key===rel.child_foreign_key);
+  if(dup>=0){ err.textContent="That relationship already exists."; return; }
+  if(editIdx>=0) MODEL.rels[editIdx]=rel; else MODEL.rels.push(rel);
+  closeRelEditor(); afterModelChange();
+});
+
+/* ---- validate the model against the real data (server-side) ---- */
+async function validateModel(){
+  const box=$("#dm-validate"); box.classList.add("show");
+  box.innerHTML=`<div class="dm-vrow">validating…</div>`;
+  try{
+    const r=await apiFetch("/api/validate_model",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({relationships:MODEL.rels, entity_key:MODEL.hub.key||"", entity_children:MODEL.hub.children})});
+    const j=await r.json();
+    if(j.error){ box.innerHTML=`<div class="dm-vrow err">${esc(j.error)}</div>`; return; }
+    if(!j.results.length){ box.innerHTML=`<div class="dm-vrow vdetail">Nothing to validate — no links or hub set.</div>`; return; }
+    box.innerHTML=j.results.map(x=>`<div class="dm-vrow">${pill(x.status)}
+      <span>${esc(x.label)}</span><span class="vdetail">${esc(x.detail)}</span></div>`).join("");
+  }catch(e){ box.innerHTML=`<div class="dm-vrow err">${esc(BACKEND_HELP.split("\n")[0])}</div>`; }
+}
+$("#dm-validate-btn").addEventListener("click",validateModel);
+
+/* ---- entity-key hub generator ---- */
+function buildHubBar(){
+  const keys=sharedKeys();
+  $("#dm-hub-key").innerHTML=`<option value="">(choose a shared key…)</option>`+
+    keys.map(k=>`<option value="${esc(k)}" ${k===MODEL.hub.key?"selected":""}>${esc(k)} (in ${keyTables(k).length} tables)</option>`).join("");
+  renderHubChilds();
+  updateHubButtons();
+}
+function renderHubChilds(){
+  const key=$("#dm-hub-key").value; const host=$("#dm-hub-childs");
+  if(!key){ host.innerHTML=`<span class="dm-childchip off">choose a key first</span>`; return; }
+  const tabs=keyTables(key);
+  const chosen = MODEL.hub.key===key ? new Set(MODEL.hub.children) : new Set(tabs);
+  host.innerHTML=tabs.map(t=>`<span class="dm-childchip ${chosen.has(t)?"on":""}" data-t="${esc(t)}">${esc(t)}</span>`).join("");
+  host.querySelectorAll(".dm-childchip").forEach(ch=>ch.addEventListener("click",()=>{ ch.classList.toggle("on"); updateHubButtons(); }));
+}
+function chosenChilds(){ return [...$("#dm-hub-childs").querySelectorAll(".dm-childchip.on")].map(c=>c.dataset.t); }
+function updateHubButtons(){
+  const key=$("#dm-hub-key").value; const n=chosenChilds().length;
+  $("#dm-hub-gen").disabled = !(key && n>=1);
+  $("#dm-hub-gen").textContent = MODEL.hub.key===key ? "Update hub" : "Generate hub";
+  $("#dm-hub-clear").style.display = MODEL.hub.key ? "inline-block" : "none";
+}
+$("#dm-hub-key").addEventListener("change",()=>{ renderHubChilds(); updateHubButtons(); });
+$("#dm-hub-gen").addEventListener("click",()=>{
+  const key=$("#dm-hub-key").value, children=chosenChilds(); if(!key||!children.length) return;
+  MODEL.hub={key, children}; delete MODEL.pos[hubName()]; layoutNodes(false);
+  afterModelChange(); updateHubButtons();
+});
+$("#dm-hub-clear").addEventListener("click",()=>{
+  delete MODEL.pos[hubName()]; MODEL.hub={key:"", children:[]};
+  buildHubBar(); afterModelChange();
+});
+
+/* ---- left-panel read-only mirror + entity-key sync ---- */
+function syncEntity(){ const sel=$("#in-entity");
+  if(MODEL.hub.key && ![...sel.options].some(o=>o.value===MODEL.hub.key))
+    sel.insertAdjacentHTML("beforeend",`<option value="${esc(MODEL.hub.key)}">${esc(MODEL.hub.key)}</option>`);
+  sel.value=MODEL.hub.key||""; updateScdVisibility();
+}
+function renderStructureMirror(){
+  const host=$("#structure-mirror"); if(!host) return;
+  let h="";
+  if(MODEL.hub.key){
+    h+=`<div class="sm-row"><span class="sm-lbl">entity key</span><span class="sm-chip key">${esc(MODEL.hub.key)}</span>
+      <span class="sm-lbl">→ ${MODEL.hub.children.length} table${MODEL.hub.children.length!==1?"s":""}</span></div>`;
+  }
+  if(MODEL.rels.length){
+    h+=`<div class="sm-row"><span class="sm-lbl">links</span></div>`;
+    h+=MODEL.rels.map(r=>`<div class="sm-row"><span class="sm-chip">${esc(r.child_table_name)}.${esc(r.child_foreign_key)} → ${esc(r.parent_table_name)}.${esc(r.parent_primary_key)}</span></div>`).join("");
+  }
+  if(!h) h=`<div class="sm-none">Independent tables — no keys or links set.</div>`;
+  host.innerHTML=h;
+}
+function openModel(focusHub){ activateTab("pane-model"); requestAnimationFrame(refreshModel);
+  if(focusHub) setTimeout(()=>$("#dm-hub-key").focus(),120); }
+$("#btn-open-model").addEventListener("click",()=>openModel(false));
 
 /* ---------------- constraints ---------------- */
 const CON_TYPES=[["inequality","low ≤ high"],["range","low ≤ mid ≤ high"],
@@ -671,19 +1149,11 @@ function renderAdvisor(profile){
   h+=`<button class="mini-btn" id="btn-goto-key">${RECOMMENDED_RELS.length?"Or choose an entity key":"Choose an entity key"} →</button></div>`;
   body.innerHTML=h;
   const apply=$("#btn-apply-rels");
-  if(apply) apply.addEventListener("click",()=>{ renderRels(RECOMMENDED_RELS);
-    openStructure(false); updateSummaries();
-    apply.className="mini-btn done"; apply.textContent="✓ links applied below"; apply.disabled=true; });
-  $("#btn-goto-key").addEventListener("click",()=>openStructure(true));
+  if(apply) apply.addEventListener("click",()=>{ MODEL.rels=RECOMMENDED_RELS.slice();
+    afterModelChange(); openModel(false);
+    apply.className="mini-btn done"; apply.textContent="✓ applied — see Data Model"; apply.disabled=true; });
+  $("#btn-goto-key").addEventListener("click",()=>openModel(true));
   updateSummaries();
-}
-/* expand Structure & keys and scroll it into view; optionally focus the entity picker */
-function openStructure(focusEntity){
-  const p=$("#structure-panel"); p.classList.remove("collapsed");
-  p.scrollIntoView({behavior:"smooth", block:"start"});
-  if(focusEntity){ const sel=$("#in-entity");
-    setTimeout(()=>{ sel.focus(); sel.classList.add("flash");
-      setTimeout(()=>sel.classList.remove("flash"),1200); },350); }
 }
 
 /* ---------------- recipe ---------------- */
@@ -700,25 +1170,13 @@ function renderRecipe(){
     <div class="tgt-row"><span title="${t}">${t}</span>
       <select id="target-${t}"><option value="auto">(auto)</option>
         ${v.targets.map(c=>`<option>${c}</option>`).join("")}</select></div>`).join("");
-  // entity-key options = columns present in >= 2 tables (candidate shared keys)
+  // hidden entity-key store — the Data Model tab (hub generator) sets its value;
+  // options list every shared candidate key so syncEntity() can select any of them
   const shared={};
   for(const v of Object.values(DATA.tables)) for(const c of v.columns) shared[c.name]=(shared[c.name]||0)+1;
   const cands=Object.keys(shared).filter(c=>shared[c]>=2).sort();
-  const sk=suggestedEntityKey(DATA.profile); const sug=cands.includes(sk)?sk:"";
-  $("#in-entity").innerHTML=`<option value="">(none — tables independent)</option>`+
-    cands.map(c=>`<option value="${esc(c)}" ${c===sug?"selected":""}>${esc(c)} (in ${shared[c]} tables)</option>`).join("");
-  // entity-key hint: explain the concept and, for versioned (SCD) data, prompt
-  // the user to pick the true durable key (the tool can't detect it reliably).
-  const tier=(DATA.profile&&DATA.profile.recommendation||{}).tier;
-  $("#entity-hint").innerHTML = (tier===2||tier===3)
-    ? "This looks like <b>versioned (SCD)</b> data — each row is a dated version of some entity. "
-      + "If you know the column that stays the <b>same across all of an entity's versions</b> — a durable "
-      + "business key such as a customer/contact id (<i>not</i> a per-row surrogate, and not something that "
-      + "changes over time) — <b>choose it here</b>. It links the tables and keeps each entity coherent. "
-      + "The tool can't detect this reliably, so it's your call based on the data's meaning."
-    : "An <b>entity key</b> is a business key shared across tables that identifies one entity across all its "
-      + "rows/versions (e.g. CONT_ID). Choose it if you know one holds — the tables are then kept joinable on it.";
-  renderKeySuggest(cands);
+  $("#in-entity").innerHTML=`<option value=""></option>`+
+    cands.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join("");
   // SCD timeline columns: all column names (date-ish first), effective/end pre-selected
   const allCols=[...new Set(Object.values(DATA.tables).flatMap(v=>v.columns.map(c=>c.name)))];
   const dateish=c=>/(_dt|_date|eff|end|start|expiry|since|left)/i.test(c);
@@ -731,34 +1189,7 @@ function renderRecipe(){
   $("#in-scd-end").innerHTML=opt("end-date column…",endSug);
   $("#in-scd-cur").innerHTML=opt("current-flag column (optional)…","");
   updateScdVisibility();
-  $("#in-entity").addEventListener("change",()=>{updateScdVisibility();updateSummaries();});
   $("#btn-run").disabled=!selectedSynths.size;
-}
-/* one-click chips for likely entity keys — the durable columns the profiler saw
-   repeat across tables. Not a decision made for the user: just faster than the
-   dropdown, and always alongside it. */
-function renderKeySuggest(cands){
-  const box=$("#key-suggest"); if(!box) return;
-  const seen=new Set(), keys=[];
-  const sk=suggestedEntityKey(DATA.profile); if(sk&&cands.includes(sk)){keys.push(sk);seen.add(sk);}
-  for(const l of (DATA.profile&&DATA.profile.links)||[]){
-    const c=l.parent_column||l.child_column;
-    if(c&&cands.includes(c)&&!seen.has(c)){keys.push(c);seen.add(c);}
-  }
-  if(!keys.length){ box.style.display="none"; box.innerHTML=""; return; }
-  box.style.display="flex";
-  box.innerHTML=`<span class="klbl">try:</span>`+
-    keys.slice(0,3).map(k=>`<span class="kchip" data-k="${esc(k)}">${esc(k)}</span>`).join("");
-  box.querySelectorAll(".kchip").forEach(ch=>ch.addEventListener("click",()=>{
-    $("#in-entity").value=ch.dataset.k; updateScdVisibility(); updateSummaries(); }));
-}
-/* entity-key suggestion — ONLY when the profiler found a real primary/foreign
-   key link (Tier 1). For versioned (SCD, Tier 2/3) data the true durable key is
-   a domain decision the tool can't reliably detect, so we leave it to the user. */
-function suggestedEntityKey(profile){
-  const r=profile&&profile.recommendation; if(!r) return "";
-  if((r.relationships||[]).length) return r.relationships[0].parent_primary_key||"";
-  return "";
 }
 function updateScdVisibility(){ $("#field-scd").style.display=$("#in-entity").value?"block":"none"; }
 function updateEpochsVisibility(){
@@ -770,12 +1201,30 @@ function updateEpochsVisibility(){
 
 /* ---------------- tabs ---------------- */
 function lockReportTabs(lock){
-  $$('.tab[data-pane]').forEach(t=>{ if(t.dataset.pane!=="pane-schema") t.classList.toggle("locked",lock); });
+  const keep=["pane-schema","pane-model"];   // schema + data model stay usable pre-run
+  $$('.tab[data-pane]').forEach(t=>{ if(!keep.includes(t.dataset.pane)) t.classList.toggle("locked",lock); });
 }
 function activateTab(pane){
   $$(".tab").forEach(t=>t.classList.toggle("active",t.dataset.pane===pane));
   $$(".pane").forEach(p=>p.classList.toggle("active",p.id===pane));
+  if(pane==="pane-model") requestAnimationFrame(refreshModel);
+  if(pane==="pane-report") requestAnimationFrame(flushVisiblePlots);
 }
+/* report side-nav: switch which result section is visible */
+function showSection(id){
+  $$(".rep-sec").forEach(s=>s.classList.toggle("active",s.id===id));
+  $$(".rep-navbtn").forEach(b=>b.classList.toggle("active",b.dataset.sec===id));
+  requestAnimationFrame(flushVisiblePlots);   // render any charts now visible
+}
+$("#rep-nav").addEventListener("click",e=>{ const b=e.target.closest(".rep-navbtn"); if(b) showSection(b.dataset.sec); });
+/* fold the report side-nav to a right-edge icon rail (hover expands to labels) */
+(function(){
+  const nav=$("#rep-nav"), fold=$("#rep-fold");
+  let col=false; try{ col=localStorage.getItem("synthlab-repnav")==="1"; }catch(e){}
+  const apply=()=>{ nav.classList.toggle("collapsed",col); fold.title=col?"Expand panel":"Collapse panel"; };
+  apply();
+  fold.addEventListener("click",()=>{ col=!col; try{ localStorage.setItem("synthlab-repnav",col?"1":"0"); }catch(e){} apply(); });
+})();
 $("#tabbar").addEventListener("click",e=>{
   const b=e.target.closest(".tab"); if(!b||b.classList.contains("locked")) return;
   activateTab(b.dataset.pane);
@@ -790,48 +1239,58 @@ $("#btn-run").addEventListener("click",async()=>{
     $$(`.sdtype-sel[data-table="${t}"]`).forEach(s=>{ if(s.value!==detected[t][s.dataset.col]) sdtypes[s.dataset.col]=s.value; });
     schema[t]={sdtypes, primary_key:$(`#pk-${t}`).value||null};
   }
-  const rels=[...$$(".rel-row")].map(r=>{
-    const p=r.querySelector(".rel-parent").value, c=r.querySelector(".rel-child").value;
-    if(!p||!c) return null;
-    const [pt,pk]=p.split(/\.(.*)/s), [ct,fk]=c.split(/\.(.*)/s);
-    return {parent_table_name:pt,parent_primary_key:pk,child_table_name:ct,child_foreign_key:fk};
-  }).filter(Boolean);
   const targets={}; Object.keys(DATA.tables).forEach(t=>targets[t]=$(`#target-${t}`).value);
-  const cfg={schema, relationships:rels, targets, constraints:collectConstraints(),
-    entity_key:$("#in-entity").value||"",
+  const cfg={schema, relationships:MODEL.rels.slice(), targets, constraints:collectConstraints(),
+    entity_key:MODEL.hub.key||"", entity_children:MODEL.hub.children.slice(),
     scd_effective:$("#in-scd-eff").value||"", scd_end:$("#in-scd-end").value||"", scd_current:$("#in-scd-cur").value||"",
     synths:[...selectedSynths],
     epochs:+$("#in-epochs").value, scale:+$("#in-scale").value, holdout:+$("#in-holdout").value};
   let r;
-  try{ r=await fetch("/api/synthesize",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(cfg)}); }
+  try{ r=await apiFetch("/api/synthesize",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(cfg)}); }
   catch(e){ alert(BACKEND_HELP); return; }
   if(!r.ok){ alert((await r.json()).error||"failed to start"); return; }
-  $("#btn-run").disabled=true; setStatus("run","synthesizing");
+  setRunningUI(true); setStatus("run","synthesizing");
   $("#console").classList.add("show"); $("#console").innerHTML="";
   $("#jobbar").classList.add("show"); $("#jobbar-fill").style.width="0%"; $("#jobbar-lbl").textContent="starting…";
   poll();
 });
+/* toggle the toolbar between Synthesize (idle) and Cancel (running) */
+function setRunningUI(running){
+  $("#btn-run").style.display = running ? "none" : "";
+  $("#btn-run").disabled = running || !selectedSynths.size;
+  $("#btn-cancel").style.display = running ? "" : "none";
+  $("#btn-cancel").disabled = false;
+  $("#btn-cancel").textContent = "■ Cancel";
+}
+$("#btn-cancel").addEventListener("click",async()=>{
+  $("#btn-cancel").disabled=true; $("#btn-cancel").textContent="cancelling…";
+  $("#jobbar-lbl").textContent="cancelling…"; setStatus("run","cancelling");
+  try{ await apiFetch("/api/cancel",{method:"POST"}); }catch(e){}
+  poll();   // pick up the 'cancelled' status right away
+});
 function setJobBar(pct,status){
   pct=Math.max(0,Math.min(100, pct||0));
   $("#jobbar-fill").style.width=pct+"%";
-  const label=status==="done"?"complete":status==="error"?"failed":"synthesizing…";
+  const label=status==="done"?"complete":status==="error"?"failed":status==="cancelled"?"cancelled":"synthesizing…";
   $("#jobbar-lbl").textContent=`${label} ${pct.toFixed(0)}%`;
 }
 async function poll(){
-  let j; try{ j=await (await fetch("/api/progress")).json(); }catch(e){ setStatus("err","lost backend"); return; }
+  let j; try{ j=await (await apiFetch("/api/progress")).json(); }catch(e){ setStatus("err","lost backend"); return; }
   const con=$("#console");
   con.innerHTML=j.log.map((l,i)=>{
-    const cls=l.startsWith("⚠")?"warn":l.startsWith("✗")?"err":l.startsWith("Done")?"ok":l.startsWith("⏳")?"":"";
+    const cls=l.startsWith("⚠")?"warn":l.startsWith("✗")||l.startsWith("■")?"err":l.startsWith("Done")?"ok":l.startsWith("⏳")?"":"";
     const cur=(i===j.log.length-1&&j.status==="running")?' cursor':'';
     return `<div class="ln ${cls}${cur}">${esc(l)}</div>`;
   }).join("");
   con.scrollTop=con.scrollHeight;
   setJobBar(j.pct, j.status);
   if(j.status==="running"){ setTimeout(poll,1500); return; }
-  $("#btn-run").disabled=false;
+  setRunningUI(false);
   if(j.status==="done"){ setJobBar(100,"done"); setStatus("done","complete");
-    renderReport(await (await fetch("/api/results")).json());
+    renderReport(await (await apiFetch("/api/results")).json());
     setTimeout(()=>{$("#console").classList.remove("show"); $("#jobbar").classList.remove("show");},1500); }
+  else if(j.status==="cancelled"){ setStatus("","cancelled");
+    setTimeout(()=>{$("#console").classList.remove("show"); $("#jobbar").classList.remove("show");},1600); }
   else { setStatus("err","failed — see log"); }
 }
 
@@ -927,19 +1386,23 @@ function renderQuality(el,data,c){
 let _PALETTE={};
 function res_palette(s){return _PALETTE[s]||"#888";}
 
-function flushPlots(){
-  if(!HAS_PLOTLY){ PLOT_QUEUE=[]; return; }
+/* render only the queued charts whose section is currently visible (sections
+   render lazily, so a hidden div's 0-width doesn't break the Plotly layout);
+   items are marked done so re-showing a section doesn't re-draw them */
+function flushVisiblePlots(){
+  if(!HAS_PLOTLY) return;
   const c=themeColors();
   for(const item of PLOT_QUEUE){
-    const el=document.getElementById(item.id); if(!el) continue;
+    if(item.done) continue;
+    const el=document.getElementById(item.id); if(!el || !el.offsetParent) continue;   // not visible yet
     try{
       if(item.type==="quality") renderQuality(el,item.data,c);
       else renderHeatmap(el,item.type,item.data,c);
       if(!PLOTLY_REG.some(r=>r.id===item.id))
         PLOTLY_REG.push({id:item.id, heatmap:item.type!=="quality"});
-    }catch(e){ el.parentElement.innerHTML=`<div class="note">chart failed: ${esc(String(e))}</div>`; }
+      item.done=true;
+    }catch(e){ el.parentElement.innerHTML=`<div class="note">chart failed: ${esc(String(e))}</div>`; item.done=true; }
   }
-  PLOT_QUEUE=[];
 }
 /* re-apply theme colours to already-rendered charts (called on light/dark toggle) */
 function restylePlotly(){
@@ -957,7 +1420,7 @@ function restylePlotly(){
 function renderReport(res){
   lockReportTabs(false);
   const P=n=>res.palette[n]||PALETTE[n]||"#888";
-  PLOTLY_REG.length=0;                       // fresh chart registry per report
+  PLOTLY_REG.length=0; PLOT_QUEUE=[];        // fresh chart registry + queue per report
   _PALETTE={}; (res.synths||[]).forEach(s=>{_PALETTE[s]=P(s);});
 
   /* synthetic data list (left) */
@@ -965,75 +1428,108 @@ function renderReport(res){
   let count=0;
   for(const s of res.synths) for(const t of res.tables){
     sl+=`<tr><td><div class="fname">${s}·${t}.csv</div><div class="fmeta">synthetic</div></td>
-      <td class="fact"><a class="iact" href="/api/download/${s}/${t}" title="download">↓</a></td></tr>`; count++;
+      <td class="fact"><a class="iact" href="/api/download/${s}/${t}?sid=${encodeURIComponent(SID)}" title="download">↓</a></td></tr>`; count++;
   }
   sl+=`</tbody></table>`;
   $("#synth-list").innerHTML=sl; $("#synthetic-panel").style.display="block";
   $("#synth-count").textContent=count; $("#synth-count").className="count";
 
-  /* leaderboard */
+  /* --- Leaderboard (overview) --- */
   const lb=[...res.leaderboard].sort((a,b)=>(b.overall??0)-(a.overall??0));
-  $("#pane-lb").innerHTML=`<div class="podium">${lb.map((r,i)=>`
+  $("#sec-overview").innerHTML=`<div class="podium">${lb.map((r,i)=>`
     <div class="lb-card ${i===0?"first":""}"><div class="rank">${i+1}</div>
       <div class="lb-name"><span class="dot" style="background:${P(r.synthesizer)}"></span>${r.synthesizer}</div>
       <div class="big-score">${fmt(r.overall)}<small> /1 overall</small></div>
       ${meter("fidelity",r.fidelity)}${meter("privacy",r.privacy)}${meter("utility · TSTR",r.utility_tstr)}</div>`).join("")}</div>
     <p class="note">fidelity = mean sdmetrics QualityReport · privacy = MIA ⊕ NewRowSynthesis ⊕ CategoricalCAP ·
       utility = TSTR/TRTR ratio (see METRICS.md).</p>`;
-  requestAnimationFrame(()=>$$("#pane-lb .m-fill").forEach(m=>m.style.width=m.dataset.w+"%"));
+  requestAnimationFrame(()=>$$("#sec-overview .m-fill").forEach(m=>m.style.width=m.dataset.w+"%"));
 
-  /* quality */
-  let q=`<h4 class="block-title">sdmetrics QualityReport</h4>
+  /* --- Quality (summary table + combined Overall/Shapes/Pairs figure) --- */
+  const shapesData=res.figures.shapes_data||{}, pairsData=res.figures.pairs_data||{};
+  let qy=`<h4 class="block-title">QualityReport — per synthesizer per table</h4>
     <table class="rep"><thead><tr><th>synthesizer</th><th>table</th><th style="text-align:right">column shapes</th>
     <th style="text-align:right">column pair trends</th><th style="text-align:right">overall</th></tr></thead><tbody>`;
   for(const s of res.synths) for(const [t,v] of Object.entries(res.quality[s]||{}))
-    q+=`<tr><td class="mono"><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${P(s)};margin-right:7px"></span>${s}</td>
+    qy+=`<tr><td class="mono"><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${P(s)};margin-right:7px"></span>${s}</td>
       <td class="mono dim">${t}</td><td class="score-cell">${fmt(v.column_shapes)}</td>
       <td class="score-cell">${fmt(v.column_pair_trends)}</td>
       <td class="score-cell" style="color:${meterColor(v.overall)}">${fmt(v.overall)}</td></tr>`;
-  PLOT_QUEUE=[];
-  q+=`</tbody></table>`+qualityBlock(res.figures.quality_data, res.figures.quality);
-  const shapesData=res.figures.shapes_data||{}, pairsData=res.figures.pairs_data||{};
-  q+=`<h4 class="block-title">Column Shapes — per column</h4>
+  qy+=`</tbody></table>`+qualityBlock(res.figures.quality_data, res.figures.quality);
+  $("#sec-quality").innerHTML=qy;
+
+  /* --- Quality › Column Shapes (per-column heatmaps) --- */
+  let sh=`<h4 class="block-title">Column Shapes — per column</h4>
     <p class="note">Marginal-distribution match per column (KS complement numeric, TV complement categorical).
     ${HAS_PLOTLY?"Hover for exact scores; drag to zoom.":""}</p>`;
-  for(const [t,b64] of Object.entries(res.figures.shapes||{})) q+=heatmapBlock("shapes",t,shapesData[t],b64);
+  const shapeFigs=res.figures.shapes||{};
+  if(Object.keys(shapeFigs).length || Object.keys(shapesData).length)
+    for(const t of Object.keys({...shapeFigs,...shapesData})) sh+=heatmapBlock("shapes",t,shapesData[t],shapeFigs[t]);
+  else sh+=`<p class="note">No per-column shape scores were available for these tables.</p>`;
+  $("#sec-shapes").innerHTML=sh;
+
+  /* --- Quality › Column Pair Trends --- */
   const pairs=res.figures.pairs||{};
+  let pr;
   if(Object.values(pairs).some(Boolean) || Object.values(pairsData).some(Boolean)){
-    q+=`<h4 class="block-title">Column Pair Trends — per column pair</h4>
+    pr=`<h4 class="block-title">Column Pair Trends — per column pair</h4>
       <p class="note">Relationship preservation per pair (correlation similarity numeric, contingency similarity categorical/mixed).
       1 = identical trend; blank = a pair sdmetrics couldn't score. Shown for ${res.synths[0]}.</p>`;
-    for(const t of Object.keys({...pairs,...pairsData})) q+=heatmapBlock("pairs",t,pairsData[t],pairs[t]);
-  }
-  $("#pane-quality").innerHTML=q;
-  flushPlots();
+    for(const t of Object.keys({...pairs,...pairsData})) pr+=heatmapBlock("pairs",t,pairsData[t],pairs[t]);
+  } else pr=`<p class="note">No column-pair trends were available for these tables.</p>`;
+  $("#sec-pairs").innerHTML=pr;
 
-  /* referential */
-  if(!res.referential.length){
-    $("#pane-ri").innerHTML=`<p class="note">No relationships defined — add parent→child links on the left to check foreign-key coverage.</p>`;
+  /* --- Quality › Referential Integrity (forward + reverse coverage + cardinality) --- */
+  const ri=res.referential||[];
+  let riH;
+  if(!ri.length){
+    riH=`<p class="note">No relationships defined — link tables (or build an entity-key hub) in the
+      <b>Data Model</b> tab to measure referential integrity.</p>`;
   }else{
-    $("#pane-ri").innerHTML=`<p class="note">fk_coverage = share of child foreign-key values present among parent primary keys.
-      ${res.relationships_modeled?"HMA was fitted <b>with</b> these relationships.":"Tables synthesized independently — near-zero coverage is expected for single-table synthesizers."}</p>
-      <table class="rep"><thead><tr><th>relationship</th><th>source</th><th style="text-align:right">fk coverage</th><th>status</th></tr></thead>
-      <tbody>${res.referential.map(r=>`<tr><td class="mono">${r.relationship}</td><td class="mono dim">${r.source}</td>
-        <td class="score-cell">${pct(r.fk_coverage)}</td><td>${pill(r.status)}</td></tr>`).join("")}</tbody></table>`;
+    const realRev={}; ri.forEach(r=>{ if(r.source==="real") realRev[r.relationship]=r.parent_coverage; });
+    riH=`<h4 class="block-title">Referential integrity</h4>
+      <p class="note"><b>fk coverage</b> (forward) = child rows whose foreign key hits a real parent key —
+      1 = no orphans; this drives the status. <b>parent coverage</b> (reverse) = parents that have ≥1 child
+      row (participation) — <i>not</i> expected to be 1; each synthesizer should <b>match the real value</b>,
+      shown as a coloured badge (points away from real: <span class="delta-badge ok">= real</span>
+      <span class="delta-badge warn">↑ 8 pts</span> <span class="delta-badge bad">↓ 22 pts</span>).
+      ${res.relationships_modeled?" HMA was fitted <b>with</b> these relationships; single-table synthesizers reference a hub derived from their own output.":""}</p>
+      <table class="rep"><thead><tr><th>relationship</th><th>source</th>
+        <th style="text-align:right">fk coverage</th><th style="text-align:right">parent coverage</th><th>status</th></tr></thead>
+      <tbody>${ri.map(r=>{
+        let rc=pct(r.parent_coverage);
+        const real=realRev[r.relationship];
+        if(r.source!=="real" && real!=null && r.parent_coverage!=null){
+          const d=r.parent_coverage-real, ad=Math.abs(d);      // signed diff vs real, in fraction
+          const cls=ad<=0.05?"ok":ad<=0.15?"warn":"bad";
+          const label=ad<0.005 ? "= real" : (d>0?"↑":"↓")+" "+(ad*100).toFixed(1)+" pts";
+          rc=`${pct(r.parent_coverage)}<span class="delta-badge ${cls}" title="real: ${pct(real)} — difference vs real">${label}</span>`;
+        }
+        return `<tr><td class="mono">${esc(r.relationship)}</td><td class="mono dim">${esc(r.source)}</td>
+          <td class="score-cell">${pct(r.fk_coverage)}</td><td class="score-cell">${rc}</td><td>${pill(r.status)}</td></tr>`;
+      }).join("")}</tbody></table>`;
+    const card=res.cardinality||{}; const cnames=Object.keys(card);
+    if(cnames.length){
+      riH+=`<h4 class="block-title">Cardinality similarity</h4>
+        <p class="note">Distribution of <b>child rows per parent</b> (including parents with none), synthetic vs real
+        (1 = identical). Catches a synthesizer that over- or under-generates child rows even when forward coverage is 1.</p>
+        <table class="rep"><thead><tr><th>synthesizer</th><th style="text-align:right">shape similarity</th>
+          <th style="text-align:right">statistic similarity</th></tr></thead><tbody>`;
+      const cell=v=>v==null?`<span class="dim">—</span>`:`<span style="color:${meterColor(v)}">${fmt(v)}</span>`;
+      for(const s of cnames){ const e=card[s];
+        riH+=`<tr><td class="mono">${esc(s)}</td><td class="score-cell">${cell(e.shape)}</td>
+          <td class="score-cell">${cell(e.statistic)}</td></tr>`; }
+      riH+=`</tbody></table>`;
+    }
   }
+  $("#sec-ri").innerHTML=riH;
 
-  /* privacy */
-  let pv=fig(res.figures.privacy,"NewRowSynthesis (ideal 1) · Membership-Inference attacker AUC (ideal 0.5) · CategoricalCAP (ideal 1)");
-  pv+=`<table class="rep"><thead><tr><th>synthesizer</th><th>table</th><th>check</th><th>status</th><th>detail</th></tr></thead><tbody>`;
-  for(const [s,tabs] of Object.entries(res.privacy)) for(const [t,rep] of Object.entries(tabs))
-    for(const [chk,v] of Object.entries(rep.verdicts||{}))
-      pv+=`<tr><td class="mono">${s}</td><td class="mono dim">${t}</td><td class="mono">${chk}</td>
-        <td>${pill(v.status)}</td><td class="dim" style="font-size:11.5px">${esc(v.detail)}</td></tr>`;
-  pv+=`</tbody></table>`;
-  $("#pane-privacy").innerHTML=pv;
-
-  /* ml efficacy */
-  if(!res.efficacy.length){ $("#pane-ml").innerHTML=`<p class="note">No usable modelling target found.</p>`; }
+  /* --- Utility (ML efficacy · TSTR) --- */
+  if(!res.efficacy.length){ $("#sec-utility").innerHTML=`<h4 class="block-title">Utility · ML efficacy</h4><p class="note">No usable modelling target found.</p>`; }
   else{
-    let ml=`<p class="note">TSTR — each model trained on real (reference) and on every synthesizer's output, tested on the
-      <b>same real holdout</b>. gap(real−synth) ≈ 0 means synthetic trains as well as real.</p>`;
+    let ml=`<h4 class="block-title">Utility · ML efficacy (TSTR)</h4>
+      <p class="note">Train on Synthetic, Test on Real — each model trained on real (reference) and on every
+      synthesizer's output, tested on the <b>same real holdout</b>. gap(real−synth) ≈ 0 means synthetic trains as well as real.</p>`;
     for(const t of [...new Set(res.efficacy.map(r=>r.table))]){
       const rows=res.efficacy.filter(r=>r.table===t);
       const metrics=[...new Set(rows.map(r=>r.metric))], sources=[...new Set(rows.map(r=>r.train_on))];
@@ -1055,10 +1551,21 @@ function renderReport(res){
       if(notes.size) ml+=`<div class="efflog">`+[...notes].map(n=>"⚠ "+esc(n)).join("\n")+`</div>`;
     }
     ml+=fig(res.figures.efficacy,"TSTR scores per training source");
-    $("#pane-ml").innerHTML=ml;
+    $("#sec-utility").innerHTML=ml;
   }
 
-  activateTab("pane-lb");
+  /* --- Privacy --- */
+  let pv=`<h4 class="block-title">Privacy</h4>`
+    +fig(res.figures.privacy,"NewRowSynthesis (ideal 1) · Membership-Inference attacker AUC (ideal 0.5) · CategoricalCAP (ideal 1)");
+  pv+=`<table class="rep"><thead><tr><th>synthesizer</th><th>table</th><th>check</th><th>status</th><th>detail</th></tr></thead><tbody>`;
+  for(const [s,tabs] of Object.entries(res.privacy)) for(const [t,rep] of Object.entries(tabs))
+    for(const [chk,v] of Object.entries(rep.verdicts||{}))
+      pv+=`<tr><td class="mono">${s}</td><td class="mono dim">${t}</td><td class="mono">${chk}</td>
+        <td>${pill(v.status)}</td><td class="dim" style="font-size:11.5px">${esc(v.detail)}</td></tr>`;
+  pv+=`</tbody></table>`;
+  $("#sec-privacy").innerHTML=pv;
+
+  activateTab("pane-report"); showSection("sec-overview");
 }
 </script>
 </body>

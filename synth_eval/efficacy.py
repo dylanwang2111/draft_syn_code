@@ -1,6 +1,7 @@
 """synth_eval.efficacy — target selection and TSTR ML-efficacy metrics."""
 from __future__ import annotations
 
+import warnings
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -245,11 +246,17 @@ def sdmetrics_ml_efficacy(
             if c == target or c not in tr.columns:
                 continue
             known = set(tr[c].dropna().astype(str).unique())
+            if not known:
+                continue   # training column is all-NaN -> nothing to align to
             col_str = te[c].astype(str)
             mask = ~col_str.isin(known) & te[c].notna()
             if mask.any():
-                mode = tr[c].dropna().astype(str).mode()
-                fill = mode.iloc[0] if len(mode) else next(iter(known), "")
+                fill = tr[c].dropna().astype(str).mode().iloc[0]
+                # cast to object first so writing a string fill into a (possibly
+                # float) categorical column doesn't trip pandas' incompatible-dtype
+                # FutureWarning; NaNs are preserved (mask excludes them).
+                if te[c].dtype != object:
+                    te[c] = te[c].astype(object)
                 te.loc[mask, c] = fill
                 n_aligned += 1
         return te, n_aligned
@@ -310,12 +317,18 @@ def sdmetrics_ml_efficacy(
             rows.append({"table": table_name, "target": target, "task": task,
                          "metric": metric, "train_on": src, "score": score, "note": note})
 
-        # sdmetrics metric(s) — the "official" score(s)
+        # sdmetrics metric(s) — the "official" score(s).  sdmetrics' internal
+        # tree pipeline mean-imputes and warns on all-NaN feature columns
+        # (harmless — that column just contributes nothing); silence that noise.
         for mname, M in metric_classes.items():
             try:
                 if not enough:
                     raise ValueError("too few holdout rows share the training classes")
-                _add(mname, float(M.compute(test_data=test_src, train_data=tr, target=target)), base_note)
+                with warnings.catch_warnings():
+                    warnings.filterwarnings(
+                        "ignore", message="Skipping features without any observed values")
+                    score_ = float(M.compute(test_data=test_src, train_data=tr, target=target))
+                _add(mname, score_, base_note)
             except Exception as e:  # pragma: no cover - defensive
                 _add(mname, float("nan"), (base_note + "; " if base_note else "") + str(e)[:140])
 

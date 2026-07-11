@@ -49,6 +49,7 @@ def build_entity_hub(
     parent_name: Optional[str] = None,
     child_primary_keys: Optional[Dict[str, str]] = None,
     lift_invariant: bool = True,
+    child_tables: Optional[Sequence[str]] = None,
 ) -> Tuple[Dict[str, pd.DataFrame], object, List[dict], dict]:
     """Return ``(new_tables, metadata, relationships, info)``.
 
@@ -61,13 +62,20 @@ def build_entity_hub(
     * ``relationships`` = the same relationships as plain dicts (for the report).
     * ``info`` = {parent, children, lifted_columns} for messaging.
 
+    ``child_tables`` optionally restricts which tables become children of the
+    hub (the user's "select a customized number of tables").  Any table it names
+    that lacks ``entity_key`` is ignored; when omitted, every table containing
+    the key is used.  Tables that contain the key but aren't chosen are left as
+    unlinked standalone tables.
+
     Raises ValueError if ``entity_key`` is in fewer than one table.
     """
     from sdv.metadata import Metadata
 
-    children = entity_key_tables(tables, entity_key)
+    have_key = entity_key_tables(tables, entity_key)
+    children = [t for t in child_tables if t in have_key] if child_tables is not None else have_key
     if not children:
-        raise ValueError(f"entity key '{entity_key}' is not present in any table")
+        raise ValueError(f"entity key '{entity_key}' is not present in any selected table")
 
     parent_name = parent_name or f"{entity_key}_HUB"
     while parent_name in tables:                       # avoid a name collision

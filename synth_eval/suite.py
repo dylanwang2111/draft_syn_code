@@ -91,6 +91,7 @@ def generate_synthetic_suite(
     epochs: int = 300,
     verbose: bool = True,
     constraints=None,
+    should_cancel=None,
 ) -> Dict[str, Dict[str, pd.DataFrame]]:
     """Fit every requested synthesizer and sample synthetic data.
 
@@ -117,6 +118,8 @@ def generate_synthetic_suite(
 
     suite: Dict[str, Dict[str, pd.DataFrame]] = {}
     for name in synthesizers:
+        if should_cancel is not None and should_cancel():
+            break                                    # user cancelled — stop before the next model
         try:
             if name.upper() == "HMA":
                 from sdv.multi_table import HMASynthesizer

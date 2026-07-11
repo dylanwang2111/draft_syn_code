@@ -185,12 +185,25 @@ def sdmetrics_privacy(
         meta_dict = None
 
     # NewRowSynthesis: fraction of synthetic rows that are genuinely new.
+    # Restrict to the *modelable* columns: the id/date/name/audit columns were
+    # refilled by independent bootstrap, so they make every row trivially "novel"
+    # AND make the per-row scan far slower on wide tables (NewRowSynthesis is
+    # ~O(n_synth * n_real * n_cols) -> tens of seconds on a 36-col table).  Also
+    # cap the number of synthetic rows scanned so runtime stays bounded.
     try:
         from sdmetrics.single_table import NewRowSynthesis
 
+        nrs_cols = [c for c in roles.modelable if c in real.columns and c in synth.columns
+                    and (not meta_dict or c in (meta_dict.get("columns", {}) if isinstance(meta_dict, dict) else {}))]
+        if nrs_cols and isinstance(meta_dict, dict) and meta_dict.get("columns"):
+            nrs_meta = {"columns": {c: meta_dict["columns"][c] for c in nrs_cols}}
+            nrs_real, nrs_synth = real[nrs_cols], synth[nrs_cols]
+        else:                                   # fall back to the full frame
+            nrs_meta, nrs_real, nrs_synth = meta_dict, real, synth
+        cap = int(min(len(nrs_synth), 1000)) or None
         score = NewRowSynthesis.compute(
-            real_data=real, synthetic_data=synth, metadata=meta_dict,
-            numerical_match_tolerance=0.01,
+            real_data=nrs_real, synthetic_data=nrs_synth, metadata=nrs_meta,
+            numerical_match_tolerance=0.01, synthetic_sample_size=cap,
         )
         out["NewRowSynthesis"] = float(score)
     except Exception as e:  # pragma: no cover

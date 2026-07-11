@@ -21,6 +21,7 @@ import os
 import re
 import sys
 import threading
+import time
 import traceback
 import warnings
 
@@ -93,7 +94,7 @@ plt.rcParams.update({
 
 import numpy as np
 import pandas as pd
-from fastapi import FastAPI, UploadFile
+from fastapi import FastAPI, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -105,8 +106,45 @@ app = FastAPI(title="Synthetic Data Studio")
 REPORTS_DIR = "reports"
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 
-#: Single in-memory session: {tables, meta_detected, job, results}
-STATE: dict = {"tables": None, "meta_detected": None, "job": None, "results": None}
+
+class _Cancelled(Exception):
+    """Raised inside a job when the user cancels, to unwind and stop all work."""
+
+#: Per-tab in-memory sessions, keyed by the browser tab's session id so that
+#: uploading / editing / synthesizing in one tab never touches another tab's
+#: data or job.  Each value is {tables, meta_detected, job, results, suite, _ts}.
+SESSIONS: dict[str, dict] = {}
+_SESS_LOCK = threading.Lock()
+_MAX_SESSIONS = 32
+
+
+def _new_state() -> dict:
+    return {"tables": None, "meta_detected": None, "job": None,
+            "results": None, "suite": None, "_ts": time.time()}
+
+
+def _session_for(sid: str) -> dict:
+    """Return (creating if needed) the state dict for a tab session id.  Touches
+    the last-used timestamp and evicts the oldest idle session past the cap."""
+    sid = (sid or "default").strip() or "default"
+    with _SESS_LOCK:
+        st = SESSIONS.get(sid)
+        if st is None:
+            st = _new_state()
+            SESSIONS[sid] = st
+            if len(SESSIONS) > _MAX_SESSIONS:
+                # evict the oldest session that isn't mid-run
+                idle = [(k, v.get("_ts", 0.0)) for k, v in SESSIONS.items()
+                        if k != sid and not (v.get("job") and v["job"].get("status") == "running")]
+                if idle:
+                    SESSIONS.pop(min(idle, key=lambda kv: kv[1])[0], None)
+        st["_ts"] = time.time()
+        return st
+
+
+def _sid(request: Request) -> str:
+    """The tab's session id, from the X-Session-Id header (fetch) or ?sid= (links)."""
+    return request.headers.get("X-Session-Id") or request.query_params.get("sid") or "default"
 
 
 # ---------------------------------------------------------------------------
@@ -137,8 +175,8 @@ def _detect(tables: dict[str, pd.DataFrame]) -> dict:
     return Metadata.detect_from_dataframes(tables).to_dict()
 
 
-def _tables_payload():
-    tables, meta = STATE["tables"], STATE["meta_detected"]
+def _tables_payload(st: dict):
+    tables, meta = st["tables"], st["meta_detected"]
     out = {"tables": {}, "relationships": meta.get("relationships") or []}
     for t, df in tables.items():
         tmeta = meta["tables"][t]
@@ -174,9 +212,9 @@ def _build_metadata(tables_meta: dict, relationships: list[dict]):
     return Metadata.load_from_dict({"tables": tables_meta, "relationships": relationships})
 
 
-def _metadata_from_request(schema: dict, rels: list[dict]) -> dict:
+def _metadata_from_request(schema: dict, rels: list[dict], st: dict) -> dict:
     """Merge client sdtype/pk edits onto the detected metadata dict."""
-    detected = STATE["meta_detected"]
+    detected = st["meta_detected"]
     tables_meta = {}
     for t, tmeta in detected["tables"].items():
         edits = (schema.get(t) or {}).get("sdtypes", {})
@@ -291,6 +329,15 @@ def _refill(synth: pd.DataFrame, real: pd.DataFrame, fill_cols, order, seed=0) -
 
 
 def _referential_integrity(rels, real_tables, suite):
+    """Per relationship, per source (real + each synthesizer):
+
+    * ``fk_coverage`` (forward) — share of child FK values that hit a real parent
+      key.  1.0 = no orphan children; this drives the PASS/WARN/FAIL status.
+    * ``parent_coverage`` (reverse) — share of parent keys that appear in the
+      child (i.e. parents that have >=1 child row).  This is *not* expected to be
+      1.0 (some entities legitimately have no child row); it's an informational
+      fidelity signal — synthetic should match the real ratio, not maximise it.
+    """
     rows = []
     for r in rels:
         pt, pk = r["parent_table_name"], r["parent_primary_key"]
@@ -299,16 +346,19 @@ def _referential_integrity(rels, real_tables, suite):
             if pt not in tabs or ct not in tabs or fk not in tabs[ct] or pk not in tabs[pt]:
                 continue
             child = tabs[ct][fk].dropna()
-            cov = float(child.isin(set(tabs[pt][pk])).mean()) if len(child) else float("nan")
+            parent = tabs[pt][pk].dropna()
+            cov = float(child.isin(set(parent)).mean()) if len(child) else float("nan")
+            rcov = float(parent.isin(set(child)).mean()) if len(parent) else float("nan")
             rows.append({
-                "relationship": f"{ct}.{fk} → {pt}.{pk}", "source": src, "fk_coverage": cov,
+                "relationship": f"{ct}.{fk} → {pt}.{pk}", "source": src,
+                "fk_coverage": cov, "parent_coverage": rcov,
                 "status": "PASS" if cov >= 0.99 else "WARN" if cov >= 0.9 else "FAIL",
             })
     return rows
 
 
-def _run_job(cfg: dict):
-    job = STATE["job"]
+def _run_job(cfg: dict, st: dict):
+    job = st["job"]
     log = job["log"]
 
     def set_pct(p):
@@ -317,6 +367,14 @@ def _run_job(cfg: dict):
 
     def say(msg):
         log.append(msg)
+
+    def cancelled():
+        return bool(job.get("cancel"))
+
+    def ck():
+        """Cancellation checkpoint: raise if the user asked to cancel this job."""
+        if cancelled():
+            raise _Cancelled()
 
     def progress(msg):
         """Update a single live '⏳' line (from captured tqdm) instead of spamming.
@@ -332,9 +390,43 @@ def _run_job(cfg: dict):
                     "Sampling": 34, "report": 38}.get(m.group(1), 10)
             set_pct(base + 0.06 * float(m.group(2)))
 
+    # A job-wide heartbeat: whenever visible progress stalls for a few seconds —
+    # HMA's un-instrumented augment/sample, or a single slow metric on wide data —
+    # show a live "still working — <last step> … <elapsed>" line so the run never
+    # looks frozen.  In HMA's post-"Modeling Tables" dead zone (26–39%) it also
+    # creeps the bar so it visibly moves.
+    stop_beat = threading.Event()
+
+    def _beat_line(msg):
+        line = "⏳ " + msg
+        if log and log[-1].startswith("⏳ "):
+            log[-1] = line
+        else:
+            log.append(line)
+
+    def _heartbeat():
+        last_step, last_pct, quiet, step_t0 = None, 0.0, 0.0, time.time()
+        while not stop_beat.wait(3.0):
+            cur = job.get("pct", 0.0)
+            reals = [l for l in log if not l.startswith("⏳ ")]
+            top = reals[-1] if reals else None
+            if top != last_step or cur > last_pct + 0.01:      # real progress -> reset
+                last_step, last_pct, quiet, step_t0 = top, cur, 0.0, time.time()
+                continue
+            quiet += 3.0
+            if quiet >= 6.0:
+                if 26.0 <= cur < 39.0:                          # HMA fit dead zone: creep
+                    set_pct(cur + (39.0 - cur) * 0.05)
+                    last_pct = job.get("pct", 0.0)
+                el = int(time.time() - step_t0)
+                ctx = (top or "working")[:58]
+                _beat_line(f"still working — {ctx} … {el // 60}m{el % 60:02d}s")
+
+    threading.Thread(target=_heartbeat, daemon=True).start()
+
     try:
-        tables = STATE["tables"]
-        tables_meta = _metadata_from_request(cfg.get("schema", {}), cfg.get("relationships", []))
+        tables = st["tables"]
+        tables_meta = _metadata_from_request(cfg.get("schema", {}), cfg.get("relationships", []), st)
         rels = cfg.get("relationships", [])
         # Fast, pandas-only check of whether the declared relationships actually
         # hold in the data (parent PK unique + every child FK present).  SDV's
@@ -357,7 +449,10 @@ def _run_job(cfg: dict):
         roles = {t: se.classify_columns(df, full_metadata, t) for t, df in train.items()}
 
         entity_key = (cfg.get("entity_key") or "").strip()
-        entity_children = se.entity_key_tables(tables, entity_key) if entity_key else []
+        # tables that actually contain the key; the client may pick a subset of them
+        avail_children = se.entity_key_tables(tables, entity_key) if entity_key else []
+        requested = cfg.get("entity_children") or []
+        entity_children = [t for t in requested if t in avail_children] if requested else avail_children
         child_pks = {t: _child_pk(train[t]) for t in entity_children} if entity_children else {}
 
         # columns that must survive pruning (keys), then model = keys + modelable
@@ -390,13 +485,17 @@ def _run_job(cfg: dict):
         if entity_children:
             try:
                 fit_tables, fit_metadata, hub_rels, hub_info = se.build_entity_hub(
-                    reduced_train, entity_key, child_primary_keys=child_pks, lift_invariant=False)
+                    reduced_train, entity_key, child_primary_keys=child_pks,
+                    lift_invariant=False, child_tables=entity_children)
                 parent_name = hub_info["parent"]
-                fit_synths = ["HMA"]
+                others_note = [s for s in cfg["synths"] if s.upper() != "HMA"]
+                _v = "is" if len(others_note) == 1 else "are"
                 say(f"Entity-key mode: built '{parent_name}' over {len(entity_children)} "
-                    f"table(s) — {hub_info['n_entities']} distinct {entity_key}. Using HMA so "
-                    f"referential integrity on {entity_key} is preserved; other synthesizers "
-                    f"are skipped in this mode.")
+                    f"table(s) — {hub_info['n_entities']} distinct {entity_key}. HMA models the "
+                    f"hub so referential integrity on {entity_key} is preserved."
+                    + (f" {', '.join(others_note)} {_v} also fit per-table independently "
+                       f"(single-table models can't preserve cross-table RI — shown for "
+                       f"quality/privacy/utility comparison only)." if others_note else ""))
             except Exception as e:
                 say(f"⚠ entity-key mode failed ({e}); falling back to normal synthesis")
                 parent_name, hub_rels, fit_synths = None, [], cfg["synths"]
@@ -406,18 +505,39 @@ def _run_job(cfg: dict):
             fit_tables = reduced_train
             fit_metadata = _build_metadata(_reduce_meta(tables_meta, keep), rels if rels_ok else [])
 
-        say(f"Fitting: {', '.join(fit_synths)} (epochs={cfg['epochs']}, scale={cfg['scale']})")
+        # epochs only apply to the neural synthesizers; HMA / GaussianCopula have none
+        _uses_epochs = any(s.upper() in ("CTGAN", "TVAE", "COPULAGAN") for s in fit_synths)
+        say(f"Fitting: {', '.join(fit_synths)} (scale={cfg['scale']}"
+            + (f", epochs={cfg['epochs']}" if _uses_epochs else "") + ")")
         _real_err = sys.stderr
         sys.stderr = _TqdmTee(_real_err, progress)     # forward fit progress to the console
         try:
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always")
-                suite = se.generate_synthetic_suite(
-                    fit_tables, fit_metadata, synthesizers=fit_synths,
-                    scale=cfg["scale"], epochs=cfg["epochs"], verbose=False,
-                    constraints=cfg.get("constraints") or [])
+                if parent_name:
+                    # HMA models the derived hub (preserves cross-table RI on the
+                    # key). Any other selected synths are single-table, so fit them
+                    # independently on the reduced tables (no relationships) — they
+                    # still appear in the quality/privacy/utility comparison.
+                    suite = se.generate_synthetic_suite(
+                        fit_tables, fit_metadata, synthesizers=["HMA"],
+                        scale=cfg["scale"], epochs=cfg["epochs"], verbose=False,
+                        constraints=cfg.get("constraints") or [], should_cancel=cancelled)
+                    others = [s for s in cfg["synths"] if s.upper() != "HMA"]
+                    if others and not cancelled():
+                        single_meta = _build_metadata(_reduce_meta(tables_meta, keep), [])
+                        suite.update(se.generate_synthetic_suite(
+                            reduced_train, single_meta, synthesizers=others,
+                            scale=cfg["scale"], epochs=cfg["epochs"], verbose=False,
+                            constraints=cfg.get("constraints") or [], should_cancel=cancelled))
+                else:
+                    suite = se.generate_synthetic_suite(
+                        fit_tables, fit_metadata, synthesizers=fit_synths,
+                        scale=cfg["scale"], epochs=cfg["epochs"], verbose=False,
+                        constraints=cfg.get("constraints") or [], should_cancel=cancelled)
         finally:
             sys.stderr = _real_err
+        ck()   # stop here if cancelled during/after fitting
         for w in caught:
             if any(k in str(w.message) for k in ("skipped", "constraints not applied")):
                 say(f"⚠ {w.message}")
@@ -425,12 +545,36 @@ def _run_job(cfg: dict):
             raise RuntimeError("every synthesizer failed — check the schema edits")
         say(f"Synthesis done: {', '.join(suite)}")
 
-        # Referential integrity is measured while the derived parent is present,
-        # then the parent is dropped so only real tables are evaluated.
+        # Referential integrity + cardinality are measured while the derived
+        # parent is present (they need the parent table), then the parent is
+        # dropped so only real tables are evaluated by the other metrics.
+        cardinality = {}
         if parent_name:
+            # HMA emits the hub itself; for the independent single-table synths,
+            # derive an equivalent hub (the distinct keys they generated across the
+            # child tables) so referential integrity + cardinality are measured and
+            # comparable for every synthesizer, not just HMA.
+            for s, tabs in suite.items():
+                if parent_name not in tabs:
+                    ids = set()
+                    for t in entity_children:
+                        if t in tabs and entity_key in tabs[t].columns:
+                            ids |= set(tabs[t][entity_key].dropna().unique())
+                    tabs[parent_name] = pd.DataFrame(
+                        {entity_key: sorted(ids, key=lambda v: (str(type(v)), str(v)))})
             ri = _referential_integrity(hub_rels, fit_tables, suite)
+            try:
+                cardinality = se.cardinality_report(fit_metadata, fit_tables, suite)
+            except Exception as e:
+                say(f"⚠ cardinality metrics skipped: {e}")
             for s in list(suite):
                 suite[s].pop(parent_name, None)
+        elif rels and rels_ok:
+            ri = _referential_integrity(rels, reduced_train, suite)
+            try:
+                cardinality = se.cardinality_report(fit_metadata, reduced_train, suite)
+            except Exception as e:
+                say(f"⚠ cardinality metrics skipped: {e}")
         else:
             ri = _referential_integrity(rels, reduced_train, suite) if rels else []
 
@@ -476,6 +620,7 @@ def _run_job(cfg: dict):
         for s, tabs in suite.items():
             quality_scores[s] = {}
             for t, sdf in tabs.items():
+                ck()
                 say(f"QualityReport · {s} · {t}")
                 qr = QualityReport()
                 qr.generate(train[t], sdf, meta_dict["tables"][t], verbose=False)
@@ -498,6 +643,7 @@ def _run_job(cfg: dict):
         for s, tabs in suite.items():
             privacy_all[s] = {}
             for t, sdf in tabs.items():
+                ck()
                 say(f"Privacy · {s} · {t}")
                 privacy_all[s][t] = se.privacy_report(
                     train[t], hold[t], sdf, roles[t], t, REPORTS_DIR, full_metadata)
@@ -505,6 +651,7 @@ def _run_job(cfg: dict):
 
         eff_frames = []
         for t in tables:
+            ck()
             tgt = (cfg.get("targets") or {}).get(t) or "auto"
             if tgt == "auto":
                 sel = se.auto_select_target(train[t], roles[t])
@@ -521,6 +668,7 @@ def _run_job(cfg: dict):
             done_e += 1; set_pct(80 + 12 * done_e / max(1, n_tab))
         efficacy = pd.concat(eff_frames, ignore_index=True) if eff_frames else pd.DataFrame()
 
+        ck()
         set_pct(93)
         say("Leaderboard + comparison figures…")
         leaderboard = se.compute_leaderboard(quality_scores, privacy_all, efficacy)
@@ -545,8 +693,11 @@ def _run_job(cfg: dict):
                     recs, f"{fig_dir}/web_pairs_{t}.png", t, primary)
                 figs["pairs_data"][t] = se.pair_trends_heatmap_data(recs)
 
-        STATE["suite"] = suite  # kept server-side for CSV downloads
-        STATE["results"] = _clean({
+        ck()   # last checkpoint before publishing
+        if st.get("job") is not job:
+            return   # a newer job in this session superseded us; don't clobber it
+        st["suite"] = suite  # kept server-side for CSV downloads
+        st["results"] = _clean({
             "synths": list(suite),
             "tables": list(tables),
             "palette": se.SYNTH_PALETTE,
@@ -556,6 +707,7 @@ def _run_job(cfg: dict):
                               for t, d in shape_details.items()},
             "pair_details": pair_details,
             "referential": ri,
+            "cardinality": cardinality,
             "relationships_modeled": rels_ok and bool(rels),
             "privacy": {s: {t: {k: v for k, v in rep.items() if k != "dcr_arrays"}
                             for t, rep in tabs.items()}
@@ -567,11 +719,16 @@ def _run_job(cfg: dict):
         job["pct"] = 100.0
         job["status"] = "done"
         say("Done ✓")
+    except _Cancelled:
+        job["status"] = "cancelled"
+        say("■ cancelled — synthesis stopped, no report generated")
     except Exception as e:
         job["status"] = "error"
         job["error"] = f"{e}"
         log.append(f"✗ {e}")
         traceback.print_exc()
+    finally:
+        stop_beat.set()   # stop the heartbeat thread
 
 
 # ---------------------------------------------------------------------------
@@ -584,41 +741,104 @@ def index():
 
 
 @app.post("/api/upload")
-async def upload(files: list[UploadFile]):
+async def upload(files: list[UploadFile], request: Request):
+    st = _session_for(_sid(request))
     tables = {}
     for f in files:
         name = os.path.splitext(os.path.basename(f.filename))[0].upper()
         tables[name] = pd.read_csv(io.BytesIO(await f.read()), low_memory=False)
-    STATE.update(tables=tables, meta_detected=_detect(tables), results=None, job=None)
-    return _tables_payload()
+    st.update(tables=tables, meta_detected=_detect(tables), results=None, job=None, suite=None)
+    return _tables_payload(st)
 
 
 @app.post("/api/sample")
-def sample():
+def sample(request: Request):
+    st = _session_for(_sid(request))
     paths = sorted(glob.glob("sdg/seed/*.csv"))
     if not paths:
         return JSONResponse({"error": "no sample data found in sdg/seed/"}, status_code=404)
     tables = {os.path.splitext(os.path.basename(p))[0].upper(): pd.read_csv(p, low_memory=False)
               for p in paths}
-    STATE.update(tables=tables, meta_detected=_detect(tables), results=None, job=None)
-    return _tables_payload()
+    st.update(tables=tables, meta_detected=_detect(tables), results=None, job=None, suite=None)
+    return _tables_payload(st)
+
+
+@app.post("/api/validate_model")
+def validate_model(cfg: dict, request: Request):
+    """Structurally validate the user's data model against the *real* data:
+    for each declared relationship check the parent key is unique and measure
+    how many child FK values point at a real parent key; for the entity-key hub
+    confirm the key is present in the chosen tables.  Read-only, no synthesis."""
+    tables = _session_for(_sid(request))["tables"]
+    if tables is None:
+        return JSONResponse({"error": "upload data first"}, status_code=400)
+    results = []
+    for r in cfg.get("relationships") or []:
+        pt, pk = r.get("parent_table_name"), r.get("parent_primary_key")
+        ct, fk = r.get("child_table_name"), r.get("child_foreign_key")
+        label = f"{ct}.{fk} → {pt}.{pk}"
+        if pt not in tables or ct not in tables or pk not in tables.get(pt, {}).columns or fk not in tables.get(ct, {}).columns:
+            results.append({"label": label, "status": "FAIL", "detail": "table or column not found"})
+            continue
+        parent_keys = tables[pt][pk]
+        child = tables[ct][fk].dropna()
+        if parent_keys.duplicated().any():
+            results.append({"label": label, "status": "FAIL",
+                            "detail": f"parent key {pt}.{pk} is not unique — not a valid primary key"})
+        elif not len(child):
+            results.append({"label": label, "status": "WARN", "detail": "child foreign key is entirely null"})
+        else:
+            cov = float(child.isin(set(parent_keys.dropna())).mean())
+            status = "PASS" if cov >= 0.99 else "WARN" if cov >= 0.90 else "FAIL"
+            results.append({"label": label, "status": status,
+                            "detail": f"{cov*100:.1f}% of child rows match a parent key"})
+    entity_key = (cfg.get("entity_key") or "").strip()
+    if entity_key:
+        avail = se.entity_key_tables(tables, entity_key)
+        requested = cfg.get("entity_children") or []
+        chosen = [t for t in requested if t in avail] if requested else avail
+        if not chosen:
+            results.append({"label": f"hub {entity_key}", "status": "FAIL",
+                            "detail": f"'{entity_key}' is not present in any selected table"})
+        else:
+            ids = set()
+            for t in chosen:
+                ids |= set(tables[t][entity_key].dropna().unique())
+            results.append({"label": f"hub {entity_key} → {', '.join(chosen)}", "status": "PASS",
+                            "detail": f"{len(ids)} distinct entities · HMA preserves referential "
+                                      f"integrity on {entity_key} by construction"})
+    return {"results": results}
 
 
 @app.post("/api/synthesize")
-async def synthesize(cfg: dict):
-    if STATE["tables"] is None:
+async def synthesize(cfg: dict, request: Request):
+    st = _session_for(_sid(request))
+    if st["tables"] is None:
         return JSONResponse({"error": "upload data first"}, status_code=400)
-    if STATE["job"] and STATE["job"]["status"] == "running":
-        return JSONResponse({"error": "a job is already running"}, status_code=409)
-    STATE["job"] = {"status": "running", "log": [], "error": None, "pct": 0.0}
-    STATE["results"] = None
-    threading.Thread(target=_run_job, args=(cfg,), daemon=True).start()
+    if st["job"] and st["job"]["status"] == "running":
+        return JSONResponse({"error": "a job is already running in this tab"}, status_code=409)
+    st["job"] = {"status": "running", "log": [], "error": None, "pct": 0.0}
+    st["results"] = None
+    threading.Thread(target=_run_job, args=(cfg, st), daemon=True).start()
     return {"status": "running"}
 
 
+@app.post("/api/cancel")
+def cancel(request: Request):
+    """Cancel this tab's running job. Flags it cancelled immediately (so the UI
+    frees up and a new run is allowed); the worker thread unwinds all remaining
+    synthesis/evaluation work at its next checkpoint and produces no report."""
+    job = _session_for(_sid(request)).get("job")
+    if not job or job.get("status") != "running":
+        return {"status": (job or {}).get("status", "idle")}
+    job["cancel"] = True
+    job["status"] = "cancelled"
+    return {"status": "cancelled"}
+
+
 @app.get("/api/progress")
-def progress():
-    job = STATE["job"]
+def progress(request: Request):
+    job = _session_for(_sid(request))["job"]
     if not job:
         return {"status": "idle", "log": []}
     return {"status": job["status"], "log": job["log"], "error": job.get("error"),
@@ -626,15 +846,16 @@ def progress():
 
 
 @app.get("/api/results")
-def results():
-    if STATE["results"] is None:
+def results(request: Request):
+    res = _session_for(_sid(request))["results"]
+    if res is None:
         return JSONResponse({"error": "no results yet"}, status_code=404)
-    return STATE["results"]
+    return res
 
 
 @app.get("/api/download/{synth}/{table}")
-def download(synth: str, table: str):
-    suite = STATE.get("suite") or {}
+def download(synth: str, table: str, request: Request):
+    suite = _session_for(_sid(request)).get("suite") or {}
     if synth not in suite or table not in suite[synth]:
         return JSONResponse({"error": "not found"}, status_code=404)
     buf = io.StringIO()
