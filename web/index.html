@@ -299,21 +299,21 @@ h4.block-title:first-child{margin-top:0}
 .kpi-subs b{font-weight:600}
 .kpi-note{margin:10px 0 18px}
 /* hover-to-explain: the long "why" copy lives in here, not on the screen.
-   `data-tip` is plain text; keep it short enough to read in one breath. */
+   NB the bubble is a single element on <body>, positioned in JS — a CSS
+   ::after tooltip would be clipped by any scrolling ancestor (the left panel
+   and the report body both scroll), which is exactly what happened. */
 .ihelp{display:inline-flex; align-items:center; justify-content:center; width:14px; height:14px;
   border-radius:50%; border:1px solid var(--line); background:var(--panel-2); color:var(--faint);
   font-family:var(--disp); font-size:9.5px; font-weight:700; font-style:normal; cursor:help;
-  position:relative; vertical-align:middle; margin-left:6px; flex:none; letter-spacing:0;
+  vertical-align:middle; margin-left:6px; flex:none; letter-spacing:0;
   text-transform:none; line-height:1}
 .ihelp:hover{border-color:var(--blue); color:var(--blue); background:var(--tint)}
-.ihelp::after{content:attr(data-tip); position:absolute; left:50%; top:calc(100% + 9px);
-  transform:translateX(-50%); width:300px; max-width:78vw; background:var(--panel); color:var(--muted);
-  border:1px solid var(--line); border-radius:10px; padding:10px 12px; box-shadow:0 12px 30px rgba(1,29,53,.24);
-  font-family:var(--sans); font-size:11.5px; font-weight:400; line-height:1.55; text-align:left;
-  letter-spacing:0; text-transform:none; white-space:normal; opacity:0; visibility:hidden;
-  transition:opacity .12s ease; z-index:60; pointer-events:none}
-.ihelp:hover::after{opacity:1; visibility:visible}
-.ihelp.rt::after{left:auto; right:-6px; transform:none}   /* near the right edge */
+.tipbox{position:fixed; left:0; top:0; width:300px; max-width:calc(100vw - 24px);
+  background:var(--panel); color:var(--muted); border:1px solid var(--line); border-radius:10px;
+  padding:10px 12px; box-shadow:0 12px 30px rgba(1,29,53,.24); font-family:var(--sans);
+  font-size:11.5px; font-weight:400; line-height:1.55; text-align:left; white-space:normal;
+  opacity:0; visibility:hidden; transition:opacity .12s ease; z-index:200; pointer-events:none}
+.tipbox.show{opacity:1; visibility:visible}
 /* per-panel ratio column in the TSTR table: shows what the utility mean is made of */
 td.ratio-cell{font-family:var(--mono); text-align:right; font-weight:600}
 td.ratio-cell .cap{color:var(--faint); font-weight:400; margin-left:3px}
@@ -1518,6 +1518,37 @@ async function poll(){
 const fig=(b64,cap="",cls="")=>b64?`<figure class="fig ${cls}"><img src="data:image/png;base64,${b64}">${cap?`<figcaption>${esc(cap)}</figcaption>`:""}</figure>`:"";
 /* hover-to-explain marker — put the "why" here instead of on the screen */
 const ihelp=(tip,cls="")=>`<i class="ihelp ${cls}" data-tip="${esc(tip)}">i</i>`;
+/* One tooltip element on <body>, positioned against whichever marker is hovered.
+   It must live outside the panels: both the left column and the report body
+   scroll, and a tooltip inside a scrolling box gets clipped at its edge. */
+(function(){
+  const box=document.createElement("div");
+  box.className="tipbox"; box.id="tipbox"; box.setAttribute("role","tooltip");
+  document.body.appendChild(box);
+  let cur=null;
+  const hide=()=>{ box.classList.remove("show"); cur=null; };
+  const show=el=>{
+    const txt=el.getAttribute("data-tip"); if(!txt) return;
+    cur=el; box.textContent=txt; box.classList.add("show");
+    box.style.left="0px"; box.style.top="0px";              // measure unclamped
+    const M=10, r=el.getBoundingClientRect(), b=box.getBoundingClientRect();
+    let x=r.left+r.width/2-b.width/2;
+    x=Math.max(M, Math.min(x, window.innerWidth-b.width-M));      // keep on screen
+    let y=r.bottom+8;
+    if(y+b.height>window.innerHeight-M) y=Math.max(M, r.top-b.height-8);   // flip above
+    box.style.left=Math.round(x)+"px"; box.style.top=Math.round(y)+"px";
+  };
+  document.addEventListener("pointerover",e=>{
+    const el=e.target.closest&&e.target.closest(".ihelp");
+    if(el && el!==cur) show(el);
+  });
+  document.addEventListener("pointerout",e=>{
+    const el=e.target.closest&&e.target.closest(".ihelp");
+    if(el && el===cur) hide();
+  });
+  document.addEventListener("scroll",hide,true);   // capture: any scrolling ancestor
+  window.addEventListener("resize",hide);
+})();
 /* section heading: short title + one-line subtitle, detail on hover */
 const head=(title,tip,sub="")=>`<h4 class="block-title">${esc(title)}${tip?ihelp(tip):""}</h4>`
   +(sub?`<p class="note">${sub}</p>`:"");
