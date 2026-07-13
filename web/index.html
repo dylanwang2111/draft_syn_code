@@ -12,6 +12,7 @@
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
 <style>
 :root{
+  color-scheme:light;
   --bg:#eaf1f8; --panel:#ffffff; --panel-2:#f1f6fc; --tint:#e7f0fa;
   --line:#d5e2f0; --line-soft:#e7eef7;
   --ink:#122c42; --muted:#5b7288; --faint:#93a6ba;
@@ -24,6 +25,7 @@
   --err-bg:#fff7e8; --fig-bg:#ffffff;
 }
 :root[data-theme="dark"]{
+  color-scheme:dark;                      /* native dark selects, scrollbars, popups */
   --bg:#0c141d; --panel:#141e2a; --panel-2:#101a25; --tint:#16283a;
   --line:#243444; --line-soft:#1a2836;
   --ink:#e6eef6; --muted:#93a6ba; --faint:#5f7488;
@@ -35,11 +37,27 @@
 }
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%}
-body{background:var(--bg); color:var(--ink); font-family:var(--sans); font-weight:380;
-  font-size:14px; line-height:1.5; overflow:hidden}
+body{color:var(--ink); font-family:var(--sans); font-weight:380;
+  font-size:14px; line-height:1.5; overflow:hidden;
+  /* layered ambient washes — blue top-left, a whisper of red top-right (the two
+     brand hues), over the flat base. Panels sit on top; the depth shows in the
+     working area behind the panes. */
+  background:
+    radial-gradient(1100px 520px at 6% -8%, var(--tint) 0%, transparent 62%),
+    radial-gradient(760px 420px at 104% -6%, color-mix(in srgb, var(--red) 5%, transparent) 0%, transparent 60%),
+    var(--bg)}
 button{font-family:var(--mono); cursor:pointer; border-radius:8px; transition:.15s}
+button:not(:disabled):active{transform:translateY(1px)}
+:focus-visible{outline:2px solid var(--blue); outline-offset:2px}
+::selection{background:color-mix(in srgb, var(--blue) 26%, transparent)}
 ::-webkit-scrollbar{height:9px;width:9px} ::-webkit-scrollbar-track{background:transparent}
-::-webkit-scrollbar-thumb{background:var(--sky); border-radius:9px; border:2px solid var(--bg)}
+::-webkit-scrollbar-thumb{background:color-mix(in srgb, var(--sky) 55%, transparent);
+  border-radius:9px; border:2px solid transparent; background-clip:padding-box}
+::-webkit-scrollbar-thumb:hover{background:var(--sky); border:2px solid transparent; background-clip:padding-box}
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{animation-duration:.01ms !important; animation-iteration-count:1 !important;
+    transition-duration:.01ms !important}
+}
 
 /* ---------------- toolbar ---------------- */
 .toolbar{height:var(--tool-h); display:flex; align-items:center; gap:16px; padding:0 20px;
@@ -53,9 +71,14 @@ button{font-family:var(--mono); cursor:pointer; border-radius:8px; transition:.1
   font-weight:500; padding:9px 16px; letter-spacing:.03em; display:inline-flex; align-items:center; gap:7px}
 .tbtn:hover{border-color:var(--blue); color:var(--blue)}
 .tbtn svg{width:15px; height:15px}
-.tbtn.primary{background:var(--blue); border-color:var(--blue); color:#fff;
-  box-shadow:0 4px 12px rgba(0,121,193,.32)}
-.tbtn.primary:hover{background:#0a86cf}
+.tbtn.primary{background:linear-gradient(180deg, color-mix(in srgb, var(--blue) 88%, #fff), var(--blue));
+  border-color:var(--blue); color:#fff; box-shadow:0 4px 12px rgba(0,121,193,.32);
+  position:relative; overflow:hidden}
+.tbtn.primary:hover{box-shadow:0 6px 16px rgba(0,121,193,.42)}
+.tbtn.primary:not(:disabled)::after{content:""; position:absolute; inset:0;
+  background:linear-gradient(105deg, transparent 35%, rgba(255,255,255,.28) 50%, transparent 65%);
+  background-size:250% 100%; background-position:180% 0; transition:background-position .5s ease}
+.tbtn.primary:not(:disabled):hover::after{background-position:-80% 0}
 .tbtn.primary:disabled{opacity:.45; cursor:not-allowed; box-shadow:none}
 .tbtn.danger{background:var(--red); border-color:var(--red); color:#fff; box-shadow:0 4px 12px rgba(227,24,55,.28)}
 .tbtn.danger:hover{background:var(--red-deep)}
@@ -131,13 +154,15 @@ button{font-family:var(--mono); cursor:pointer; border-radius:8px; transition:.1
 .mini-btn.primary:hover{background:var(--blue-deep); border-color:var(--blue-deep); color:#fff}
 .mini-btn.done{color:var(--pass); border-color:var(--line-soft); background:transparent; cursor:default}
 
-/* file tables */
-.ftable{width:100%; border-collapse:collapse; font-size:12.5px}
+/* file tables — horizontal rules only; the full grid of borders was heavy */
+.ftable{width:100%; border-collapse:separate; border-spacing:0; font-size:12.5px;
+  border:1px solid var(--line); border-radius:10px; overflow:hidden}
 .ftable th{font-family:var(--mono); font-size:9.5px; letter-spacing:.1em; text-transform:uppercase;
   color:var(--muted); text-align:left; padding:7px 10px; background:var(--panel-2);
-  border:1px solid var(--line); font-weight:600}
+  border-bottom:1px solid var(--line); font-weight:600}
 .ftable th:last-child{text-align:right}
-.ftable td{padding:8px 10px; border:1px solid var(--line); vertical-align:middle}
+.ftable td{padding:8px 10px; border-bottom:1px solid var(--line-soft); vertical-align:middle}
+.ftable tr:last-child td{border-bottom:none}
 .ftable tr{cursor:pointer}
 .ftable tr:hover td{background:var(--tint)}
 .ftable tr.sel td{background:var(--tint); box-shadow:inset 3px 0 0 var(--blue)}
@@ -159,6 +184,7 @@ input[type=range]{width:100%; accent-color:var(--blue)}
   border:1px solid var(--line); border-radius:999px; padding:6px 12px; background:var(--panel);
   color:var(--muted); cursor:pointer; user-select:none; transition:.15s}
 .chip .dot{width:9px; height:9px; border-radius:50%; opacity:.4}
+.chip:hover{border-color:var(--sky); color:var(--ink)}
 .chip.on{border-color:var(--blue); color:var(--ink); background:var(--tint)} .chip.on .dot{opacity:1}
 .hint{font-size:11px; color:var(--faint); margin-top:5px; line-height:1.4}
 select{background:var(--panel); color:var(--ink); border:1px solid var(--line); border-radius:7px;
@@ -195,7 +221,10 @@ select:hover{border-color:var(--sky)} select:focus{outline:none; border-color:va
 .welcome{height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center;
   text-align:center; border:2px dashed #b6d2ea; border-radius:18px; color:var(--muted); transition:.2s}
 .welcome.over{border-color:var(--blue); background:var(--tint)}
-.welcome .up{width:54px;height:54px;color:var(--blue);margin-bottom:16px}
+.welcome .up{width:54px;height:54px;color:var(--blue);margin-bottom:16px;
+  animation:floaty 3.6s ease-in-out infinite}
+@keyframes floaty{0%,100%{transform:translateY(0)}50%{transform:translateY(-7px)}}
+.welcome.over .up{animation-duration:1.2s}
 .welcome h3{font-family:var(--disp); font-weight:600; font-size:23px; color:var(--ink); margin-bottom:6px}
 .welcome p{font-size:13.5px; max-width:420px}
 
@@ -238,7 +267,9 @@ select:hover{border-color:var(--sky)} select:focus{outline:none; border-color:va
 .blk-head .dim{font-family:var(--mono); font-size:12px; color:var(--muted); margin-left:auto}
 table.grid{width:100%; border-collapse:collapse; font-size:13px}
 table.grid th{font-family:var(--mono); font-size:10px; letter-spacing:.1em; text-transform:uppercase;
-  color:var(--blue); text-align:left; padding:9px 11px; border-bottom:1px solid var(--line); font-weight:600}
+  color:var(--blue); text-align:left; padding:9px 11px; border-bottom:1px solid var(--line); font-weight:600;
+  position:sticky; top:0; z-index:2;   /* a 49-column table scrolls far past its header */
+  background:color-mix(in srgb, var(--bg) 84%, transparent); backdrop-filter:blur(6px)}
 table.grid td{padding:6px 11px; border-bottom:1px solid var(--line-soft)}
 table.grid tr:hover td{background:var(--panel-2)}
 td.mono,.mono{font-family:var(--mono); font-size:12px} td.dim{color:var(--muted)}
@@ -260,13 +291,25 @@ h4.block-title:first-child{margin-top:0}
 .note{font-size:12.5px; color:var(--muted); max-width:820px; margin-bottom:12px}
 .podium{display:grid; grid-template-columns:repeat(auto-fit,minmax(215px,1fr)); gap:14px; margin-bottom:22px}
 .lb-card{position:relative; overflow:hidden; background:var(--panel); border:1px solid var(--line);
-  border-radius:14px; padding:18px; box-shadow:var(--shadow)}
+  border-radius:14px; padding:18px; box-shadow:var(--shadow);
+  transition:transform .18s ease, box-shadow .18s ease}
+.lb-card:hover{transform:translateY(-2px); box-shadow:var(--shadow-lg)}
 .lb-card .rank{position:absolute; top:-10px; right:12px; font-family:var(--disp); font-size:52px;
   font-weight:700; color:var(--line); line-height:1}
-.lb-card.first{border-color:var(--blue)} .lb-card.first .rank{color:var(--sky)}
+.lb-card.first{border-color:var(--blue);
+  background:linear-gradient(180deg, var(--tint), var(--panel) 46%)}
+.lb-card.first .rank{color:var(--sky)}
+/* one orchestrated reveal when the report lands: cards rise in, left to right */
+.podium .lb-card,.kpi-row .kpi{animation:rise .45s cubic-bezier(.2,.7,.2,1) backwards}
+.podium .lb-card:nth-child(2),.kpi-row .kpi:nth-child(2){animation-delay:.06s}
+.podium .lb-card:nth-child(3),.kpi-row .kpi:nth-child(3){animation-delay:.12s}
+.podium .lb-card:nth-child(4),.kpi-row .kpi:nth-child(4){animation-delay:.18s}
+.podium .lb-card:nth-child(n+5),.kpi-row .kpi:nth-child(n+5){animation-delay:.24s}
+@keyframes rise{from{opacity:0; transform:translateY(12px)}to{opacity:1; transform:none}}
 .lb-name{font-family:var(--disp); font-weight:600; font-size:16px; display:flex; align-items:center; gap:8px; margin-bottom:12px}
 .lb-name .dot{width:11px; height:11px; border-radius:50%}
-.big-score{font-family:var(--disp); font-size:34px; font-weight:700; margin:2px 0 12px}
+.big-score{font-family:var(--disp); font-size:34px; font-weight:700; margin:2px 0 12px;
+  font-variant-numeric:tabular-nums}
 .big-score small{font-size:13px; color:var(--faint); font-family:var(--mono); font-weight:400}
 .meter{margin-bottom:9px}
 .meter .m-label{display:flex; justify-content:space-between; font-family:var(--mono); font-size:10px;
@@ -277,14 +320,16 @@ h4.block-title:first-child{margin-top:0}
 /* condensed per-section scorecards (one per synthesizer, above the figures) */
 .kpi-row{display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:12px; margin-bottom:8px}
 .kpi{background:var(--panel); border:1px solid var(--line); border-radius:13px; padding:14px 15px;
-  box-shadow:var(--shadow)}
-.kpi.best{border-color:var(--blue)}
+  box-shadow:var(--shadow); transition:transform .18s ease, box-shadow .18s ease}
+.kpi:hover{transform:translateY(-2px); box-shadow:var(--shadow-lg)}
+.kpi.best{border-color:var(--blue); background:linear-gradient(180deg, var(--tint), var(--panel) 52%)}
 .kpi-head{display:flex; align-items:center; gap:7px; font-family:var(--disp); font-weight:600;
   font-size:13.5px; color:var(--ink)}
 .kpi-head .dot{width:9px; height:9px; border-radius:50%; flex:none}
 .kpi-tag{margin-left:auto; font-family:var(--mono); font-size:8.5px; letter-spacing:.1em;
   text-transform:uppercase; color:#fff; background:var(--blue); border-radius:99px; padding:2px 7px}
-.kpi-score{font-family:var(--disp); font-size:30px; font-weight:700; line-height:1.15; margin:6px 0 8px}
+.kpi-score{font-family:var(--disp); font-size:30px; font-weight:700; line-height:1.15; margin:6px 0 8px;
+  font-variant-numeric:tabular-nums}
 .kpi-score small{font-size:11px; color:var(--faint); font-family:var(--mono); font-weight:400; margin-left:4px}
 /* the literal arithmetic behind the headline — the number must be reconstructable */
 .kpi-formula{margin-top:9px; font-family:var(--mono); font-size:10px; line-height:1.5;
@@ -312,8 +357,9 @@ h4.block-title:first-child{margin-top:0}
   background:var(--panel); color:var(--muted); border:1px solid var(--line); border-radius:10px;
   padding:10px 12px; box-shadow:0 12px 30px rgba(1,29,53,.24); font-family:var(--sans);
   font-size:11.5px; font-weight:400; line-height:1.55; text-align:left; white-space:normal;
-  opacity:0; visibility:hidden; transition:opacity .12s ease; z-index:200; pointer-events:none}
-.tipbox.show{opacity:1; visibility:visible}
+  opacity:0; visibility:hidden; transform:translateY(4px);
+  transition:opacity .14s ease, transform .14s ease; z-index:200; pointer-events:none}
+.tipbox.show{opacity:1; visibility:visible; transform:none}
 /* per-panel ratio column in the TSTR table: shows what the utility mean is made of */
 td.ratio-cell{font-family:var(--mono); text-align:right; font-weight:600}
 td.ratio-cell .cap{color:var(--faint); font-weight:400; margin-left:3px}
@@ -327,10 +373,15 @@ table.eff th .hsub{font-weight:400; text-transform:none; letter-spacing:0; color
 th.grp{border-left:1px solid var(--line)}
 .tbl-legend{font-size:11.5px; color:var(--faint); margin:6px 0 20px; max-width:none}
 table.rep{width:100%; border-collapse:collapse; font-size:12.5px; margin-bottom:6px}
+/* sticky headers: the RI table runs to dozens of rows — keep the column names
+   in view while it scrolls. Translucent + blur so the ambient bg doesn't clash. */
+table.rep thead th{position:sticky; top:0; z-index:2;
+  background:color-mix(in srgb, var(--bg) 84%, transparent); backdrop-filter:blur(6px)}
 table.rep th{font-family:var(--mono); font-size:10px; letter-spacing:.1em; text-transform:uppercase;
   color:var(--blue); text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); font-weight:600}
 table.rep td{padding:6px 10px; border-bottom:1px solid var(--line-soft)}
-table.rep tr:hover td{background:var(--panel-2)}
+table.rep tbody tr:hover td{background:var(--tint)}
+table.rep td{font-variant-numeric:tabular-nums}
 .score-cell{font-family:var(--mono); font-size:12px; text-align:right}
 .pill{display:inline-block; font-family:var(--mono); font-size:10px; font-weight:600; letter-spacing:.06em;
   padding:2px 10px; border-radius:999px; border:1px solid}
@@ -393,7 +444,8 @@ table.rep tr:hover td{background:var(--panel-2)}
 .dm-svg .plug.hub{fill:var(--blue)}
 .dm-svg .card-mark{fill:var(--ink); font-family:var(--mono); font-size:12px; font-weight:700; pointer-events:none}
 .dm-card{position:absolute; width:186px; background:var(--panel); border:1px solid var(--line);
-  border-radius:11px; box-shadow:var(--shadow); user-select:none}
+  border-radius:11px; box-shadow:var(--shadow); user-select:none; transition:box-shadow .15s ease}
+.dm-card:hover{box-shadow:var(--shadow-lg)}
 .dm-card.hubnode{border-color:var(--blue); box-shadow:0 0 0 1px var(--blue),var(--shadow)}
 .dm-card.drop-ok{border-color:var(--pass); box-shadow:0 0 0 2px var(--pass)}
 .dm-head{display:flex; align-items:center; gap:7px; padding:9px 11px; cursor:grab;
@@ -453,7 +505,8 @@ table.rep tr:hover td{background:var(--panel-2)}
 /* console drawer */
 .console{flex:none; max-height:0; overflow:hidden; background:#04283f; color:#9ec7e4;
   font-family:var(--mono); font-size:12px; transition:max-height .25s; border-top:1px solid var(--navy)}
-.console.show{max-height:190px; overflow-y:auto; padding:14px 20px}
+.console.show{max-height:190px; overflow-y:auto; padding:14px 20px;
+  box-shadow:inset 0 12px 16px -14px rgba(0,0,0,.55)}
 .console .ln{padding:1.5px 0} .console .ln.warn{color:#f2c14e} .console .ln.err{color:#ff8f9e}
 .console .ln.ok{color:#7fe0a6}
 .cursor::after{content:"▮"; color:var(--sky); animation:blink 1s steps(1) infinite; margin-left:2px}
@@ -463,7 +516,13 @@ table.rep tr:hover td{background:var(--panel-2)}
   transition:height .2s; border-top:0 solid var(--line)}
 .jobbar.show{height:22px; border-top-width:1px}
 .jobbar-fill{height:100%; width:0; background:linear-gradient(90deg,var(--blue),var(--sky));
-  transition:width .45s cubic-bezier(.2,.7,.2,1)}
+  transition:width .45s cubic-bezier(.2,.7,.2,1); position:relative; overflow:hidden}
+/* a moving sheen so the bar reads as alive even while the percent holds still
+   (HMA has long silent phases; a static fill looks like a hang) */
+.jobbar-fill::after{content:""; position:absolute; inset:0;
+  background:linear-gradient(105deg, transparent 30%, rgba(255,255,255,.35) 50%, transparent 70%);
+  background-size:220% 100%; animation:sheen 1.6s linear infinite}
+@keyframes sheen{from{background-position:180% 0}to{background-position:-80% 0}}
 .jobbar-lbl{position:absolute; inset:0; display:flex; align-items:center; gap:8px; padding:0 12px;
   font-family:var(--mono); font-size:11px; color:var(--ink); pointer-events:none}
 </style>
@@ -561,8 +620,8 @@ table.rep tr:hover td{background:var(--panel-2)}
   <main class="right">
     <div class="tabbar" id="tabbar">
       <button class="tab active" data-pane="pane-schema">Schema</button>
-      <button class="tab locked" data-pane="pane-model">Data Model</button>
-      <button class="tab locked" data-pane="pane-report">Report</button>
+      <button class="tab locked" data-pane="pane-model" title="Load data first">Data Model</button>
+      <button class="tab locked" data-pane="pane-report" title="Run a synthesis to unlock the report">Report</button>
     </div>
     <div class="panes">
       <div class="pane active" id="pane-schema">
@@ -857,7 +916,7 @@ function initModel(seedRels){
   layoutNodes(true);
   buildHubBar();
   renderModel();
-  $('.tab[data-pane="pane-model"]').classList.remove("locked");
+  const mt=$('.tab[data-pane="pane-model"]'); mt.classList.remove("locked"); mt.removeAttribute("title");
 }
 /* ---- canvas layout rules -------------------------------------------------
    1. a card never spawns on top of another: a node with no stored position is
@@ -1407,7 +1466,10 @@ function updateEpochsVisibility(){
 /* ---------------- tabs ---------------- */
 function lockReportTabs(lock){
   const keep=["pane-schema","pane-model"];   // schema + data model stay usable pre-run
-  $$('.tab[data-pane]').forEach(t=>{ if(!keep.includes(t.dataset.pane)) t.classList.toggle("locked",lock); });
+  $$('.tab[data-pane]').forEach(t=>{ if(!keep.includes(t.dataset.pane)){
+    t.classList.toggle("locked",lock);
+    if(lock) t.title="Run a synthesis to unlock the report"; else t.removeAttribute("title");
+  }});
 }
 function activateTab(pane){
   $$(".tab").forEach(t=>t.classList.toggle("active",t.dataset.pane===pane));
@@ -1866,8 +1928,11 @@ function renderReport(res){
         + "drives the status. parent coverage (reverse) = parents with at least one child row. Parent "
         + "coverage is NOT supposed to be 1 — each synthesizer should match the real value, and the badge "
         + "shows how many points away from real it landed."
-        + (res.relationships_modeled ? " HMA was fitted with these relationships; single-table synthesizers "
-          + "reference a hub derived from their own output." : ""))
+        + (res.synths.includes("HMA")
+            ? " HMA was fitted WITH these relationships, so it preserves them by construction; single-table "
+              + "synthesizers reference a hub derived from their own output."
+            : " No multi-table model was selected, so no synthesizer here learned these relationships — "
+              + "referential integrity is being measured, not enforced."))
       +`<table class="rep"><thead><tr><th>relationship</th><th>source</th>
         <th style="text-align:right">fk coverage</th><th style="text-align:right">parent coverage</th><th>status</th></tr></thead>
       <tbody>${ri.map(r=>{
