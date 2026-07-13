@@ -1746,10 +1746,10 @@ function renderReport(res){
       <div class="big-score">${fmt(r.overall)}<small> /1 overall</small></div>
       ${meter("fidelity",r.fidelity)}${meter("privacy",r.privacy)}${meter("utility · TSTR",r.utility_tstr)}</div>`).join("")}</div>
     <p class="note"><b>overall</b> = mean of the three dimensions${ihelp(
-      "fidelity = column statistics (sdmetrics QualityReport)"
-      + (hasStruct ? " ⊕ referential integrity (cardinality shape similarity), weighted 2:1" : "")
-      + ". privacy = MIA ⊕ NewRowSynthesis ⊕ CategoricalCAP. utility = TSTR/TRTR ratio. "
-      + "Each dimension is broken down on its own tab; see METRICS.md.")}</p>`;
+      "fidelity = the column statistics (sdmetrics QualityReport)"
+      + (hasStruct ? ", two parts to one part referential integrity (cardinality shape similarity)" : "")
+      + ". privacy = the mean of MIA protection, NewRowSynthesis and CategoricalCAP. "
+      + "utility = the TSTR/TRTR ratio. Each dimension is broken down on its own tab; see METRICS.md.")}</p>`;
   flushMeters("#sec-overview");
 
   /* --- Fidelity (score strip + summary table + combined Overall/Shapes/Pairs figure) --- */
@@ -1767,7 +1767,7 @@ function renderReport(res){
         ["Referential integrity ×1", f.structure, {tip:hasStruct?"cardinality shape similarity — how closely child-rows-per-parent matches real. See the Referential Integrity tab.":"no relationships defined"}],
       ]};
     }, {unit:"/1 fidelity", note: hasStruct
-      ? `Column statistics ⊕ referential integrity, weighted 2:1${ihelp(
+      ? `2 parts column statistics, 1 part referential integrity${ihelp(
           "The column statistics only ever look inside one table, so a synthesizer can match every marginal "
           + "while getting the cross-table structure wrong. Referential integrity (cardinality shape "
           + "similarity) covers that, at half the weight.")}`

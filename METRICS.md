@@ -120,7 +120,7 @@ One 0–1 score per synthesizer per axis, averaged over tables:
 
 | Dimension | Formula |
 |---|---|
-| **column_fidelity** | mean QualityReport overall score (Column Shapes ⊕ Column Pair Trends) |
+| **column_fidelity** | mean QualityReport overall score — itself the mean of Column Shapes and Column Pair Trends |
 | **referential_integrity** | sdmetrics `CardinalityShapeSimilarity` — see below. `NaN` when no relationships are defined |
 | **fidelity** | (2 × column_fidelity + referential_integrity) / 3, or column_fidelity alone when there are no relationships |
 | **privacy** | mean of the three protection scores [ 1 − 2·\|MIA AUC − 0.5\| , NewRowSynthesis , CategoricalCAP ] |
