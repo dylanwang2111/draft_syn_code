@@ -230,36 +230,37 @@ def sdmetrics_ml_efficacy(
 
     cat_cols = [c for c in cols if c in roles.categorical]
 
-    def _align_categories(tr, te):
-        """Make ``te`` safe for a model trained on ``tr``.
+    NA = "__nan__"
 
-        sdmetrics' ML-efficacy metrics one-hot encode with handle_unknown=
-        'error', so any category present in the real holdout but absent from the
-        training data (common in TSTR when a synthesizer never generated a rare
-        value) raises "Found unknown categories".  We map such test-only
-        categories to the training column's most frequent value so the metric
-        computes; returns the aligned test frame and how many columns changed.
+    def _align_categories(tr, te):
+        """Make ``tr``/``te`` safe for sdmetrics' one-hot (handle_unknown='error').
+
+        Two things break the encoder and are fixed here on the categorical
+        feature columns:
+          * a **missing value** in the holdout that the synthetic training data
+            never produced -> "Found unknown categories [nan]".  We encode NaN as
+            its own explicit ``__nan__`` category on *both* frames so it's never
+            unknown.
+          * any other **test-only category** absent from training -> mapped to the
+            training column's most frequent value.
+        Returns ``(tr, te, n_columns_changed)`` — the aligned *train* frame is
+        returned too so the metric is fit on the same encoding.
         """
+        tr = tr.copy()
         te = te.copy()
         n_aligned = 0
         for c in cat_cols:
-            if c == target or c not in tr.columns:
+            if c == target or c not in tr.columns or c not in te.columns:
                 continue
-            known = set(tr[c].dropna().astype(str).unique())
-            if not known:
-                continue   # training column is all-NaN -> nothing to align to
-            col_str = te[c].astype(str)
-            mask = ~col_str.isin(known) & te[c].notna()
+            # missing -> explicit category, as strings, on both sides
+            tr[c] = tr[c].astype(object).where(tr[c].notna(), NA).astype(str)
+            te[c] = te[c].astype(object).where(te[c].notna(), NA).astype(str)
+            known = set(tr[c].unique())
+            mask = ~te[c].isin(known)
             if mask.any():
-                fill = tr[c].dropna().astype(str).mode().iloc[0]
-                # cast to object first so writing a string fill into a (possibly
-                # float) categorical column doesn't trip pandas' incompatible-dtype
-                # FutureWarning; NaNs are preserved (mask excludes them).
-                if te[c].dtype != object:
-                    te[c] = te[c].astype(object)
-                te.loc[mask, c] = fill
+                te.loc[mask, c] = tr[c].mode().iloc[0]
                 n_aligned += 1
-        return te, n_aligned
+        return tr, te, n_aligned
 
     # Extra classification metrics sdmetrics does not expose (accuracy /
     # precision / recall), from ONE DecisionTree fit so they are mutually
@@ -304,13 +305,13 @@ def sdmetrics_ml_efficacy(
         # (an unseen label cannot be predicted and would crash scoring)
         train_labels = set(tr[target].dropna().astype(str).unique())
         test_src = test[test[target].astype(str).isin(train_labels)].copy()
-        test_src, n_aligned = _align_categories(tr, test_src)
+        tr, test_src, n_aligned = _align_categories(tr, test_src)
         base_note = ""
         if len(test_src) < len(test):
             base_note = f"dropped {len(test)-len(test_src)} holdout rows with unseen target class"
         if n_aligned:
             base_note = (base_note + "; " if base_note else "") + \
-                f"aligned {n_aligned} feature col(s) with unseen categories to train mode"
+                f"aligned {n_aligned} feature col(s) with unseen/missing categories to train"
         enough = len(test_src) >= 5
 
         def _add(metric, score, note):
