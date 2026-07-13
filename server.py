@@ -482,6 +482,9 @@ def _run_job(cfg: dict, st: dict):
         # integrity on the shared key is preserved; else fit the reduced tables.
         parent_name, hub_rels = None, []
         fit_synths = cfg["synths"]
+        # only fit HMA if it was actually selected — the hub is what lets HMA preserve
+        # referential integrity, but choosing an entity key must not conscript HMA.
+        want_hma = any(s.upper() == "HMA" for s in cfg["synths"])
         if entity_children:
             try:
                 fit_tables, fit_metadata, hub_rels, hub_info = se.build_entity_hub(
@@ -491,9 +494,12 @@ def _run_job(cfg: dict, st: dict):
                 others_note = [s for s in cfg["synths"] if s.upper() != "HMA"]
                 _v = "is" if len(others_note) == 1 else "are"
                 say(f"Entity-key mode: built '{parent_name}' over {len(entity_children)} "
-                    f"table(s) — {hub_info['n_entities']} distinct {entity_key}. HMA models the "
-                    f"hub so referential integrity on {entity_key} is preserved."
-                    + (f" {', '.join(others_note)} {_v} also fit per-table independently "
+                    f"table(s) — {hub_info['n_entities']} distinct {entity_key}."
+                    + (f" HMA models the hub so referential integrity on {entity_key} is "
+                       f"preserved." if want_hma else
+                       f" HMA was not selected, so no model learns the hub — referential "
+                       f"integrity is measured, not enforced.")
+                    + (f" {', '.join(others_note)} {_v} fit per-table independently "
                        f"(single-table models can't preserve cross-table RI — shown for "
                        f"quality/privacy/utility comparison only)." if others_note else ""))
             except Exception as e:
@@ -516,13 +522,16 @@ def _run_job(cfg: dict, st: dict):
                 warnings.simplefilter("always")
                 if parent_name:
                     # HMA models the derived hub (preserves cross-table RI on the
-                    # key). Any other selected synths are single-table, so fit them
-                    # independently on the reduced tables (no relationships) — they
-                    # still appear in the quality/privacy/utility comparison.
-                    suite = se.generate_synthetic_suite(
-                        fit_tables, fit_metadata, synthesizers=["HMA"],
-                        scale=cfg["scale"], epochs=cfg["epochs"], verbose=False,
-                        constraints=cfg.get("constraints") or [], should_cancel=cancelled)
+                    # key) — but only if the user actually asked for HMA.  Any other
+                    # selected synths are single-table, so fit them independently on
+                    # the reduced tables (no relationships); they still appear in the
+                    # quality/privacy/utility comparison.
+                    suite = {}
+                    if want_hma:
+                        suite = se.generate_synthetic_suite(
+                            fit_tables, fit_metadata, synthesizers=["HMA"],
+                            scale=cfg["scale"], epochs=cfg["epochs"], verbose=False,
+                            constraints=cfg.get("constraints") or [], should_cancel=cancelled)
                     others = [s for s in cfg["synths"] if s.upper() != "HMA"]
                     if others and not cancelled():
                         single_meta = _build_metadata(_reduce_meta(tables_meta, keep), [])
@@ -814,8 +823,8 @@ def validate_model(cfg: dict, request: Request):
             for t in chosen:
                 ids |= set(tables[t][entity_key].dropna().unique())
             results.append({"label": f"hub {entity_key} → {', '.join(chosen)}", "status": "PASS",
-                            "detail": f"{len(ids)} distinct entities · HMA preserves referential "
-                                      f"integrity on {entity_key} by construction"})
+                            "detail": f"{len(ids)} distinct entities · select HMA to have referential "
+                                      f"integrity on {entity_key} preserved by construction"})
     return {"results": results}
 
 
