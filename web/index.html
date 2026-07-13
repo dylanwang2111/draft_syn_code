@@ -1866,8 +1866,11 @@ function renderReport(res){
         + "drives the status. parent coverage (reverse) = parents with at least one child row. Parent "
         + "coverage is NOT supposed to be 1 — each synthesizer should match the real value, and the badge "
         + "shows how many points away from real it landed."
-        + (res.relationships_modeled ? " HMA was fitted with these relationships; single-table synthesizers "
-          + "reference a hub derived from their own output." : ""))
+        + (res.synths.includes("HMA")
+            ? " HMA was fitted WITH these relationships, so it preserves them by construction; single-table "
+              + "synthesizers reference a hub derived from their own output."
+            : " No multi-table model was selected, so no synthesizer here learned these relationships — "
+              + "referential integrity is being measured, not enforced."))
       +`<table class="rep"><thead><tr><th>relationship</th><th>source</th>
         <th style="text-align:right">fk coverage</th><th style="text-align:right">parent coverage</th><th>status</th></tr></thead>
       <tbody>${ri.map(r=>{
