@@ -70,7 +70,17 @@ button{font-family:var(--mono); cursor:pointer; border-radius:8px; transition:.1
 /* ---------------- app split ---------------- */
 .app{display:flex; height:calc(100vh - var(--tool-h))}
 .left{width:404px; flex:none; border-right:1px solid var(--line); background:var(--panel);
-  overflow-y:auto; padding:18px}
+  overflow-y:auto; padding:18px; transition:width .18s ease, padding .18s ease}
+/* collapsed: the config column folds away entirely so the canvas / report gets
+   the full width.  The toolbar button (and the rail) bring it back. */
+.app.leftfold .left{width:0; padding:0; border-right:none; overflow:hidden}
+.leftrail{display:none; flex:none; width:26px; border-right:1px solid var(--line);
+  background:var(--panel-2); cursor:pointer; align-items:center; justify-content:center}
+.app.leftfold .leftrail{display:flex}
+.leftrail:hover{background:var(--tint)}
+.leftrail span{writing-mode:vertical-rl; font-family:var(--mono); font-size:9.5px; letter-spacing:.14em;
+  text-transform:uppercase; color:var(--muted)}
+.leftrail:hover span{color:var(--blue)}
 .right{flex:1; display:flex; flex-direction:column; min-width:0}
 
 /* left panels */
@@ -264,6 +274,42 @@ h4.block-title:first-child{margin-top:0}
 .meter .m-label b{color:var(--ink); font-weight:600}
 .m-track{height:6px; background:var(--line-soft); border-radius:99px; overflow:hidden}
 .m-fill{height:100%; border-radius:99px; width:0; transition:width .9s cubic-bezier(.2,.7,.2,1)}
+/* condensed per-section scorecards (one per synthesizer, above the figures) */
+.kpi-row{display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:12px; margin-bottom:8px}
+.kpi{background:var(--panel); border:1px solid var(--line); border-radius:13px; padding:14px 15px;
+  box-shadow:var(--shadow)}
+.kpi.best{border-color:var(--blue)}
+.kpi-head{display:flex; align-items:center; gap:7px; font-family:var(--disp); font-weight:600;
+  font-size:13.5px; color:var(--ink)}
+.kpi-head .dot{width:9px; height:9px; border-radius:50%; flex:none}
+.kpi-tag{margin-left:auto; font-family:var(--mono); font-size:8.5px; letter-spacing:.1em;
+  text-transform:uppercase; color:#fff; background:var(--blue); border-radius:99px; padding:2px 7px}
+.kpi-score{font-family:var(--disp); font-size:30px; font-weight:700; line-height:1.15; margin:6px 0 8px}
+.kpi-score small{font-size:11px; color:var(--faint); font-family:var(--mono); font-weight:400; margin-left:4px}
+/* the literal arithmetic behind the headline — the number must be reconstructable */
+.kpi-formula{margin-top:9px; font-family:var(--mono); font-size:10px; line-height:1.5;
+  color:var(--muted); background:var(--panel-2); border:1px solid var(--line-soft);
+  border-radius:7px; padding:6px 8px; word-break:break-word}
+.kpi-formula b{color:var(--ink); font-weight:600}
+.kpi-subs{margin-top:9px; border-top:1px solid var(--line-soft); padding-top:8px}
+.kpi-subs > div{display:flex; justify-content:space-between; gap:10px; font-family:var(--mono);
+  font-size:10.5px; color:var(--muted); padding:2.5px 0}
+.kpi-subs > div.is-sub{padding-left:11px; font-size:10px; opacity:.82}
+.kpi-subs > div.is-sub span::before{content:"› "; color:var(--faint)}
+.kpi-subs b{font-weight:600}
+.kpi-note{margin:10px 0 18px}
+/* per-panel ratio column in the TSTR table: shows what the utility mean is made of */
+td.ratio-cell{font-family:var(--mono); text-align:right; font-weight:600}
+td.ratio-cell .cap{color:var(--faint); font-weight:400; margin-left:3px}
+tr.total-row td{border-top:2px solid var(--line); font-weight:600; background:var(--panel-2)}
+/* the TSTR table groups two columns (score, ÷ real) under each synthesizer, so the
+   rule marks where one synthesizer's block starts — otherwise the repeated
+   "÷ real" headers are ambiguous */
+table.eff th.grp, table.eff td.grp{border-left:1px solid var(--line)}
+table.eff thead tr:first-child th{border-bottom:1px solid var(--line-soft)}
+table.eff th .hsub{font-weight:400; text-transform:none; letter-spacing:0; color:var(--faint); font-size:9px}
+th.grp{border-left:1px solid var(--line)}
+.tbl-legend{font-size:11.5px; color:var(--faint); margin:6px 0 20px; max-width:none}
 table.rep{width:100%; border-collapse:collapse; font-size:12.5px; margin-bottom:6px}
 table.rep th{font-family:var(--mono); font-size:10px; letter-spacing:.1em; text-transform:uppercase;
   color:var(--blue); text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); font-weight:600}
@@ -326,6 +372,7 @@ table.rep tr:hover td{background:var(--panel-2)}
 .dm-svg path{fill:none; stroke:var(--sky); stroke-width:2; pointer-events:stroke; cursor:pointer}
 .dm-svg path.hub{stroke:var(--blue); stroke-dasharray:5 4}
 .dm-svg path:hover{stroke:var(--blue); stroke-width:3}
+.dm-svg path.sel{stroke:var(--blue); stroke-width:4; filter:drop-shadow(0 0 3px rgba(0,121,193,.5))}
 .dm-svg .plug{fill:var(--sky)}
 .dm-svg .plug.hub{fill:var(--blue)}
 .dm-svg .card-mark{fill:var(--ink); font-family:var(--mono); font-size:12px; font-weight:700; pointer-events:none}
@@ -408,6 +455,11 @@ table.rep tr:hover td{background:var(--panel-2)}
 <body>
 
 <div class="toolbar">
+  <button class="tbtn icon" id="btn-left" title="Hide the setup panel" aria-label="Hide the setup panel"
+    style="margin-right:12px">
+    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7"
+      stroke-linecap="round" stroke-linejoin="round">
+      <rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg></button>
   <div class="brand">
     <svg class="logo" viewBox="0 0 48 48" aria-hidden="true">
       <rect width="48" height="48" rx="12" fill="#0079c1"/>
@@ -429,8 +481,9 @@ table.rep tr:hover td{background:var(--panel-2)}
   </div>
 </div>
 
-<div class="app">
+<div class="app" id="app">
   <!-- ============ LEFT ============ -->
+  <div class="leftrail" id="leftrail" title="Show the setup panel"><span>Setup ›</span></div>
   <aside class="left">
     <div class="panel">
       <div class="panel-h"><h2>Seed Data</h2><span class="count zero" id="seed-count">0</span></div>
@@ -511,7 +564,8 @@ table.rep tr:hover td{background:var(--panel-2)}
           <h4>Data Model</h4>
           <span class="dm-hint">Drag a table by its header to move it; drag its corner to resize.
             Drag the ● beside a column onto another table's column to link them — an editor opens
-            so you can set the columns and cardinality. Click a link to edit it.</span>
+            so you can set the columns and cardinality. Click a link to select/edit it, then press
+            <b>Delete</b> to remove it.</span>
           <button class="mini-btn" id="dm-validate-btn" style="margin:0">Validate</button>
           <button class="mini-btn" id="dm-autolayout" style="margin:0">Auto-layout</button>
         </div>
@@ -569,8 +623,8 @@ table.rep tr:hover td{background:var(--panel-2)}
             <button class="rep-fold" id="rep-fold" title="Collapse panel" aria-label="Collapse panel">›</button>
             <button class="rep-navbtn active" data-sec="sec-overview" title="Leaderboard">
               <svg class="ic" viewBox="0 0 24 24"><path d="M5 20v-6M12 20V5M19 20v-9"/></svg><span class="txt">Leaderboard</span></button>
-            <button class="rep-navbtn group" data-sec="sec-quality" title="Quality">
-              <svg class="ic" viewBox="0 0 24 24"><path d="M4 15a8 8 0 0 1 16 0"/><path d="M12 15l4.5-3.5"/></svg><span class="txt">Quality</span></button>
+            <button class="rep-navbtn group" data-sec="sec-quality" title="Fidelity">
+              <svg class="ic" viewBox="0 0 24 24"><path d="M4 15a8 8 0 0 1 16 0"/><path d="M12 15l4.5-3.5"/></svg><span class="txt">Fidelity</span></button>
             <button class="rep-navbtn child" data-sec="sec-shapes" title="Column Shapes">
               <svg class="ic" viewBox="0 0 24 24"><path d="M4 20v-7M9 20V8M14 20v-5M19 20V5"/></svg><span class="txt">Column Shapes</span></button>
             <button class="rep-navbtn child" data-sec="sec-pairs" title="Column Pair Trends">
@@ -789,14 +843,125 @@ function initModel(seedRels){
   renderModel();
   $('.tab[data-pane="pane-model"]').classList.remove("locked");
 }
-/* grid auto-layout for any node without a stored position */
+/* ---- canvas layout rules -------------------------------------------------
+   1. a card never spawns on top of another: a node with no stored position is
+      dropped into the first free slot, measured against the real card boxes
+      (an existing card may have been dragged or resized anywhere)
+   2. Auto-layout arranges by relationship, not by insertion order: parents on
+      the left, their children in the next column, unrelated tables last — so
+      every arrow reads left → right
+   3. the derived hub parks immediately left of the children it feeds
+   4. dragging snaps to an 8px grid and can't leave the canvas
+   ------------------------------------------------------------------------- */
+const DM={GRID:8, GAP:24, COLGAP:58, PAD:20, W:186, HEAD:34, ROW:23, MAXH:220};
+const snap=v=>Math.round(v/DM.GRID)*DM.GRID;
+const nodeNames=()=>[...Object.keys(DATA?DATA.tables:{}), ...(hubName()?[hubName()]:[])];
+
+/* measured box when the card is on screen, estimated (columns × row height)
+   when it isn't — layout runs before the first render */
+function cardBox(name){
+  const c=$("#dm-canvas");
+  const el=c&&c.querySelector(`.dm-card[data-node="${cssEsc(name)}"]`);
+  if(el&&el.offsetWidth) return {w:el.offsetWidth, h:el.offsetHeight};
+  const sz=MODEL.size[name]||{};
+  const ncol = name===hubName() ? 1 : ((DATA&&DATA.tables[name]?DATA.tables[name].columns.length:3));
+  return {w: sz.w||DM.W,
+          h: DM.HEAD + Math.min(sz.h||DM.MAXH, Math.max(30, ncol*DM.ROW)) + 2};
+}
+function boxAt(name,p){ const b=cardBox(name); return {x:p.x, y:p.y, w:b.w, h:b.h}; }
+function hits(a,b){ const g=12;
+  return a.x < b.x+b.w+g && b.x < a.x+a.w+g && a.y < b.y+b.h+g && b.y < a.y+a.h+g; }
+/* boxes of every currently-placed node, except `skip` */
+function takenBoxes(skip){
+  return nodeNames().filter(n=>n!==skip && MODEL.pos[n]).map(n=>boxAt(n,MODEL.pos[n]));
+}
+/* first slot, scanning left→right then top→bottom, that clears every taken box */
+function freeSpot(name,taken){
+  const b=cardBox(name);
+  const W=Math.max(DM.PAD*2+b.w, ($("#dm-canvas")||{}).clientWidth||900);
+  for(let row=0; row<400; row++){
+    const y=DM.PAD+row*40;
+    for(let x=DM.PAD; x+b.w<=W-DM.PAD || x===DM.PAD; x+=b.w+DM.GAP){
+      const cand={x,y,w:b.w,h:b.h};
+      if(!taken.some(t=>hits(cand,t))) return {x:snap(x), y:snap(y)};
+    }
+  }
+  const bottom=taken.reduce((m,t)=>Math.max(m,t.y+t.h),0);   // canvas full — stack below
+  return {x:DM.PAD, y:snap(bottom+DM.GAP)};
+}
+
 function layoutNodes(reset){
-  if(reset) MODEL.pos={};
-  const names=[...Object.keys(DATA.tables), ...(hubName()?[hubName()]:[])];
-  const per=Math.max(1, Math.floor((($("#dm-canvas").clientWidth||900)-40)/230))||3;
-  let i=0;
-  for(const n of names){ if(MODEL.pos[n]) continue;
-    MODEL.pos[n]={x:20+(i%per)*230, y:20+Math.floor(i/per)*250}; i++; }
+  if(!DATA) return;
+  const names=nodeNames();
+  for(const n of Object.keys(MODEL.pos)) if(!names.includes(n)) delete MODEL.pos[n];  // prune stale
+  if(reset){ tidyLayout(names); return; }
+  const taken=takenBoxes(null);
+  for(const n of names){
+    if(MODEL.pos[n]) continue;
+    const p=freeSpot(n,taken);
+    MODEL.pos[n]=p; taken.push(boxAt(n,p));
+  }
+}
+
+/* relationship-aware arrangement: rank nodes by how deep they sit in the
+   parent→child graph, lay each rank out as a column, order each column by its
+   parents' rows (barycentre) so the connectors cross as little as possible */
+function tidyLayout(names){
+  const parents={}, kids={};
+  const edge=(p,c)=>{ (kids[p]=kids[p]||[]).push(c); (parents[c]=parents[c]||[]).push(p); };
+  MODEL.rels.forEach(r=>{ if(names.includes(r.parent_table_name)&&names.includes(r.child_table_name))
+    edge(r.parent_table_name,r.child_table_name); });
+  if(MODEL.hub.key) MODEL.hub.children.forEach(t=>{ if(names.includes(t)) edge(hubName(),t); });
+
+  const depth={}; names.forEach(n=>depth[n]=0);
+  for(let pass=0; pass<names.length; pass++){          // bounded: also breaks cycles
+    let moved=false;
+    for(const c in parents) for(const p of parents[c])
+      if(depth[c] < depth[p]+1){ depth[c]=depth[p]+1; moved=true; }
+    if(!moved) break;
+  }
+  const linked=n=>!!((kids[n]&&kids[n].length)||(parents[n]&&parents[n].length));
+  const cols=[];
+  names.filter(linked).forEach(n=>{ const d=depth[n]; (cols[d]=cols[d]||[]).push(n); });
+  const packed=cols.filter(c=>c&&c.length);
+  const solo=names.filter(n=>!linked(n));
+  if(solo.length) packed.push(solo);                   // unrelated tables in a trailing column
+  if(!packed.length) return;
+
+  const bary=(n,prev)=>{ const ix=(parents[n]||[]).map(p=>prev.indexOf(p)).filter(i=>i>=0);
+    return ix.length ? ix.reduce((a,b)=>a+b,0)/ix.length : Number.MAX_SAFE_INTEGER; };
+  for(let i=1;i<packed.length;i++){ const prev=packed[i-1];
+    packed[i]=packed[i].map((n,ix)=>({n,ix})).sort((a,b)=>(bary(a.n,prev)-bary(b.n,prev))||(a.ix-b.ix)).map(o=>o.n); }
+
+  const colH=packed.map(col=>col.reduce((s,n)=>s+cardBox(n).h+DM.GAP,-DM.GAP));
+  const tallest=Math.max(...colH);
+  let x=DM.PAD;
+  packed.forEach((col,ci)=>{
+    const cw=Math.max(...col.map(n=>cardBox(n).w));
+    let y=DM.PAD+(tallest-colH[ci])/2;                 // centre each column against the tallest
+    for(const n of col){ const b=cardBox(n);
+      MODEL.pos[n]={x:snap(x+(cw-b.w)/2), y:snap(y)}; y+=b.h+DM.GAP; }
+    x+=cw+DM.COLGAP;
+  });
+}
+
+/* the hub feeds its children — park it to their left, centred on them, and
+   slide the rest of the canvas right if it would fall off the left edge */
+function placeHub(){
+  const h=hubName(); if(!h||!DATA) return;
+  delete MODEL.pos[h];
+  const b=cardBox(h);
+  const kidBoxes=MODEL.hub.children.filter(t=>MODEL.pos[t]).map(t=>boxAt(t,MODEL.pos[t]));
+  if(!kidBoxes.length){ MODEL.pos[h]=freeSpot(h,takenBoxes(h)); return; }
+  const left=Math.min(...kidBoxes.map(k=>k.x));
+  const cy=kidBoxes.reduce((s,k)=>s+k.y+k.h/2,0)/kidBoxes.length;
+  const p={x:snap(left-b.w-DM.COLGAP), y:snap(Math.max(DM.PAD, cy-b.h/2))};
+  if(p.x<DM.PAD){
+    const dx=DM.PAD-p.x;
+    for(const n of Object.keys(MODEL.pos)) MODEL.pos[n].x+=dx;
+    p.x=DM.PAD;
+  }
+  MODEL.pos[h] = takenBoxes(h).some(t=>hits(boxAt(h,p),t)) ? freeSpot(h,takenBoxes(h)) : p;
 }
 function afterModelChange(){ renderModel(); syncEntity(); renderStructureMirror(); updateSummaries();
   const b=$("#dm-validate"); if(b) b.classList.remove("show"); }   // results are now stale
@@ -810,6 +975,7 @@ function renderModel(){
   const canvas=$("#dm-canvas"); if(!canvas) return;
   $("#dm-empty").style.display = DATA?"none":"block";
   if(!DATA) return;
+  layoutNodes(false);   // place any new node in free space *before* the cards are rebuilt
   canvas.querySelectorAll(".dm-card").forEach(c=>c.remove());
   const linked=linkedSet();
   const nodes=[...Object.keys(DATA.tables)];
@@ -819,7 +985,8 @@ function renderModel(){
     const cols = hub ? [MODEL.hub.key] : DATA.tables[name].columns.map(c=>c.name);
     const el=document.createElement("div");
     el.className="dm-card"+(hub?" hubnode":""); el.dataset.node=name;
-    const pos=MODEL.pos[name]||{x:20,y:20}; el.style.left=pos.x+"px"; el.style.top=pos.y+"px";
+    const pos=MODEL.pos[name]||(MODEL.pos[name]=freeSpot(name,takenBoxes(name)));
+    el.style.left=pos.x+"px"; el.style.top=pos.y+"px";
     const sz=MODEL.size[name]; if(sz){ el.style.width=sz.w+"px"; }
     const colsStyle = sz ? ` style="max-height:${Math.max(40,sz.h)}px"` : "";
     el.innerHTML=`<div class="dm-head" data-drag="${esc(name)}">${esc(name)}
@@ -868,7 +1035,7 @@ function drawLinks(){
     const plug=cls==="hub"?"plug hub":"plug";
     const mark=(pt,txt)=>{ const dx=pt.side==="right"?13:-13;
       return `<text class="card-mark" x="${pt.x+dx}" y="${pt.y-6}" text-anchor="middle">${txt}</text>`; };
-    return `<path class="${cls}" ${idx!=null?`data-rel="${idx}"`:""} d="${bezierD(a,b)}"></path>`
+    return `<path class="${cls}${idx===selRel?" sel":""}" ${idx!=null?`data-rel="${idx}"`:""} d="${bezierD(a,b)}"></path>`
       + `<circle class="${plug}" cx="${a.x}" cy="${a.y}" r="3.2"></circle>`
       + `<circle class="${plug}" cx="${b.x}" cy="${b.y}" r="3.2"></circle>`
       + mark(a,pMark) + mark(b,cMark);
@@ -886,7 +1053,7 @@ function positionCards(){ $("#dm-canvas").querySelectorAll(".dm-card").forEach(e
   const p=MODEL.pos[el.dataset.node]; if(p){ el.style.left=p.x+"px"; el.style.top=p.y+"px"; } }); }
 
 /* ---- pointer interactions: drag cards, resize cards, drag ports to link ---- */
-let dragCard=null, dragStart=null, linkFrom=null, resizeCard=null, resizeStart=null;
+let dragCard=null, dragStart=null, linkFrom=null, resizeCard=null, resizeStart=null, selRel=-1;
 $("#dm-canvas").addEventListener("pointerdown",e=>{
   const handle=e.target.closest(".dm-resize");
   if(handle){ e.preventDefault(); const node=handle.dataset.resize;
@@ -899,7 +1066,9 @@ $("#dm-canvas").addEventListener("pointerdown",e=>{
   const head=e.target.closest(".dm-head");
   if(head){ e.preventDefault(); const node=head.dataset.drag;
     dragCard=node; const p=MODEL.pos[node]||{x:20,y:20}; MODEL.pos[node]=p;
-    dragStart={px:e.clientX, py:e.clientY, x:p.x, y:p.y}; head.setPointerCapture&&head.setPointerCapture(e.pointerId); }
+    dragStart={px:e.clientX, py:e.clientY, x:p.x, y:p.y}; head.setPointerCapture&&head.setPointerCapture(e.pointerId); return; }
+  // clicking empty canvas / a card body (not a link) deselects the current link
+  if(!e.target.closest("#dm-svg") && selRel>=0){ selRel=-1; drawLinks(); }
 });
 document.addEventListener("pointermove",e=>{
   if(resizeCard){ const el=$("#dm-canvas").querySelector(`.dm-card[data-node="${cssEsc(resizeCard)}"]`);
@@ -908,7 +1077,8 @@ document.addEventListener("pointermove",e=>{
     MODEL.size[resizeCard]={w,h};
     el.style.width=w+"px"; el.querySelector(".dm-cols").style.maxHeight=h+"px"; drawLinks(); return; }
   if(dragCard){ const p=MODEL.pos[dragCard];
-    p.x=Math.max(0, dragStart.x+(e.clientX-dragStart.px)); p.y=Math.max(0, dragStart.y+(e.clientY-dragStart.py));
+    p.x=Math.max(0, snap(dragStart.x+(e.clientX-dragStart.px)));
+    p.y=Math.max(0, snap(dragStart.y+(e.clientY-dragStart.py)));
     const el=$("#dm-canvas").querySelector(`.dm-card[data-node="${cssEsc(dragCard)}"]`);
     if(el){ el.style.left=p.x+"px"; el.style.top=p.y+"px"; } drawLinks(); return; }
   if(linkFrom){ drawTempLink(e); }
@@ -948,11 +1118,17 @@ function relToForm(from,to,card){
 function updateCardViz(){ const v=$("#dm-e-card").value;
   $("#dm-e-viz").textContent = v==="one-to-many"?"1  —  ∗" : v==="many-to-one"?"∗  —  1" : "1  —  1"; }
 function openRelEditor(idx){
-  editIdx=idx; const r=MODEL.rels[idx];
+  editIdx=idx; selRel=idx; const r=MODEL.rels[idx];
   const card = relCard(r)==="1-1" ? "one-to-one" : "one-to-many";
   relToForm({t:r.parent_table_name,col:r.parent_primary_key},{t:r.child_table_name,col:r.child_foreign_key},card);
   $("#dm-side-title").textContent="Edit relationship"; $("#dm-e-del").style.display="inline-block";
   $("#dm-e-err").textContent=""; $("#dm-side").classList.add("open");
+  drawLinks();   // highlight the selected link
+}
+/* delete a relationship (from the sidebar button or the keyboard Delete key) */
+function deleteRel(idx){
+  if(idx==null || idx<0 || idx>=MODEL.rels.length) return;
+  MODEL.rels.splice(idx,1); selRel=-1; closeRelEditor(); afterModelChange();
 }
 function beginNewRelationship(from,to){
   editIdx=-1;
@@ -964,7 +1140,7 @@ function beginNewRelationship(from,to){
   $("#dm-side-title").textContent="New relationship"; $("#dm-e-del").style.display="none";
   $("#dm-e-err").textContent=""; $("#dm-side").classList.add("open");
 }
-function closeRelEditor(){ $("#dm-side").classList.remove("open"); editIdx=-1; }
+function closeRelEditor(){ $("#dm-side").classList.remove("open"); editIdx=-1; selRel=-1; drawLinks(); }
 function formToRel(){
   const ft=$("#dm-e-ftable").value, fc=$("#dm-e-fcol").value;
   const tt=$("#dm-e-ttable").value, tc=$("#dm-e-tcol").value, card=$("#dm-e-card").value;
@@ -979,7 +1155,15 @@ $("#dm-e-ftable").addEventListener("change",()=>fillColSelect($("#dm-e-fcol"),$(
 $("#dm-e-ttable").addEventListener("change",()=>fillColSelect($("#dm-e-tcol"),$("#dm-e-ttable").value));
 $("#dm-e-card").addEventListener("change",updateCardViz);
 $("#dm-e-cancel").addEventListener("click",closeRelEditor);
-$("#dm-e-del").addEventListener("click",()=>{ if(editIdx>=0){ MODEL.rels.splice(editIdx,1); afterModelChange(); } closeRelEditor(); });
+$("#dm-e-del").addEventListener("click",()=>deleteRel(editIdx));
+/* keyboard: Delete / Backspace removes the selected link (when not typing in a field) */
+document.addEventListener("keydown",e=>{
+  if(e.key!=="Delete" && e.key!=="Backspace") return;
+  if(selRel<0 || !$("#pane-model").classList.contains("active")) return;
+  const el=document.activeElement, tag=el&&el.tagName;
+  if(tag==="INPUT"||tag==="SELECT"||tag==="TEXTAREA"||(el&&el.isContentEditable)) return;
+  e.preventDefault(); deleteRel(selRel);
+});
 $("#dm-e-save").addEventListener("click",()=>{
   const rel=formToRel(), err=$("#dm-e-err");
   if(rel.parent_table_name===rel.child_table_name){ err.textContent="Pick two different tables."; return; }
@@ -1034,7 +1218,7 @@ function updateHubButtons(){
 $("#dm-hub-key").addEventListener("change",()=>{ renderHubChilds(); updateHubButtons(); });
 $("#dm-hub-gen").addEventListener("click",()=>{
   const key=$("#dm-hub-key").value, children=chosenChilds(); if(!key||!children.length) return;
-  MODEL.hub={key, children}; delete MODEL.pos[hubName()]; layoutNodes(false);
+  MODEL.hub={key, children}; placeHub();
   afterModelChange(); updateHubButtons();
 });
 $("#dm-hub-clear").addEventListener("click",()=>{
@@ -1225,6 +1409,21 @@ $("#rep-nav").addEventListener("click",e=>{ const b=e.target.closest(".rep-navbt
   apply();
   fold.addEventListener("click",()=>{ col=!col; try{ localStorage.setItem("synthlab-repnav",col?"1":"0"); }catch(e){} apply(); });
 })();
+/* left setup column: fold it away to give the canvas / report the full width.
+   Folding changes the canvas width, so the data-model connectors are redrawn. */
+(function(){
+  const app=$("#app"), btn=$("#btn-left"), rail=$("#leftrail");
+  let col=false; try{ col=localStorage.getItem("synthlab-left")==="1"; }catch(e){}
+  const apply=()=>{ app.classList.toggle("leftfold",col);
+    btn.title=btn.ariaLabel=col?"Show the setup panel":"Hide the setup panel";
+    btn.classList.toggle("on",col);
+    // the canvas is now wider/narrower — the SVG connectors are absolutely
+    // positioned against it, so redraw once the width transition has settled
+    if(DATA) setTimeout(()=>{ if($("#pane-model").classList.contains("active")) drawLinks(); },220); };
+  const toggle=()=>{ col=!col; try{ localStorage.setItem("synthlab-left",col?"1":"0"); }catch(e){} apply(); };
+  apply();
+  btn.addEventListener("click",toggle); rail.addEventListener("click",toggle);
+})();
 $("#tabbar").addEventListener("click",e=>{
   const b=e.target.closest(".tab"); if(!b||b.classList.contains("locked")) return;
   activateTab(b.dataset.pane);
@@ -1299,6 +1498,48 @@ const fig=(b64,cap="",cls="")=>b64?`<figure class="fig ${cls}"><img src="data:im
 const meter=(label,v)=>`<div class="meter"><div class="m-label"><span>${label}</span><b>${fmt(v)}</b></div>
   <div class="m-track"><div class="m-fill" data-w="${Math.max(0,Math.min(1,v||0))*100}" style="background:${meterColor(v||0)}"></div></div></div>`;
 
+/* Condensed score strip shown above the figures/tables of every report section:
+   one card per synthesizer with the section's headline 0-1 number, the literal
+   arithmetic that produced it, and the components it is made of — the same
+   numbers the leaderboard uses.
+
+   `pick(v,s)` returns {score, formula, subs}.  `formula` is printed verbatim
+   under the score (with this synthesizer's real numbers substituted in), so the
+   headline can always be reconstructed by hand from what is on screen.
+   `subs` is [[label, value, opts]]:
+     opts.raw   value is a raw diagnostic, not a 0-1 score -> printed uncoloured
+                (e.g. MIA attacker AUC, whose ideal is 0.5, not 1)
+     opts.text  print this string instead of a number (counts, "3 panels", …)
+     opts.sub   indent: a component *of* the line above, not a term in the mean */
+const num=v=>(v==null||Number.isNaN(v))?null:+v;
+function scoreStrip(res,P,pick,{unit="",note=""}={}){
+  const S=res.summary||{};
+  if(!Object.keys(S).length) return "";
+  const cards=res.synths.filter(s=>S[s]).map(s=>{
+    const {score,subs,formula}=pick(S[s],s);
+    const v=num(score);
+    const best=res.synths.filter(x=>S[x]).every(x=>(num(pick(S[x],x).score)??-1)<=(v??-1));
+    return `<div class="kpi${best&&v!=null?" best":""}">
+      <div class="kpi-head"><span class="dot" style="background:${P(s)}"></span>${esc(s)}
+        ${best&&v!=null?`<span class="kpi-tag">best</span>`:""}</div>
+      <div class="kpi-score" style="color:${v==null?"var(--faint)":meterColor(v)}">${fmt(v)}<small>${esc(unit)}</small></div>
+      <div class="m-track"><div class="m-fill" data-w="${(Math.max(0,Math.min(1,v||0)))*100}"
+        style="background:${meterColor(v||0)}"></div></div>
+      ${formula?`<div class="kpi-formula">${formula}</div>`:""}
+      <div class="kpi-subs">${(subs||[]).map(([lb,val,o])=>{
+        const n=num(val), o2=o||{};
+        const txt = o2.text!=null ? esc(o2.text) : (n==null ? "—" : fmt(n));
+        const col = (o2.text!=null||n==null||o2.raw) ? "var(--muted)" : meterColor(n);
+        return `<div class="${o2.sub?"is-sub":""}"${o2.tip?` title="${esc(o2.tip)}"`:""}>
+          <span>${esc(lb)}</span><b style="color:${col}">${txt}</b></div>`;
+      }).join("")}</div></div>`;
+  }).join("");
+  return `<div class="kpi-row">${cards}</div>${note?`<p class="note kpi-note">${note}</p>`:""}`;
+}
+/* the m-fill widths animate from 0 -> data-w once the bars are in the DOM */
+function flushMeters(scope){ const sel=(scope?scope+" ":"")+".m-fill";
+  requestAnimationFrame(()=>$$(sel).forEach(m=>m.style.width=m.dataset.w+"%")); }
+
 /* ---------------- interactive charts (Plotly, PNG fallback) ---------------- */
 const HAS_PLOTLY=typeof window.Plotly!=="undefined";
 const RDYLGN=[[0,"#a50026"],[0.25,"#f46d43"],[0.5,"#fee08b"],[0.75,"#a6d96a"],[1,"#1a9850"]];
@@ -1313,14 +1554,16 @@ function themeColors(){
           soft:g("--line-soft","#e7eef7")};
 }
 
-/* heatmap placeholder (shapes/pairs); PNG fig fallback */
-function heatmapBlock(kind,table,data,png){
+/* heatmap placeholder (shapes/pairs); PNG fig fallback.
+   `cap` is the caption; `idkey` (defaults to cap) makes the DOM id unique when
+   the same caption repeats (e.g. the same table across several synthesizers). */
+function heatmapBlock(kind,cap,data,png,idkey){
   if(HAS_PLOTLY && data){
-    const id=safeId(kind+"_"+table);
-    PLOT_QUEUE.push({id,type:kind,data,cap:table});
-    return `<div class="hm-wrap"><div class="hm-cap">${esc(table)}</div><div id="${id}"></div></div>`;
+    const id=safeId(kind+"_"+(idkey||cap));
+    PLOT_QUEUE.push({id,type:kind,data,cap});
+    return `<div class="hm-wrap"><div class="hm-cap">${esc(cap)}</div><div id="${id}"></div></div>`;
   }
-  return fig(png,table,"scroll");
+  return fig(png,cap,"scroll");
 }
 /* fidelity QualityReport — all three metrics in ONE figure; PNG fig fallback */
 function qualityBlock(data,png){
@@ -1420,6 +1663,10 @@ function restylePlotly(){
 function renderReport(res){
   lockReportTabs(false);
   const P=n=>res.palette[n]||PALETTE[n]||"#888";
+  // structure (referential integrity) only exists once tables are linked; without
+  // it, fidelity is the column statistics alone and the RI tiles read "—".
+  const hasStruct=Object.values(res.summary||{}).some(v=>{
+    const s=v.fidelity&&v.fidelity.structure; return s!=null && !Number.isNaN(s); });
   PLOTLY_REG.length=0; PLOT_QUEUE=[];        // fresh chart registry + queue per report
   _PALETTE={}; (res.synths||[]).forEach(s=>{_PALETTE[s]=P(s);});
 
@@ -1441,13 +1688,33 @@ function renderReport(res){
       <div class="lb-name"><span class="dot" style="background:${P(r.synthesizer)}"></span>${r.synthesizer}</div>
       <div class="big-score">${fmt(r.overall)}<small> /1 overall</small></div>
       ${meter("fidelity",r.fidelity)}${meter("privacy",r.privacy)}${meter("utility · TSTR",r.utility_tstr)}</div>`).join("")}</div>
-    <p class="note">fidelity = mean sdmetrics QualityReport · privacy = MIA ⊕ NewRowSynthesis ⊕ CategoricalCAP ·
-      utility = TSTR/TRTR ratio (see METRICS.md).</p>`;
-  requestAnimationFrame(()=>$$("#sec-overview .m-fill").forEach(m=>m.style.width=m.dataset.w+"%"));
+    <p class="note"><b>overall</b> = mean of the three dimensions. <b>fidelity</b> = column statistics
+      (sdmetrics QualityReport)${hasStruct?" ⊕ referential integrity (cardinality shape similarity), weighted 2:1":""} ·
+      <b>privacy</b> = MIA ⊕ NewRowSynthesis ⊕ CategoricalCAP · <b>utility</b> = TSTR/TRTR ratio (see METRICS.md).
+      Each dimension is broken down on its own tab.</p>`;
+  flushMeters("#sec-overview");
 
-  /* --- Quality (summary table + combined Overall/Shapes/Pairs figure) --- */
+  /* --- Fidelity (score strip + summary table + combined Overall/Shapes/Pairs figure) --- */
   const shapesData=res.figures.shapes_data||{}, pairsData=res.figures.pairs_data||{};
-  let qy=`<h4 class="block-title">QualityReport — per synthesizer per table</h4>
+  let qy=scoreStrip(res,P,v=>{
+    const f=v.fidelity, st=num(f.structure);
+    return {score:f.score,
+      formula: st==null
+        ? `<b>${fmt(f.columns)}</b> column statistics<br>(no relationships defined → referential integrity not scored)`
+        : `( 2 × <b>${fmt(f.columns)}</b> columns + <b>${fmt(st)}</b> ref. integrity ) / 3 = <b>${fmt(f.score)}</b>`,
+      subs:[
+        ["Column statistics ×2", f.columns, {tip:"QualityReport overall = mean of the two lines below, averaged over tables"}],
+        ["Column Shapes", f.column_shapes, {sub:true, tip:"marginal distribution match per column"}],
+        ["Column Pair Trends", f.column_pair_trends, {sub:true, tip:"pairwise relationship match per column pair"}],
+        ["Referential integrity ×1", f.structure, {tip:hasStruct?"cardinality shape similarity — how closely child-rows-per-parent matches real. See the Referential Integrity tab.":"no relationships defined"}],
+      ]};
+    }, {unit:"/1 fidelity", note:hasStruct
+      ? `Fidelity = <b>(2 × column statistics + referential integrity) / 3</b>. The column statistics only ever
+         look <i>inside</i> one table, so a synthesizer can match every marginal while getting the cross-table
+         structure wrong; referential integrity (cardinality shape similarity) covers that, at half the weight.`
+      : `Fidelity = the column statistics alone. Link tables in the <b>Data Model</b> tab to have referential
+         integrity counted here too.`})
+    +`<h4 class="block-title">QualityReport — per synthesizer per table</h4>
     <table class="rep"><thead><tr><th>synthesizer</th><th>table</th><th style="text-align:right">column shapes</th>
     <th style="text-align:right">column pair trends</th><th style="text-align:right">overall</th></tr></thead><tbody>`;
   for(const s of res.synths) for(const [t,v] of Object.entries(res.quality[s]||{}))
@@ -1458,9 +1725,16 @@ function renderReport(res){
   qy+=`</tbody></table>`+qualityBlock(res.figures.quality_data, res.figures.quality);
   $("#sec-quality").innerHTML=qy;
 
-  /* --- Quality › Column Shapes (per-column heatmaps) --- */
-  let sh=`<h4 class="block-title">Column Shapes — per column</h4>
-    <p class="note">Marginal-distribution match per column (KS complement numeric, TV complement categorical).
+  /* --- Fidelity › Column Shapes (per-column heatmaps) --- */
+  let sh=scoreStrip(res,P,v=>({score:v.fidelity.column_shapes,
+      formula:`mean of the per-column shape scores in the heatmap below, over all columns and tables`,
+      subs:[
+        ["Feeds column statistics", v.fidelity.columns, {tip:"mean(Column Shapes, Column Pair Trends)"}],
+        ["…which feeds fidelity", v.fidelity.score, {sub:true}],
+      ]}), {unit:"/1 shapes"})
+    +`<h4 class="block-title">Column Shapes — per column</h4>
+    <p class="note">Marginal-distribution match per column (KS complement numeric, TV complement categorical),
+    averaged over columns and tables in the card above.
     ${HAS_PLOTLY?"Hover for exact scores; drag to zoom.":""}</p>`;
   const shapeFigs=res.figures.shapes||{};
   if(Object.keys(shapeFigs).length || Object.keys(shapesData).length)
@@ -1468,18 +1742,31 @@ function renderReport(res){
   else sh+=`<p class="note">No per-column shape scores were available for these tables.</p>`;
   $("#sec-shapes").innerHTML=sh;
 
-  /* --- Quality › Column Pair Trends --- */
-  const pairs=res.figures.pairs||{};
-  let pr;
-  if(Object.values(pairs).some(Boolean) || Object.values(pairsData).some(Boolean)){
-    pr=`<h4 class="block-title">Column Pair Trends — per column pair</h4>
+  /* --- Fidelity › Column Pair Trends (one heatmap per synthesizer per table) --- */
+  const pairs=res.figures.pairs||{};   // {synth:{table:png}} ; pairsData same shape
+  const hasMap=m=>m&&Object.values(m).some(inner=>inner&&Object.values(inner).some(Boolean));
+  const pairStrip=scoreStrip(res,P,v=>({score:v.fidelity.column_pair_trends,
+      formula:`mean of the per-pair scores in the heatmaps below, over all column pairs and tables`,
+      subs:[
+        ["Feeds column statistics", v.fidelity.columns, {tip:"mean(Column Shapes, Column Pair Trends)"}],
+        ["…which feeds fidelity", v.fidelity.score, {sub:true}],
+      ]}), {unit:"/1 pair trends"});
+  let pr=pairStrip;                 // the score exists even when no heatmap could be drawn
+  if(hasMap(pairs) || hasMap(pairsData)){
+    pr+=`<h4 class="block-title">Column Pair Trends — per column pair</h4>
       <p class="note">Relationship preservation per pair (correlation similarity numeric, contingency similarity categorical/mixed).
-      1 = identical trend; blank = a pair sdmetrics couldn't score. Shown for ${res.synths[0]}.</p>`;
-    for(const t of Object.keys({...pairs,...pairsData})) pr+=heatmapBlock("pairs",t,pairsData[t],pairs[t]);
-  } else pr=`<p class="note">No column-pair trends were available for these tables.</p>`;
+      1 = identical trend; blank = a pair sdmetrics couldn't score.</p>`;
+    for(const s of res.synths){
+      const pm=pairs[s]||{}, dm=pairsData[s]||{};
+      const tabs=Object.keys({...pm,...dm}); if(!tabs.length) continue;
+      pr+=`<h4 class="block-title" style="font-size:15px; margin-top:22px">
+        <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${P(s)};margin-right:8px"></span>${esc(s)}</h4>`;
+      for(const t of tabs) pr+=heatmapBlock("pairs",t,dm[t],pm[t],`${s}_${t}`);
+    }
+  } else pr+=`<p class="note">No column-pair trends were available for these tables.</p>`;
   $("#sec-pairs").innerHTML=pr;
 
-  /* --- Quality › Referential Integrity (forward + reverse coverage + cardinality) --- */
+  /* --- Fidelity › Referential Integrity (forward + reverse coverage + cardinality) --- */
   const ri=res.referential||[];
   let riH;
   if(!ri.length){
@@ -1487,7 +1774,32 @@ function renderReport(res){
       <b>Data Model</b> tab to measure referential integrity.</p>`;
   }else{
     const realRev={}; ri.forEach(r=>{ if(r.source==="real") realRev[r.relationship]=r.parent_coverage; });
-    riH=`<h4 class="block-title">Referential integrity</h4>
+    riH=scoreStrip(res,P,v=>{
+      const t=v.structure||{};
+      const gate=t.fk_gate||"n/a";
+      return {score:t.score,
+        formula: num(t.cardinality_shape)!=null
+          ? `<b>${fmt(t.cardinality_shape)}</b> cardinality shape similarity<br>
+             (FK validity and participation are diagnostics — not scored)`
+          : `cardinality similarity unavailable → not scored`,
+        subs:[
+          ["Cardinality shape", t.cardinality_shape, {tip:"sdmetrics CardinalityShapeSimilarity — how closely the distribution of child-rows-per-parent matches real. THIS is the score."}],
+          ["FK validity (gate)", t.fk_validity, {raw:true,
+            text: gate==="n/a" ? "n/a — by construction" : `${fmt(t.fk_validity)} · ${gate}`,
+            tip: gate==="n/a"
+              ? "the parent is a hub derived from the keys this synthesizer emitted, so every child key is in it by construction — a flat 1.0 for everyone, so it is not scored"
+              : "child rows whose FK hits a parent key. This is a validity constraint (pass/fail), not a similarity — it is not averaged into the score."}],
+          ["Participation (diagnostic)", t.participation, {raw:true,
+            tip:"1 − |synth parent coverage − real parent coverage|. Not scored: parent coverage is one point on the CDF of the very distribution cardinality shape already measures in full, so counting both would double-count it."}],
+        ]};
+      }, {unit:"/1 ref. integrity", note:`<b>The score is cardinality shape similarity alone</b> — the only one
+        of the three that is a distribution-similarity measure on the same footing as Column Shapes. It is the
+        cross-table component of <b>fidelity</b> (one third of it). <b>FK validity</b> is a
+        <i>constraint</i>, not a similarity — averaging it in would let a model buy its way out of orphan rows
+        with good marginals, so it is a pass/fail gate instead (and it is <i>true by construction</i>, hence
+        unscoreable, whenever the parent is a derived hub). <b>Participation</b> is a marginal of the
+        cardinality distribution, so scoring it too would double-count.`})
+      +`<h4 class="block-title">Referential integrity</h4>
       <p class="note"><b>fk coverage</b> (forward) = child rows whose foreign key hits a real parent key —
       1 = no orphans; this drives the status. <b>parent coverage</b> (reverse) = parents that have ≥1 child
       row (participation) — <i>not</i> expected to be 1; each synthesizer should <b>match the real value</b>,
@@ -1527,35 +1839,130 @@ function renderReport(res){
   /* --- Utility (ML efficacy · TSTR) --- */
   if(!res.efficacy.length){ $("#sec-utility").innerHTML=`<h4 class="block-title">Utility · ML efficacy</h4><p class="note">No usable modelling target found.</p>`; }
   else{
-    let ml=`<h4 class="block-title">Utility · ML efficacy (TSTR)</h4>
+    let ml=scoreStrip(res,P,v=>{
+      const u=v.utility, pt=u.per_table||{};
+      const subs=Object.keys(pt).map(t=>[t, pt[t].ratio,
+        {sub:false, tip:`mean of this table's ${pt[t].panels} panel ratio(s)`}]);
+      if(u.n_capped) subs.push(["of which capped at 1.00", null,
+        {text:`${u.n_capped} panel${u.n_capped>1?"s":""}`,
+         tip:"the synthesizer beat the real-trained baseline on these panels; the ratio is capped at 1, never above"}]);
+      // context, NOT terms of the mean: a high ratio against a weak baseline still
+      // means a weak model — mean(synth)/mean(real) is deliberately not the score
+      subs.push(["mean synth score (context)", u.synth, {sub:true, raw:true,
+        tip:"raw mean of the synthetic-trained scores — context only, not a term in the mean"}]);
+      subs.push(["mean real baseline (context)", u.real, {sub:true, raw:true,
+        tip:"raw mean of the real-trained scores. If this is low, the target is hard for ANY model and a high utility ratio only means the synthetic data is as weak as the real data — not that the model is good."}]);
+      return {score:u.score,
+        formula:`mean of <b>${u.n_panels}</b> panel ratios (one per table × metric, each
+          clip(synth ÷ real, 0, 1)) = <b>${fmt(u.score)}</b>`,
+        subs};
+      }, {unit:"/1 utility", note:`Each row of every table below is one <b>panel</b>: its ratio is
+        <b>clip(synth ÷ real, 0, 1)</b>, and the headline is the plain mean of those ratios — <i>not</i>
+        mean(synth) ÷ mean(real), which would give a different answer because each panel counts equally
+        regardless of how large its scores are. The <b>÷ real</b> columns below show every term in that mean.`})
+      +`<h4 class="block-title">Utility · ML efficacy (TSTR)</h4>
       <p class="note">Train on Synthetic, Test on Real — each model trained on real (reference) and on every
       synthesizer's output, tested on the <b>same real holdout</b>. gap(real−synth) ≈ 0 means synthetic trains as well as real.</p>`;
-    for(const t of [...new Set(res.efficacy.map(r=>r.table))]){
+    /* each (table × metric) row is one panel of the utility mean; the "÷ real"
+       column after every synthesizer prints that panel's own term, so the
+       headline can be added up by hand from the rows on screen. */
+    const panelOf=(s,t,m)=>{ const u=((res.summary||{})[s]||{}).utility;
+      return (u&&u.panels||[]).find(p=>p.table===t&&p.metric===m)||null; };
+    const perTable=(s,t)=>((((res.summary||{})[s]||{}).utility||{}).per_table||{})[t];
+    const ratioCell=(p,extra="")=>{
+      if(!p) return `<td class="ratio-cell dim"${extra}>—</td>`;
+      const cap=p.capped?`<span class="cap" title="raw ratio ${fmt(p.raw_ratio,2)} — capped at 1.00">⤒</span>`:"";
+      return `<td class="ratio-cell" style="color:${meterColor(p.ratio)}"
+        title="${fmt(p.synth,3)} ÷ ${fmt(p.real,3)} = ${fmt(p.raw_ratio,3)}"${extra}>${fmt(p.ratio)}${cap}</td>`;
+    };
+    const tabList=[...new Set(res.efficacy.map(r=>r.table))];
+    for(const t of tabList){
       const rows=res.efficacy.filter(r=>r.table===t);
-      const metrics=[...new Set(rows.map(r=>r.metric))], sources=[...new Set(rows.map(r=>r.train_on))];
-      ml+=`<h4 class="block-title">${t} <span style="font-family:var(--mono);font-size:12px;color:var(--faint);font-weight:400">target ${rows[0].target} · ${rows[0].task}</span></h4>
-        <table class="rep"><thead><tr><th>metric</th>${sources.map(s=>`<th style="text-align:right">${s}</th>`).join("")}</tr></thead><tbody>`;
+      const metrics=[...new Set(rows.map(r=>r.metric))];
+      const synths=res.synths.filter(s=>rows.some(r=>r.train_on===s));
+      const at=(m,s)=>rows.find(r=>r.metric===m&&r.train_on===s)||null;
       const notes=new Set();
+      // Grouped header: one 2-column block per synthesizer (its score, and that
+      // score ÷ the real baseline).  The gap columns are dropped — gap = real −
+      // synth is the same comparison in absolute points, and it is the ratio that
+      // actually feeds the utility score.  Gaps remain in the exported CSV.
+      ml+=`<h4 class="block-title">${t} <span style="font-family:var(--mono);font-size:12px;color:var(--faint);font-weight:400">target ${rows[0].target} · ${rows[0].task}</span></h4>
+        <table class="rep eff"><thead>
+          <tr><th rowspan="2">metric</th>
+            <th rowspan="2" class="grp" style="text-align:right">real<div class="hsub">baseline</div></th>
+            ${synths.map(s=>`<th colspan="2" class="grp" style="text-align:center">
+              <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${P(s)};margin-right:6px"></span>${esc(s)}</th>`).join("")}</tr>
+          <tr>${synths.map(()=>`<th style="text-align:right" class="grp">score</th>
+            <th style="text-align:right" title="clip(score ÷ real, 0, 1) — this panel's term in the utility mean">÷ real</th>`).join("")}</tr>
+        </thead><tbody>`;
       for(const m of metrics){
-        ml+=`<tr><td class="mono">${m}</td>`+sources.map(s=>{
-          const row=rows.find(r=>r.metric===m&&r.train_on===s), v=row?row.score:null;
-          const note=row&&row.note?row.note:"";
+        const rr=at(m,"real");
+        ml+=`<tr><td class="mono">${esc(m)}</td>
+          <td class="score-cell grp dim">${fmt(rr?rr.score:null)}</td>`;
+        for(const s of synths){
+          const row=at(m,s), v=row?row.score:null, note=row&&row.note?row.note:"";
           if(v==null&&note) notes.add(note);
-          const errCls=(v==null&&note)?" err":"";
-          const tip=note?` title="${esc(note)}"`:"";
-          const col=s.startsWith("gap(")?(v!=null&&Math.abs(v)<=0.05?"var(--pass)":v!=null&&Math.abs(v)<=0.15?"var(--warn)":"var(--fail)"):"inherit";
-          const cell=(v==null&&note)?"error":fmt(v);
-          return `<td class="score-cell${errCls}" style="color:${col}"${tip}>${cell}</td>`;}).join("")+"</tr>";
+          ml+=`<td class="score-cell grp${(v==null&&note)?" err":""}"${note?` title="${esc(note)}"`:""}>${(v==null&&note)?"error":fmt(v)}</td>`
+            + ratioCell(panelOf(s,t,m));
+        }
+        ml+=`</tr>`;
       }
-      ml+=`</tbody></table>`;
+      // what this table contributes to the utility mean
+      ml+=`<tr class="total-row"><td class="mono">mean ratio · ${esc(t)}</td><td class="grp"></td>`
+        + synths.map(s=>{ const e=perTable(s,t);
+            return `<td class="score-cell grp dim" style="font-weight:400">${e?e.panels+" panels":""}</td>
+              <td class="ratio-cell" style="color:${e?meterColor(e.ratio):"inherit"}"
+                title="${e?`mean of this table's ${e.panels} panel ratios`:""}">${e?fmt(e.ratio):"—"}</td>`;
+          }).join("")+`</tr></tbody></table>
+        <p class="note tbl-legend"><b>score</b> = trained on that source, tested on the real holdout.
+          <b>÷ real</b> = that score divided by the real baseline, clipped to 1 — one term of the utility mean.
+          <b>⤒</b> = the synthesizer beat the real baseline here, so the ratio was capped at 1.00 (hover for
+          the raw value). Absolute gaps (real − synth) are in the downloaded CSV.</p>`;
       if(notes.size) ml+=`<div class="efflog">`+[...notes].map(n=>"⚠ "+esc(n)).join("\n")+`</div>`;
     }
+    // and the roll-up: the mean over every panel of every table = the headline
+    ml+=`<h4 class="block-title">Utility score — the roll-up</h4>
+      <p class="note">Each <b>mean ratio</b> row above lands here. The utility score is the mean over
+      <b>every panel</b>, not the mean of the per-table columns — a table with more metrics carries
+      proportionally more weight.</p>
+      <table class="rep"><thead><tr><th>synthesizer</th>
+        ${tabList.map(t=>`<th style="text-align:right">${esc(t)}</th>`).join("")}
+        <th style="text-align:right" class="grp">panels</th>
+        <th style="text-align:right">utility</th></tr></thead><tbody>`;
+    for(const s of res.synths){
+      const u=((res.summary||{})[s]||{}).utility; if(!u) continue;
+      ml+=`<tr><td class="mono"><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${P(s)};margin-right:7px"></span>${esc(s)}</td>`
+        + tabList.map(t=>{ const e=(u.per_table||{})[t];
+            return `<td class="ratio-cell" style="color:${e?meterColor(e.ratio):"inherit"}"
+              title="${e?`mean of ${e.panels} panel ratios`:""}">${e?fmt(e.ratio):"—"}</td>`; }).join("")
+        + `<td class="score-cell grp dim">${u.n_panels}</td>`
+        + `<td class="ratio-cell" style="color:${meterColor(u.score||0)}; font-size:14px">${fmt(u.score)}</td></tr>`;
+    }
+    ml+=`</tbody></table>`;
     ml+=fig(res.figures.efficacy,"TSTR scores per training source");
     $("#sec-utility").innerHTML=ml;
   }
 
   /* --- Privacy --- */
-  let pv=`<h4 class="block-title">Privacy</h4>`
+  let pv=scoreStrip(res,P,v=>{
+    const p=v.privacy;
+    const terms=[["MIA",p.mia_protection],["new-row",p.new_row_synthesis],["CAP",p.categorical_cap]]
+      .filter(([,x])=>num(x)!=null);
+    return {score:p.score,
+      formula: terms.length
+        ? `mean( ${terms.map(([lb,x])=>`<b>${fmt(x)}</b> ${lb}`).join(" , ")} ) = <b>${fmt(p.score)}</b>`
+        : `no privacy checks scored`,
+      subs:[
+        ["MIA protection", p.mia_protection, {tip:"1 − 2|AUC − 0.5| — this is the term in the mean, not the raw AUC"}],
+        ["from attacker AUC", p.mia_auc, {sub:true, raw:true, tip:"raw membership-inference AUC — ideal is 0.5 (a coin flip), so it is NOT averaged directly"}],
+        ["NewRowSynthesis", p.new_row_synthesis, {tip:"share of synthetic rows that are not copies of a real row — ideal 1"}],
+        ["CategoricalCAP", p.categorical_cap, {tip:"protection against attribute inference — ideal 1"}],
+      ]};
+    }, {unit:"/1 privacy", note:`Privacy = mean of the three <b>protection</b> scores. Note the MIA term is
+      <b>1 − 2|AUC − 0.5|</b>, not the AUC itself: the raw attacker AUC is shown indented beneath it because
+      its ideal is <b>0.5</b> (a coin flip), so both a strong attacker (AUC 1.0) and an inverted one (AUC 0.0)
+      are penalised.`})
+    +`<h4 class="block-title">Privacy</h4>`
     +fig(res.figures.privacy,"NewRowSynthesis (ideal 1) · Membership-Inference attacker AUC (ideal 0.5) · CategoricalCAP (ideal 1)");
   pv+=`<table class="rep"><thead><tr><th>synthesizer</th><th>table</th><th>check</th><th>status</th><th>detail</th></tr></thead><tbody>`;
   for(const [s,tabs] of Object.entries(res.privacy)) for(const [t,rep] of Object.entries(tabs))
@@ -1565,6 +1972,7 @@ function renderReport(res){
   pv+=`</tbody></table>`;
   $("#sec-privacy").innerHTML=pv;
 
+  flushMeters();                                   // animate every score bar, all sections
   activateTab("pane-report"); showSection("sec-overview");
 }
 </script>

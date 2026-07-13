@@ -461,68 +461,212 @@ def plot_efficacy_scores(efficacy_table: pd.DataFrame, out_png: str) -> Optional
     return _save_fig(fig, out_png)
 
 
-def compute_leaderboard(
+def _mean(vals) -> float:
+    vals = [float(v) for v in vals
+            if v is not None and not (isinstance(v, float) and np.isnan(v))]
+    return float(np.mean(vals)) if vals else float("nan")
+
+
+def structure_scores(ri_rows, cardinality=None, derived_parent=False) -> Dict[str, Dict[str, float]]:
+    """Per-synthesizer referential-integrity score, plus its diagnostics.
+
+    Column Shapes / Column Pair Trends only look inside one table, so a
+    synthesizer can score a perfect QualityReport while getting the cross-table
+    structure wrong.  **The score is sdmetrics' ``CardinalityShapeSimilarity``
+    alone** — the distribution of child rows per parent (including parents with
+    none).  The other two quantities are computed and returned, but deliberately
+    do *not* enter the score:
+
+    * ``fk_validity`` (forward FK coverage) is a *constraint*, not a similarity:
+      the data either is referentially valid or it isn't, and averaging that into
+      a quality score would let a model buy its way out of orphan rows with good
+      marginals.  It is surfaced as a pass/fail gate instead.  It is also
+      **degenerate whenever the parent is a derived hub** (``derived_parent``):
+      the hub is built from the keys the synthesizer emitted, so every child key
+      is in it by construction and the number is a flat 1.0 for everyone.
+    * ``participation`` (parents with >= 1 child, scored against real) is a
+      single point on the CDF of the very distribution CardinalityShapeSimilarity
+      already measures in full — counting both would double-count it.
+
+    ``ri_rows`` is the list of dicts produced by the server's referential
+    integrity check (one row per relationship per source, including "real").
+    Returns ``{}`` when there are no relationships to score.
+    """
+    if not ri_rows:
+        return {}
+    real_rev = {r["relationship"]: r.get("parent_coverage")
+                for r in ri_rows if r.get("source") == "real"}
+    per: Dict[str, Dict[str, List[float]]] = {}
+    for r in ri_rows:
+        s = r.get("source")
+        if s == "real":
+            continue
+        acc = per.setdefault(s, {"fk_validity": [], "participation": []})
+        fk = r.get("fk_coverage")
+        if fk is not None and not (isinstance(fk, float) and np.isnan(fk)):
+            acc["fk_validity"].append(float(np.clip(fk, 0.0, 1.0)))
+        rev, real = r.get("parent_coverage"), real_rev.get(r["relationship"])
+        if (rev is not None and real is not None
+                and not (isinstance(rev, float) and np.isnan(rev))
+                and not (isinstance(real, float) and np.isnan(real))):
+            acc["participation"].append(float(1.0 - min(1.0, abs(float(rev) - float(real)))))
+
+    out: Dict[str, Dict[str, float]] = {}
+    for s, acc in per.items():
+        fk_v = _mean(acc["fk_validity"])
+        shape = (cardinality or {}).get(s, {}).get("shape")
+        out[s] = {
+            "score": float("nan") if shape is None else float(shape),   # cardinality shape ONLY
+            "cardinality_shape": (None if shape is None else float(shape)),
+            # diagnostics — shown, not scored (see the docstring)
+            "fk_validity": fk_v,
+            "fk_by_construction": bool(derived_parent),
+            "fk_gate": ("n/a" if derived_parent or np.isnan(fk_v)
+                        else "PASS" if fk_v >= 0.999 else "WARN" if fk_v >= 0.99 else "FAIL"),
+            "participation": _mean(acc["participation"]),
+        }
+    return out
+
+
+def compute_summary(
     quality_scores: Dict[str, Dict[str, Dict[str, float]]],
     privacy_all: Dict[str, Dict[str, Dict]],
     efficacy_table: Optional[pd.DataFrame],
-) -> pd.DataFrame:
-    """One row per synthesizer with 0-1 scores: fidelity / privacy / utility.
+    ri_rows=None,
+    cardinality=None,
+    derived_parent: bool = False,
+) -> Dict[str, dict]:
+    """Per-synthesizer scorecard: one headline 0-1 number per dimension plus the
+    components it is made of, so every report tab can show the same arithmetic.
 
-    * fidelity  = mean QualityReport overall score across tables
-    * privacy   = mean of three 0-1 protection scores
-                  (1-2|MIA AUC-0.5|, NewRowSynthesis, CategoricalCAP)
-    * utility   = mean over tables of clip(synth_score / real_score, 0, 1)
-                  using the RandomForest TSTR metric (accuracy or R²)
+    * fidelity = column statistics (QualityReport: shapes + pair trends) and,
+      when relationships exist, referential integrity (= cardinality shape
+      similarity, see :func:`structure_scores`) at half their weight ->
+      (2*columns + ri) / 3.  With no relationships defined, fidelity is the
+      column score alone.
+    * privacy  = mean of three 0-1 protection scores
+      (1-2|MIA AUC-0.5|, NewRowSynthesis, CategoricalCAP).
+    * utility  = mean over table x metric of clip(synth score / real score, 0, 1)
+      (TSTR / TRTR).
     """
-    rows = []
+    struct = structure_scores(ri_rows, cardinality, derived_parent)
+    out: Dict[str, dict] = {}
     for s in quality_scores:
-        row: Dict[str, object] = {"synthesizer": s}
-        fid = [v.get("overall") for v in quality_scores[s].values() if v.get("overall") is not None]
-        row["fidelity"] = float(np.mean(fid)) if fid else np.nan
+        tabs = quality_scores[s].values()
+        columns = _mean([v.get("overall") for v in tabs])
+        st = struct.get(s)
+        st_score = st["score"] if st else float("nan")
+        fidelity = columns if (st is None or np.isnan(st_score)) else (2.0 * columns + st_score) / 3.0
 
-        # privacy = mean of three 0-1 protection scores (higher = safer):
-        #   MIA -> 1-2|AUC-0.5|, NewRowSynthesis, CategoricalCAP
-        parts: List[float] = []
+        # ---- privacy: three protection scores, higher = safer ----
+        mia, new_rows, cap = [], [], []
         for rep in (privacy_all.get(s) or {}).values():
             auc = rep.get("membership_inference", {}).get("auc")
             if auc is not None and not (isinstance(auc, float) and np.isnan(auc)):
-                parts.append(max(0.0, 1.0 - 2.0 * abs(float(auc) - 0.5)))
+                mia.append(float(auc))
             sdm = rep.get("sdmetrics", {})
-            for key in ("NewRowSynthesis", "CategoricalCAP"):
-                v = sdm.get(key)
-                if v is not None:
-                    parts.append(float(min(1.0, max(0.0, v))))
-        row["privacy"] = float(np.mean(parts)) if parts else np.nan
+            if sdm.get("NewRowSynthesis") is not None:
+                new_rows.append(float(np.clip(sdm["NewRowSynthesis"], 0.0, 1.0)))
+            if sdm.get("CategoricalCAP") is not None:
+                cap.append(float(np.clip(sdm["CategoricalCAP"], 0.0, 1.0)))
+        mia_auc = _mean(mia)
+        mia_prot = float("nan") if np.isnan(mia_auc) else max(0.0, 1.0 - 2.0 * abs(mia_auc - 0.5))
+        privacy = _mean([mia_prot, _mean(new_rows), _mean(cap)])
 
-        utils: List[float] = []
-        if efficacy_table is not None and not efficacy_table.empty and "train_on" in efficacy_table.columns:
+        # ---- utility: TSTR vs the real-trained baseline on the same holdout ----
+        # NB the score is the mean of the *per-panel ratios*, not the ratio of the
+        # mean scores — the two differ whenever the panels have different
+        # magnitudes, so `panels` below carries the working for the dashboard.
+        ratios, synth_v, real_v, panels = [], [], [], []
+        if (efficacy_table is not None and not efficacy_table.empty
+                and "train_on" in efficacy_table.columns):
             if "score" in efficacy_table.columns and "metric" in efficacy_table.columns:
                 # sdmetrics-efficacy frame: one score column, panels = table x metric
                 base = efficacy_table[~efficacy_table["train_on"].astype(str).str.startswith("gap(")]
-                for (_, _), sub in base.groupby(["table", "metric"]):
-                    r = sub[sub["train_on"] == "real"]["score"]
-                    sv = sub[sub["train_on"] == s]["score"]
-                    if len(r) and len(sv) and pd.notna(r.iloc[0]) and pd.notna(sv.iloc[0]) and float(r.iloc[0]) > 0:
-                        utils.append(float(np.clip(float(sv.iloc[0]) / float(r.iloc[0]), 0.0, 1.0)))
+                groups = [sub for _, sub in base.groupby(["table", "metric"])]
             else:
                 # legacy custom-TSTR frame (accuracy / r2 columns)
+                groups = []
                 for t in efficacy_table["table"].dropna().unique():
                     sub = efficacy_table[(efficacy_table["table"] == t)
                                          & (efficacy_table["model"] == "RandomForest")]
                     if sub.empty:
                         continue
                     metric = "accuracy" if sub["task"].iloc[0] == "classification" else "r2"
-                    if metric not in sub.columns:
-                        continue
-                    r = sub[sub["train_on"] == "real"][metric]
-                    sv = sub[sub["train_on"] == s][metric]
-                    if len(r) and len(sv) and pd.notna(r.iloc[0]) and pd.notna(sv.iloc[0]) and float(r.iloc[0]) > 0:
-                        utils.append(float(np.clip(float(sv.iloc[0]) / float(r.iloc[0]), 0.0, 1.0)))
-        row["utility_tstr"] = float(np.mean(utils)) if utils else np.nan
+                    if metric in sub.columns:
+                        groups.append(sub.rename(columns={metric: "score"}))
+            for sub in groups:
+                r = sub[sub["train_on"] == "real"]["score"]
+                sv = sub[sub["train_on"] == s]["score"]
+                if len(r) and len(sv) and pd.notna(r.iloc[0]) and pd.notna(sv.iloc[0]):
+                    rv, svv = float(r.iloc[0]), float(sv.iloc[0])
+                    real_v.append(rv)
+                    synth_v.append(svv)
+                    if rv > 0:
+                        raw = svv / rv
+                        ratio = float(np.clip(raw, 0.0, 1.0))
+                        ratios.append(ratio)
+                        # every panel that went into the mean, so the dashboard can
+                        # show the working line by line instead of a bare number
+                        panels.append({
+                            "table": str(sub["table"].iloc[0]),
+                            "metric": str(sub["metric"].iloc[0]) if "metric" in sub.columns else "score",
+                            "real": rv, "synth": svv, "ratio": ratio,
+                            "raw_ratio": float(raw), "capped": bool(raw > 1.0),
+                        })
+        utility = _mean(ratios)
+        u_synth, u_real = _mean(synth_v), _mean(real_v)
+        per_table: Dict[str, dict] = {}
+        for p in panels:
+            per_table.setdefault(p["table"], {"ratios": []})["ratios"].append(p["ratio"])
+        per_table = {t: {"ratio": _mean(v["ratios"]), "panels": len(v["ratios"])}
+                     for t, v in per_table.items()}
 
-        dims = [row["fidelity"], row["privacy"], row["utility_tstr"]]
-        row["overall"] = float(np.nanmean([d for d in dims]))
-        rows.append(row)
+        out[s] = {
+            "fidelity": {"score": fidelity, "columns": columns,
+                         "column_shapes": _mean([v.get("column_shapes") for v in tabs]),
+                         "column_pair_trends": _mean([v.get("column_pair_trends") for v in tabs]),
+                         "structure": st_score},
+            "structure": st or {},
+            "privacy": {"score": privacy, "mia_auc": mia_auc, "mia_protection": mia_prot,
+                        "new_row_synthesis": _mean(new_rows), "categorical_cap": _mean(cap)},
+            "utility": {"score": utility, "synth": u_synth, "real": u_real,
+                        "gap": (float("nan") if np.isnan(u_synth) or np.isnan(u_real)
+                                else u_real - u_synth),
+                        "panels": panels, "n_panels": len(ratios), "per_table": per_table,
+                        "n_capped": sum(1 for p in panels if p["capped"])},
+            "overall": _mean([fidelity, privacy, utility]),
+        }
+    return out
+
+
+def compute_leaderboard(
+    quality_scores: Dict[str, Dict[str, Dict[str, float]]],
+    privacy_all: Dict[str, Dict[str, Dict]],
+    efficacy_table: Optional[pd.DataFrame],
+    ri_rows=None,
+    cardinality=None,
+    derived_parent: bool = False,
+) -> pd.DataFrame:
+    """One row per synthesizer with 0-1 scores: fidelity / privacy / utility.
+
+    Thin wrapper over :func:`compute_summary` — same arithmetic, table shape.
+    ``ri_rows`` / ``cardinality`` are optional: pass them to have referential
+    integrity counted inside ``fidelity`` (see :func:`structure_scores`).
+    """
+    summary = compute_summary(quality_scores, privacy_all, efficacy_table, ri_rows,
+                              cardinality, derived_parent)
+    rows = []
+    for s, v in summary.items():
+        rows.append({
+            "synthesizer": s,
+            "fidelity": v["fidelity"]["score"],
+            "column_fidelity": v["fidelity"]["columns"],
+            "referential_integrity": v["fidelity"]["structure"],
+            "privacy": v["privacy"]["score"],
+            "utility_tstr": v["utility"]["score"],
+            "overall": v["overall"],
+        })
     lb = pd.DataFrame(rows).set_index("synthesizer")
     return lb.sort_values("overall", ascending=False)
 

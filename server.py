@@ -671,7 +671,14 @@ def _run_job(cfg: dict, st: dict):
         ck()
         set_pct(93)
         say("Leaderboard + comparison figures…")
-        leaderboard = se.compute_leaderboard(quality_scores, privacy_all, efficacy)
+        # Referential integrity feeds the fidelity score (as cardinality shape
+        # similarity — see compare.structure_scores).  `derived_parent` says the
+        # hub was built from the synthesizers' own keys, which makes forward FK
+        # coverage 1.0 by construction: a diagnostic, never a score.
+        derived = bool(parent_name)
+        summary = se.compute_summary(quality_scores, privacy_all, efficacy, ri, cardinality, derived)
+        leaderboard = se.compute_leaderboard(quality_scores, privacy_all, efficacy, ri,
+                                             cardinality, derived)
         fig_dir = f"{REPORTS_DIR}/figures"
         figs = {
             "quality": se.plot_quality_comparison(quality_scores, f"{fig_dir}/web_quality.png"),
@@ -684,14 +691,15 @@ def _run_job(cfg: dict, st: dict):
             "shapes_data": {t: se.shapes_heatmap_data(d) for t, d in shape_details.items()},
             "pairs": {}, "pairs_data": {},
         }
-        # Column Pair Trends heatmap per table, for the primary (first) synthesizer.
-        primary = list(suite)[0]
+        # Column Pair Trends heatmap per synthesizer per table (a pair matrix is
+        # 2-D column×column, so it can't be stacked like the shapes heatmap — one
+        # per synthesizer).  Shape: figs["pairs"][synth][table].
         for t, per_synth in pair_full.items():
-            recs = per_synth.get(primary)
-            if recs:
-                figs["pairs"][t] = se.plot_pair_trends_heatmap(
-                    recs, f"{fig_dir}/web_pairs_{t}.png", t, primary)
-                figs["pairs_data"][t] = se.pair_trends_heatmap_data(recs)
+            for s, recs in per_synth.items():
+                if recs:
+                    figs["pairs"].setdefault(s, {})[t] = se.plot_pair_trends_heatmap(
+                        recs, f"{fig_dir}/web_pairs_{s}_{t}.png", t, s)
+                    figs["pairs_data"].setdefault(s, {})[t] = se.pair_trends_heatmap_data(recs)
 
         ck()   # last checkpoint before publishing
         if st.get("job") is not job:
@@ -702,6 +710,7 @@ def _run_job(cfg: dict, st: dict):
             "tables": list(tables),
             "palette": se.SYNTH_PALETTE,
             "leaderboard": leaderboard.reset_index().to_dict(orient="records"),
+            "summary": summary,
             "quality": quality_scores,
             "shape_details": {t: {s: ser.round(3).to_dict() for s, ser in d.items()}
                               for t, d in shape_details.items()},

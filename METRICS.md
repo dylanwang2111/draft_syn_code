@@ -33,7 +33,11 @@ custom privacy/ML encoders; sdmetrics handles NaNs itself).
 
 ---
 
-## 1. Fidelity (sdmetrics `QualityReport`)
+## 1. Fidelity (sdmetrics `QualityReport` + referential integrity)
+
+Fidelity has two halves: the **column statistics** below (how each table looks on its
+own) and **referential integrity** (how the tables relate — FK validity, participation
+and cardinality, §4). Both feed the single fidelity number on the leaderboard.
 
 | Metric | Source | What it measures | Range / target |
 |---|---|---|---|
@@ -116,9 +120,38 @@ One 0–1 score per synthesizer per axis, averaged over tables:
 
 | Dimension | Formula |
 |---|---|
-| **fidelity** | mean QualityReport overall score |
+| **column_fidelity** | mean QualityReport overall score (Column Shapes ⊕ Column Pair Trends) |
+| **referential_integrity** | sdmetrics `CardinalityShapeSimilarity` — see below. `NaN` when no relationships are defined |
+| **fidelity** | (2 × column_fidelity + referential_integrity) / 3, or column_fidelity alone when there are no relationships |
 | **privacy** | mean of the three protection scores [ 1 − 2·\|MIA AUC − 0.5\| , NewRowSynthesis , CategoricalCAP ] |
 | **utility_tstr** | mean over (table × metric) of clip(TSTR score / TRTR score, 0, 1) |
-| **overall** | mean of the three dimensions |
+| **overall** | mean of fidelity, privacy and utility_tstr |
+
+> **utility is a mean of ratios, not a ratio of means.** Each (table × metric) *panel*
+> contributes one ratio and they are averaged with equal weight, so
+> `mean(synth) / mean(real)` will **not** reproduce the score — a panel with small scores
+> counts as much as a panel with large ones, and `clip(…, 0, 1)` caps a panel where the
+> synthesizer beat the real baseline. The dashboard prints every panel ratio (the "÷ real"
+> column) plus the per-table means, so the headline can be added up by hand.
+> Also note utility is *relative*: against a weak baseline (real-trained model scoring 0.33)
+> a high ratio only says the synthetic data is as weak as the real data, not that the model is good.
+
+`QualityReport` is single-table only: it never looks across a foreign key, so a
+synthesizer can score a perfect 1.0 on it while getting the cross-table structure wrong.
+**referential_integrity** (`synth_eval.compare.structure_scores`) closes that gap. The
+score is **`CardinalityShapeSimilarity` alone** — the distribution of child rows per
+parent (including parents with none). It is the only one of the three quantities below
+that is a *distribution-similarity* measure on the same footing as Column Shapes, which
+is why it is the only one averaged into fidelity.
+
+| Quantity | Formula | Role |
+|---|---|---|
+| **cardinality shape** | sdmetrics `CardinalityShapeSimilarity` | **the score.** Averaged into fidelity |
+| **FK validity** | share of synthetic child rows whose FK hits a parent key (forward coverage) | **pass/fail gate, not scored.** A *constraint*, not a similarity — averaging it in would let a model buy its way out of orphan rows with good marginals. It is also **1.0 by construction whenever the parent is a derived entity hub** (the hub is built from the keys the synthesizer emitted), so it is reported as `n/a` there rather than as a free 1.0 |
+| **participation** | 1 − \|synth parent coverage − real parent coverage\|, where parent coverage = share of parents with ≥ 1 child row | **diagnostic, not scored.** Parent coverage is `P(count > 0)` — a single point on the CDF of the very distribution cardinality shape already measures in full, so scoring both would double-count. Still worth reading: it should **match real**, and is *not* supposed to be 1 |
+
+The same numbers are surfaced per report tab in the dashboard (`results["summary"]`,
+built by `compute_summary`), so the Fidelity / Utility / Privacy tabs each show the
+headline score and the components behind it.
 
 Rendered as an annotated RdYlGn heatmap; all raw numbers land in `reports/summary.json`.
