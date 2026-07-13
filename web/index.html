@@ -298,6 +298,22 @@ h4.block-title:first-child{margin-top:0}
 .kpi-subs > div.is-sub span::before{content:"› "; color:var(--faint)}
 .kpi-subs b{font-weight:600}
 .kpi-note{margin:10px 0 18px}
+/* hover-to-explain: the long "why" copy lives in here, not on the screen.
+   `data-tip` is plain text; keep it short enough to read in one breath. */
+.ihelp{display:inline-flex; align-items:center; justify-content:center; width:14px; height:14px;
+  border-radius:50%; border:1px solid var(--line); background:var(--panel-2); color:var(--faint);
+  font-family:var(--disp); font-size:9.5px; font-weight:700; font-style:normal; cursor:help;
+  position:relative; vertical-align:middle; margin-left:6px; flex:none; letter-spacing:0;
+  text-transform:none; line-height:1}
+.ihelp:hover{border-color:var(--blue); color:var(--blue); background:var(--tint)}
+.ihelp::after{content:attr(data-tip); position:absolute; left:50%; top:calc(100% + 9px);
+  transform:translateX(-50%); width:300px; max-width:78vw; background:var(--panel); color:var(--muted);
+  border:1px solid var(--line); border-radius:10px; padding:10px 12px; box-shadow:0 12px 30px rgba(1,29,53,.24);
+  font-family:var(--sans); font-size:11.5px; font-weight:400; line-height:1.55; text-align:left;
+  letter-spacing:0; text-transform:none; white-space:normal; opacity:0; visibility:hidden;
+  transition:opacity .12s ease; z-index:60; pointer-events:none}
+.ihelp:hover::after{opacity:1; visibility:visible}
+.ihelp.rt::after{left:auto; right:-6px; transform:none}   /* near the right edge */
 /* per-panel ratio column in the TSTR table: shows what the utility mean is made of */
 td.ratio-cell{font-family:var(--mono); text-align:right; font-weight:600}
 td.ratio-cell .cap{color:var(--faint); font-weight:400; margin-left:3px}
@@ -1318,16 +1334,21 @@ function renderAdvisor(profile){
   if(!profile||profile.error||!profile.recommendation){ banner.style.display="none"; return; }
   const r=profile.recommendation; RECOMMENDED_RELS=r.relationships||[];
   banner.style.display="block";
+  // The reasoning is long and only needed once — park it behind a hover marker and
+  // keep the panel to the headline plus anything actionable (warnings).
+  const why=(r.reasons||[]).join(" ");
   let h=`<div class="strat-head"><span class="tier-badge tier-${r.tier}">${TIER_LABEL[r.tier]||("TIER "+r.tier)}</span>
-    <span class="strat-name">${STRATEGY_LABEL[r.strategy]||r.strategy}</span></div><ul class="strat-list">`;
-  (r.reasons||[]).forEach(x=>h+=`<li>${esc(x)}</li>`);
-  (r.warnings||[]).forEach(x=>h+=`<li class="warn">${esc(x)}</li>`);
-  h+=`</ul>`;
-  // A recommendation, never a wall: whatever the tier, the user can still set an
-  // entity key or relationships by hand. Offer that as an explicit next action.
-  h+=`<p class="advisor-note">This is a suggestion from the profiler — you can override it below.
-    You can always set an <b>entity key</b> yourself if you know a business key that ties an
-    entity's rows together.</p><div class="advisor-actions">`;
+    <span class="strat-name">${STRATEGY_LABEL[r.strategy]||r.strategy}</span>
+    ${why?ihelp(why+" — a suggestion from the profiler; you can override it below, and you can always set an entity key yourself if you know a business key that ties an entity's rows together."):""}</div>`;
+  const warns=r.warnings||[];
+  if(warns.length){
+    h+=`<ul class="strat-list">`;
+    // a warning is actionable, so it stays on screen — but only the first line of it
+    warns.forEach(x=>{ const s=String(x), one=s.split(". ")[0];
+      h+=`<li class="warn">${esc(one)}${one.length<s.length?ihelp(s):""}</li>`; });
+    h+=`</ul>`;
+  }
+  h+=`<div class="advisor-actions">`;
   if(RECOMMENDED_RELS.length)
     h+=`<button class="mini-btn primary" id="btn-apply-rels">Apply ${RECOMMENDED_RELS.length} recommended link${RECOMMENDED_RELS.length>1?"s":""}</button>`;
   h+=`<button class="mini-btn" id="btn-goto-key">${RECOMMENDED_RELS.length?"Or choose an entity key":"Choose an entity key"} →</button></div>`;
@@ -1495,6 +1516,11 @@ async function poll(){
 
 /* ---------------- report ---------------- */
 const fig=(b64,cap="",cls="")=>b64?`<figure class="fig ${cls}"><img src="data:image/png;base64,${b64}">${cap?`<figcaption>${esc(cap)}</figcaption>`:""}</figure>`:"";
+/* hover-to-explain marker — put the "why" here instead of on the screen */
+const ihelp=(tip,cls="")=>`<i class="ihelp ${cls}" data-tip="${esc(tip)}">i</i>`;
+/* section heading: short title + one-line subtitle, detail on hover */
+const head=(title,tip,sub="")=>`<h4 class="block-title">${esc(title)}${tip?ihelp(tip):""}</h4>`
+  +(sub?`<p class="note">${sub}</p>`:"");
 const meter=(label,v)=>`<div class="meter"><div class="m-label"><span>${label}</span><b>${fmt(v)}</b></div>
   <div class="m-track"><div class="m-fill" data-w="${Math.max(0,Math.min(1,v||0))*100}" style="background:${meterColor(v||0)}"></div></div></div>`;
 
@@ -1688,10 +1714,11 @@ function renderReport(res){
       <div class="lb-name"><span class="dot" style="background:${P(r.synthesizer)}"></span>${r.synthesizer}</div>
       <div class="big-score">${fmt(r.overall)}<small> /1 overall</small></div>
       ${meter("fidelity",r.fidelity)}${meter("privacy",r.privacy)}${meter("utility · TSTR",r.utility_tstr)}</div>`).join("")}</div>
-    <p class="note"><b>overall</b> = mean of the three dimensions. <b>fidelity</b> = column statistics
-      (sdmetrics QualityReport)${hasStruct?" ⊕ referential integrity (cardinality shape similarity), weighted 2:1":""} ·
-      <b>privacy</b> = MIA ⊕ NewRowSynthesis ⊕ CategoricalCAP · <b>utility</b> = TSTR/TRTR ratio (see METRICS.md).
-      Each dimension is broken down on its own tab.</p>`;
+    <p class="note"><b>overall</b> = mean of the three dimensions${ihelp(
+      "fidelity = column statistics (sdmetrics QualityReport)"
+      + (hasStruct ? " ⊕ referential integrity (cardinality shape similarity), weighted 2:1" : "")
+      + ". privacy = MIA ⊕ NewRowSynthesis ⊕ CategoricalCAP. utility = TSTR/TRTR ratio. "
+      + "Each dimension is broken down on its own tab; see METRICS.md.")}</p>`;
   flushMeters("#sec-overview");
 
   /* --- Fidelity (score strip + summary table + combined Overall/Shapes/Pairs figure) --- */
@@ -1708,14 +1735,16 @@ function renderReport(res){
         ["Column Pair Trends", f.column_pair_trends, {sub:true, tip:"pairwise relationship match per column pair"}],
         ["Referential integrity ×1", f.structure, {tip:hasStruct?"cardinality shape similarity — how closely child-rows-per-parent matches real. See the Referential Integrity tab.":"no relationships defined"}],
       ]};
-    }, {unit:"/1 fidelity", note:hasStruct
-      ? `Fidelity = <b>(2 × column statistics + referential integrity) / 3</b>. The column statistics only ever
-         look <i>inside</i> one table, so a synthesizer can match every marginal while getting the cross-table
-         structure wrong; referential integrity (cardinality shape similarity) covers that, at half the weight.`
-      : `Fidelity = the column statistics alone. Link tables in the <b>Data Model</b> tab to have referential
-         integrity counted here too.`})
-    +`<h4 class="block-title">QualityReport — per synthesizer per table</h4>
-    <table class="rep"><thead><tr><th>synthesizer</th><th>table</th><th style="text-align:right">column shapes</th>
+    }, {unit:"/1 fidelity", note: hasStruct
+      ? `Column statistics ⊕ referential integrity, weighted 2:1${ihelp(
+          "The column statistics only ever look inside one table, so a synthesizer can match every marginal "
+          + "while getting the cross-table structure wrong. Referential integrity (cardinality shape "
+          + "similarity) covers that, at half the weight.")}`
+      : `Column statistics only${ihelp(
+          "No relationships are defined, so there is no cross-table structure to score. "
+          + "Link tables in the Data Model tab to have referential integrity counted here too.")}`})
+    +head("QualityReport","Per synthesizer per table. Overall is the mean of column shapes and column pair trends.")
+    +`<table class="rep"><thead><tr><th>synthesizer</th><th>table</th><th style="text-align:right">column shapes</th>
     <th style="text-align:right">column pair trends</th><th style="text-align:right">overall</th></tr></thead><tbody>`;
   for(const s of res.synths) for(const [t,v] of Object.entries(res.quality[s]||{}))
     qy+=`<tr><td class="mono"><span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${P(s)};margin-right:7px"></span>${s}</td>
@@ -1727,15 +1756,16 @@ function renderReport(res){
 
   /* --- Fidelity › Column Shapes (per-column heatmaps) --- */
   let sh=scoreStrip(res,P,v=>({score:v.fidelity.column_shapes,
-      formula:`mean of the per-column shape scores in the heatmap below, over all columns and tables`,
+      formula:`mean of the per-column scores below`,
       subs:[
         ["Feeds column statistics", v.fidelity.columns, {tip:"mean(Column Shapes, Column Pair Trends)"}],
         ["…which feeds fidelity", v.fidelity.score, {sub:true}],
       ]}), {unit:"/1 shapes"})
-    +`<h4 class="block-title">Column Shapes — per column</h4>
-    <p class="note">Marginal-distribution match per column (KS complement numeric, TV complement categorical),
-    averaged over columns and tables in the card above.
-    ${HAS_PLOTLY?"Hover for exact scores; drag to zoom.":""}</p>`;
+    +head("Column Shapes",
+      "Does each column's distribution match real? KS complement for numeric columns, "
+      + "total-variation complement for categorical. 1 = identical."
+      + (HAS_PLOTLY ? " Hover a cell for the exact score; drag to zoom." : ""),
+      "Per column, per synthesizer.");
   const shapeFigs=res.figures.shapes||{};
   if(Object.keys(shapeFigs).length || Object.keys(shapesData).length)
     for(const t of Object.keys({...shapeFigs,...shapesData})) sh+=heatmapBlock("shapes",t,shapesData[t],shapeFigs[t]);
@@ -1746,16 +1776,18 @@ function renderReport(res){
   const pairs=res.figures.pairs||{};   // {synth:{table:png}} ; pairsData same shape
   const hasMap=m=>m&&Object.values(m).some(inner=>inner&&Object.values(inner).some(Boolean));
   const pairStrip=scoreStrip(res,P,v=>({score:v.fidelity.column_pair_trends,
-      formula:`mean of the per-pair scores in the heatmaps below, over all column pairs and tables`,
+      formula:`mean of the per-pair scores below`,
       subs:[
         ["Feeds column statistics", v.fidelity.columns, {tip:"mean(Column Shapes, Column Pair Trends)"}],
         ["…which feeds fidelity", v.fidelity.score, {sub:true}],
       ]}), {unit:"/1 pair trends"});
   let pr=pairStrip;                 // the score exists even when no heatmap could be drawn
   if(hasMap(pairs) || hasMap(pairsData)){
-    pr+=`<h4 class="block-title">Column Pair Trends — per column pair</h4>
-      <p class="note">Relationship preservation per pair (correlation similarity numeric, contingency similarity categorical/mixed).
-      1 = identical trend; blank = a pair sdmetrics couldn't score.</p>`;
+    pr+=head("Column Pair Trends",
+      "Do the relationships BETWEEN columns survive? Correlation similarity for numeric pairs, "
+      + "contingency similarity for categorical/mixed. 1 = identical trend; a blank cell is a pair "
+      + "sdmetrics could not score.",
+      "Per column pair, per synthesizer.");
     for(const s of res.synths){
       const pm=pairs[s]||{}, dm=pairsData[s]||{};
       const tabs=Object.keys({...pm,...dm}); if(!tabs.length) continue;
@@ -1779,34 +1811,33 @@ function renderReport(res){
       const gate=t.fk_gate||"n/a";
       return {score:t.score,
         formula: num(t.cardinality_shape)!=null
-          ? `<b>${fmt(t.cardinality_shape)}</b> cardinality shape similarity<br>
-             (FK validity and participation are diagnostics — not scored)`
+          ? `<b>${fmt(t.cardinality_shape)}</b> cardinality shape similarity`
           : `cardinality similarity unavailable → not scored`,
         subs:[
-          ["Cardinality shape", t.cardinality_shape, {tip:"sdmetrics CardinalityShapeSimilarity — how closely the distribution of child-rows-per-parent matches real. THIS is the score."}],
-          ["FK validity (gate)", t.fk_validity, {raw:true,
-            text: gate==="n/a" ? "n/a — by construction" : `${fmt(t.fk_validity)} · ${gate}`,
+          ["Cardinality shape", t.cardinality_shape, {tip:"sdmetrics CardinalityShapeSimilarity — how closely the distribution of child-rows-per-parent matches real. This is the score."}],
+          ["FK validity", t.fk_validity, {raw:true,
+            text: gate==="n/a" ? "n/a" : `${fmt(t.fk_validity)} · ${gate}`,
             tip: gate==="n/a"
-              ? "the parent is a hub derived from the keys this synthesizer emitted, so every child key is in it by construction — a flat 1.0 for everyone, so it is not scored"
-              : "child rows whose FK hits a parent key. This is a validity constraint (pass/fail), not a similarity — it is not averaged into the score."}],
-          ["Participation (diagnostic)", t.participation, {raw:true,
-            tip:"1 − |synth parent coverage − real parent coverage|. Not scored: parent coverage is one point on the CDF of the very distribution cardinality shape already measures in full, so counting both would double-count it."}],
+              ? "Not scored. The parent is a hub derived from the keys this synthesizer emitted, so every child key is in it by construction — a flat 1.0 for everyone."
+              : "A pass/fail gate, not part of the score: child rows whose FK hits a parent key. Validity is a constraint, not a similarity."}],
+          ["Participation", t.participation, {raw:true,
+            tip:"Diagnostic, not scored: 1 − |synth parent coverage − real parent coverage|. Parent coverage is one point on the CDF of the distribution cardinality shape already measures in full, so scoring both would double-count."}],
         ]};
-      }, {unit:"/1 ref. integrity", note:`<b>The score is cardinality shape similarity alone</b> — the only one
-        of the three that is a distribution-similarity measure on the same footing as Column Shapes. It is the
-        cross-table component of <b>fidelity</b> (one third of it). <b>FK validity</b> is a
-        <i>constraint</i>, not a similarity — averaging it in would let a model buy its way out of orphan rows
-        with good marginals, so it is a pass/fail gate instead (and it is <i>true by construction</i>, hence
-        unscoreable, whenever the parent is a derived hub). <b>Participation</b> is a marginal of the
-        cardinality distribution, so scoring it too would double-count.`})
-      +`<h4 class="block-title">Referential integrity</h4>
-      <p class="note"><b>fk coverage</b> (forward) = child rows whose foreign key hits a real parent key —
-      1 = no orphans; this drives the status. <b>parent coverage</b> (reverse) = parents that have ≥1 child
-      row (participation) — <i>not</i> expected to be 1; each synthesizer should <b>match the real value</b>,
-      shown as a coloured badge (points away from real: <span class="delta-badge ok">= real</span>
-      <span class="delta-badge warn">↑ 8 pts</span> <span class="delta-badge bad">↓ 22 pts</span>).
-      ${res.relationships_modeled?" HMA was fitted <b>with</b> these relationships; single-table synthesizers reference a hub derived from their own output.":""}</p>
-      <table class="rep"><thead><tr><th>relationship</th><th>source</th>
+      }, {unit:"/1 ref. integrity", note:`Scored on cardinality shape only${ihelp(
+        "Cardinality shape is the only one of the three that is a distribution-similarity measure, on the "
+        + "same footing as Column Shapes — so it is the only one averaged into fidelity (one third of it). "
+        + "FK validity is a constraint, not a similarity: averaging it in would let a model buy its way out "
+        + "of orphan rows with good marginals, so it is a pass/fail gate — and it is true by construction, "
+        + "hence unscoreable, whenever the parent is a derived hub. Participation is a marginal of the "
+        + "cardinality distribution, so scoring it too would double-count.")}`})
+      +head("Coverage per relationship",
+        "fk coverage (forward) = child rows whose foreign key hits a parent key; 1 = no orphans, and this "
+        + "drives the status. parent coverage (reverse) = parents with at least one child row. Parent "
+        + "coverage is NOT supposed to be 1 — each synthesizer should match the real value, and the badge "
+        + "shows how many points away from real it landed."
+        + (res.relationships_modeled ? " HMA was fitted with these relationships; single-table synthesizers "
+          + "reference a hub derived from their own output." : ""))
+      +`<table class="rep"><thead><tr><th>relationship</th><th>source</th>
         <th style="text-align:right">fk coverage</th><th style="text-align:right">parent coverage</th><th>status</th></tr></thead>
       <tbody>${ri.map(r=>{
         let rc=pct(r.parent_coverage);
@@ -1822,10 +1853,11 @@ function renderReport(res){
       }).join("")}</tbody></table>`;
     const card=res.cardinality||{}; const cnames=Object.keys(card);
     if(cnames.length){
-      riH+=`<h4 class="block-title">Cardinality similarity</h4>
-        <p class="note">Distribution of <b>child rows per parent</b> (including parents with none), synthetic vs real
-        (1 = identical). Catches a synthesizer that over- or under-generates child rows even when forward coverage is 1.</p>
-        <table class="rep"><thead><tr><th>synthesizer</th><th style="text-align:right">shape similarity</th>
+      riH+=head("Cardinality similarity",
+          "The distribution of child rows per parent (including parents with none), synthetic vs real. "
+          + "1 = identical. This catches a synthesizer that over- or under-generates child rows even when "
+          + "forward coverage is a perfect 1. Shape compares the whole distribution; statistic compares its mean.")
+        +`<table class="rep"><thead><tr><th>synthesizer</th><th style="text-align:right">shape similarity</th>
           <th style="text-align:right">statistic similarity</th></tr></thead><tbody>`;
       const cell=v=>v==null?`<span class="dim">—</span>`:`<span style="color:${meterColor(v)}">${fmt(v)}</span>`;
       for(const s of cnames){ const e=card[s];
@@ -1853,16 +1885,18 @@ function renderReport(res){
       subs.push(["mean real baseline (context)", u.real, {sub:true, raw:true,
         tip:"raw mean of the real-trained scores. If this is low, the target is hard for ANY model and a high utility ratio only means the synthetic data is as weak as the real data — not that the model is good."}]);
       return {score:u.score,
-        formula:`mean of <b>${u.n_panels}</b> panel ratios (one per table × metric, each
-          clip(synth ÷ real, 0, 1)) = <b>${fmt(u.score)}</b>`,
+        formula:`mean of <b>${u.n_panels}</b> panel ratios = <b>${fmt(u.score)}</b>`,
         subs};
-      }, {unit:"/1 utility", note:`Each row of every table below is one <b>panel</b>: its ratio is
-        <b>clip(synth ÷ real, 0, 1)</b>, and the headline is the plain mean of those ratios — <i>not</i>
-        mean(synth) ÷ mean(real), which would give a different answer because each panel counts equally
-        regardless of how large its scores are. The <b>÷ real</b> columns below show every term in that mean.`})
-      +`<h4 class="block-title">Utility · ML efficacy (TSTR)</h4>
-      <p class="note">Train on Synthetic, Test on Real — each model trained on real (reference) and on every
-      synthesizer's output, tested on the <b>same real holdout</b>. gap(real−synth) ≈ 0 means synthetic trains as well as real.</p>`;
+      }, {unit:"/1 utility", note:`Mean of one ratio per table × metric${ihelp(
+        "Each row of every table below is one panel, and its ratio is clip(synth ÷ real, 0, 1). The headline "
+        + "is the plain mean of those ratios — NOT mean(synth) ÷ mean(real), which gives a different answer "
+        + "because every panel counts equally regardless of how large its scores are. The ÷ real columns "
+        + "below show every term in that mean. Utility is relative: against a weak real baseline, a high "
+        + "ratio only says the synthetic data is as weak as the real data.")}`})
+      +head("ML efficacy (TSTR)",
+        "Train on Synthetic, Test on Real. Each model is trained on the real data (the reference) and on "
+        + "every synthesizer's output, then tested on the SAME real holdout — which the synthesizers never saw.",
+        "Trained per source, tested on the same real holdout.");
     /* each (table × metric) row is one panel of the utility mean; the "÷ real"
        column after every synthesizer prints that panel's own term, so the
        headline can be added up by hand from the rows on screen. */
@@ -1914,18 +1948,18 @@ function renderReport(res){
               <td class="ratio-cell" style="color:${e?meterColor(e.ratio):"inherit"}"
                 title="${e?`mean of this table's ${e.panels} panel ratios`:""}">${e?fmt(e.ratio):"—"}</td>`;
           }).join("")+`</tr></tbody></table>
-        <p class="note tbl-legend"><b>score</b> = trained on that source, tested on the real holdout.
-          <b>÷ real</b> = that score divided by the real baseline, clipped to 1 — one term of the utility mean.
-          <b>⤒</b> = the synthesizer beat the real baseline here, so the ratio was capped at 1.00 (hover for
-          the raw value). Absolute gaps (real − synth) are in the downloaded CSV.</p>`;
+        <p class="note tbl-legend"><b>÷ real</b> = one term of the utility mean · <b>⤒</b> = capped at 1.00
+          ${ihelp("score = trained on that source, tested on the real holdout. ÷ real = that score divided by "
+            + "the real baseline, clipped to 1 — one term of the utility mean. ⤒ means the synthesizer BEAT "
+            + "the real baseline here, so the ratio was capped at 1.00; hover the cell for the raw value. "
+            + "Absolute gaps (real − synth) are in the downloaded CSV.")}</p>`;
       if(notes.size) ml+=`<div class="efflog">`+[...notes].map(n=>"⚠ "+esc(n)).join("\n")+`</div>`;
     }
     // and the roll-up: the mean over every panel of every table = the headline
-    ml+=`<h4 class="block-title">Utility score — the roll-up</h4>
-      <p class="note">Each <b>mean ratio</b> row above lands here. The utility score is the mean over
-      <b>every panel</b>, not the mean of the per-table columns — a table with more metrics carries
-      proportionally more weight.</p>
-      <table class="rep"><thead><tr><th>synthesizer</th>
+    ml+=head("Roll-up",
+        "Each mean-ratio row above lands here. The utility score is the mean over EVERY panel, not the mean "
+        + "of the per-table columns — so a table with more metrics carries proportionally more weight.")
+      +`<table class="rep"><thead><tr><th>synthesizer</th>
         ${tabList.map(t=>`<th style="text-align:right">${esc(t)}</th>`).join("")}
         <th style="text-align:right" class="grp">panels</th>
         <th style="text-align:right">utility</th></tr></thead><tbody>`;
@@ -1958,11 +1992,11 @@ function renderReport(res){
         ["NewRowSynthesis", p.new_row_synthesis, {tip:"share of synthetic rows that are not copies of a real row — ideal 1"}],
         ["CategoricalCAP", p.categorical_cap, {tip:"protection against attribute inference — ideal 1"}],
       ]};
-    }, {unit:"/1 privacy", note:`Privacy = mean of the three <b>protection</b> scores. Note the MIA term is
-      <b>1 − 2|AUC − 0.5|</b>, not the AUC itself: the raw attacker AUC is shown indented beneath it because
-      its ideal is <b>0.5</b> (a coin flip), so both a strong attacker (AUC 1.0) and an inverted one (AUC 0.0)
-      are penalised.`})
-    +`<h4 class="block-title">Privacy</h4>`
+    }, {unit:"/1 privacy", note:`Mean of the three protection scores${ihelp(
+      "The MIA term is 1 − 2|AUC − 0.5|, not the AUC itself: the raw attacker AUC is shown indented beneath "
+      + "it because its ideal is 0.5 (a coin flip), so both a strong attacker (AUC 1.0) and an inverted one "
+      + "(AUC 0.0) are penalised. NewRowSynthesis = synthetic rows that are not copies of a real row. "
+      + "CategoricalCAP = protection against attribute inference.")}`})
     +fig(res.figures.privacy,"NewRowSynthesis (ideal 1) · Membership-Inference attacker AUC (ideal 0.5) · CategoricalCAP (ideal 1)");
   pv+=`<table class="rep"><thead><tr><th>synthesizer</th><th>table</th><th>check</th><th>status</th><th>detail</th></tr></thead><tbody>`;
   for(const [s,tabs] of Object.entries(res.privacy)) for(const [t,rep] of Object.entries(tabs))
