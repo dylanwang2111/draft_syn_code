@@ -301,6 +301,12 @@ def privacy_report(
         why = sdm.get("CategoricalCAP_error", "no scoreable rows")
         verdicts["categorical_cap"] = (
             "SKIP", f"CategoricalCAP not computable ({why}) — no evidence either way")
+    else:
+        # not even attempted: the attack needs >=1 categorical key field plus a
+        # categorical sensitive field — say so instead of silently omitting the row
+        verdicts["categorical_cap"] = (
+            "SKIP", f"needs ≥2 categorical columns (1 key + 1 sensitive); this table "
+                    f"has {len(roles.categorical)} — attack not applicable")
 
     return {
         "table": table_name,
