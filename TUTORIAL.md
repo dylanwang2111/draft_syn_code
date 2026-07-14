@@ -46,8 +46,9 @@ Skip this if your tables are independent. Otherwise:
 |---|---|
 | **1 · Structure & keys** | Mirrors the Data Model. Set the SCD timeline columns here if your data is slowly-changing (effective / end / current). |
 | **2 · Constraints** | Rules the synthetic data must satisfy *by construction*: `low ≤ high`, `low ≤ mid ≤ high`, columns co-vary, multiple of N. |
-| **3 · Synthesizers** | **HMA** is multi-table (the only one that learns cross-table structure). GaussianCopula is fast and single-table. CTGAN / TVAE / CopulaGAN are neural — slower, and the **epochs** slider only applies to them. Pick two or more to compare. |
-| **4 · Run parameters** | **Scale** = synthetic rows ÷ real rows. **Holdout** = real rows held back for the privacy and utility tests (never shown to the synthesizer). **Target** per table for the ML-efficacy test (auto is usually fine). |
+| **3 · PII handling** | Columns that look like names / emails / phones / postal codes / addresses are auto-detected. **Fake** (default) writes Faker values that never existed in the source; **Shuffle real** re-deals the *actual* values (they leak — the panel warns); **Drop** removes the column. Faked/dropped columns are excluded from fidelity scoring, since their marginals are deliberately broken. |
+| **4 · Synthesizers** | **HMA** is multi-table (the only one that learns cross-table structure). GaussianCopula is fast and single-table. CTGAN / TVAE / CopulaGAN are neural — slower, and the **epochs** slider only applies to them. Pick two or more to compare. |
+| **5 · Run parameters** | **Scale** = synthetic rows ÷ real rows. **Holdout** = real rows held back for the privacy and utility tests (never shown to the synthesizer). **Target** per table for the ML-efficacy test (auto is usually fine). |
 
 Hit **▶ Synthesize**. The progress bar and console track the run; **■ Cancel** stops everything.
 Fitting HMA on a key with many distinct values is the slow part — expect minutes, not seconds.
