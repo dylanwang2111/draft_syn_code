@@ -213,16 +213,29 @@ def sdmetrics_privacy(
     # CategoricalCAP: only meaningful with >=1 key field and 1 sensitive field.
     if len(roles.categorical) >= 2:
         try:
-            from sdmetrics.single_table import CategoricalCAP
+            from sdmetrics.single_table import CategoricalCAP, CategoricalGeneralizedCAP
 
             sensitive = roles.categorical[-1]
             key = [c for c in roles.categorical if c != sensitive][:3]
-            cap = CategoricalCAP.compute(
+            cap = float(CategoricalCAP.compute(
                 real_data=real, synthetic_data=synth,
                 key_fields=key, sensitive_fields=[sensitive],
-            )
-            out["CategoricalCAP"] = float(cap)
-            out["CategoricalCAP_fields"] = {"key": key, "sensitive": sensitive}
+            ))
+            variant = "exact"
+            if np.isnan(cap):
+                # Plain CAP only scores real rows whose *exact* key combination
+                # occurs in the synthetic data; with high-cardinality code
+                # columns as keys that can be zero rows -> NaN. Fall back to the
+                # generalized attacker, which matches the closest synthetic key
+                # (hamming distance) instead, so the attack is always scoreable.
+                cap = float(CategoricalGeneralizedCAP.compute(
+                    real_data=real, synthetic_data=synth,
+                    key_fields=key, sensitive_fields=[sensitive],
+                ))
+                variant = "generalized"
+            out["CategoricalCAP"] = None if np.isnan(cap) else cap
+            out["CategoricalCAP_fields"] = {"key": key, "sensitive": sensitive,
+                                            "variant": variant}
         except Exception as e:  # pragma: no cover
             out["CategoricalCAP"] = None
             out["CategoricalCAP_error"] = str(e)[:200]
@@ -273,12 +286,21 @@ def privacy_report(
         )
 
     cap = sdm.get("CategoricalCAP")
-    if cap is not None:
+    if cap is not None and not (isinstance(cap, float) and np.isnan(cap)):
+        variant = (sdm.get("CategoricalCAP_fields") or {}).get("variant", "exact")
+        note = " · nearest-key attacker (no real key combo occurs verbatim in the synthetic data)" \
+            if variant == "generalized" else ""
         verdicts["categorical_cap"] = (
             "PASS" if cap >= 0.5 else "WARN" if cap >= 0.3 else "FAIL",
             f"CategoricalCAP={cap:.3f} (1.0 => a sensitive field cannot be "
-            f"inferred from the key fields)",
+            f"inferred from the key fields){note}",
         )
+    elif "CategoricalCAP" in sdm:
+        # attempted but not computable — a SKIP, never a FAIL: NaN carries no
+        # evidence of leakage (nan >= 0.5 is False, which used to fall to FAIL)
+        why = sdm.get("CategoricalCAP_error", "no scoreable rows")
+        verdicts["categorical_cap"] = (
+            "SKIP", f"CategoricalCAP not computable ({why}) — no evidence either way")
 
     return {
         "table": table_name,
