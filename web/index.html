@@ -203,6 +203,14 @@ select:hover{border-color:var(--sky)} select:focus{outline:none; border-color:va
   font-weight:500; padding:7px 13px; letter-spacing:.03em; margin-top:4px}
 .mini-btn:hover{border-color:var(--blue); color:var(--blue)}
 .tgt-row{display:grid; grid-template-columns:96px 1fr; gap:8px; align-items:center; margin-bottom:8px}
+/* PII panel rows: column · detected kind · policy */
+.pii-row{display:grid; grid-template-columns:1fr 46px 108px; gap:7px; align-items:center; margin-bottom:6px}
+.pii-col{font-family:var(--mono); font-size:11px; color:var(--ink); overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap}
+.pii-kind{font-family:var(--mono); font-size:8.5px; letter-spacing:.06em; text-transform:uppercase;
+  color:var(--blue); background:var(--tint); border:1px solid var(--line-soft); border-radius:999px;
+  padding:2px 0; text-align:center}
+.pii-pol.leaky{border-color:var(--warn); color:var(--warn)}
 .tgt-row span{font-family:var(--mono); font-size:11px; color:var(--muted); overflow:hidden; text-overflow:ellipsis}
 
 /* ---------------- right: tabs + panes ---------------- */
@@ -592,8 +600,16 @@ table.rep td{font-variant-numeric:tabular-nums}
       <p class="hint">rules enforced during synthesis (SDV cag), e.g. EFFECTIVE_DATE ≤ END_DATE.</p>
     </div>
 
+    <div class="panel collapsed" id="pii-panel" style="display:none">
+      <div class="panel-h"><h2><span class="step">3 ·</span> PII handling</h2><span class="panel-sum" id="sum-pii"></span></div>
+      <p class="hint">These columns look like personal identifiers. <b>Fake</b> writes plausible
+        generated values that never existed in the source; <b>Shuffle real</b> re-deals the
+        <i>actual</i> values across rows (they leak); <b>Drop</b> removes the column.</p>
+      <div id="pii-rows"></div>
+    </div>
+
     <div class="panel collapsed" id="synth-panel" style="display:none">
-      <div class="panel-h"><h2><span class="step">3 ·</span> Synthesizers</h2><span class="panel-sum" id="sum-synths"></span></div>
+      <div class="panel-h"><h2><span class="step">4 ·</span> Synthesizers</h2><span class="panel-sum" id="sum-synths"></span></div>
       <div class="field" style="margin-top:0"><div class="chips" id="synth-chips"></div>
         <p class="hint">HMA = multi-table; the rest are single-table. CTGAN/TVAE/CopulaGAN are neural (slower).</p></div>
       <div class="field" id="field-epochs" style="display:none">
@@ -602,7 +618,7 @@ table.rep td{font-variant-numeric:tabular-nums}
     </div>
 
     <div class="panel collapsed" id="params-panel" style="display:none">
-      <div class="panel-h"><h2><span class="step">4 ·</span> Run parameters</h2><span class="panel-sum" id="sum-params"></span></div>
+      <div class="panel-h"><h2><span class="step">5 ·</span> Run parameters</h2><span class="panel-sum" id="sum-params"></span></div>
       <div class="field" style="margin-top:0"><label>Sample scale ×rows <output id="out-scale">1.0</output></label>
         <input type="range" id="in-scale" min="0.25" max="2" step="0.25" value="1"></div>
       <div class="field"><label>Holdout fraction (privacy / TSTR) <output id="out-holdout">0.25</output></label>
@@ -805,12 +821,12 @@ async function sendFiles(files){
 
 function init(payload){
   DATA=payload; detected={};
-  ["#structure-panel","#constraint-panel","#synth-panel","#params-panel"].forEach(id=>$(id).style.display="block");
+  ["#structure-panel","#constraint-panel","#pii-panel","#synth-panel","#params-panel"].forEach(id=>$(id).style.display="block");
   renderConstraints();
   $("#synthetic-panel").style.display="none"; $("#synth-list").innerHTML="";
   $("#synth-count").textContent="0"; $("#synth-count").className="count zero";
   lockReportTabs(true);
-  renderSeedList(); renderSchemaBlocks(); renderAdvisor(payload.profile);
+  renderSeedList(); renderSchemaBlocks(); renderAdvisor(payload.profile); renderPii();
   renderRecipe(); initModel(payload.relationships);
   syncEntity(); renderStructureMirror(); updateSummaries();
   selectTable(Object.keys(DATA.tables)[0]);
@@ -824,6 +840,7 @@ function updateSummaries(){
   const nc=$$(".con-row").length;
   $("#sum-constraints").textContent = nc ? (nc+" rule"+(nc>1?"s":"")) : "none";
   $("#sum-synths").textContent=[...selectedSynths].join(", ")||"none";
+  const sp=$("#sum-pii"); if(sp) sp.textContent=piiSummary();
   $("#sum-params").textContent="×"+(+$("#in-scale").value).toFixed(2).replace(/0$/,"")+" · holdout "+Math.round(100*$("#in-holdout").value)+"%";
 }
 
@@ -1363,6 +1380,50 @@ function conRow(){
   return div;
 }
 function renderConstraints(){ $("#constraint-rows").innerHTML=""; }
+
+/* ---------------- PII handling panel ----------------
+   detected server-side ({table:{col:kind}}); default policy = fake.  The select
+   turns amber on "shuffle" because that choice re-deals REAL values. */
+function renderPii(){
+  const host=$("#pii-rows"); if(!host) return;
+  let h="", n=0;
+  for(const [t,info] of Object.entries(DATA.tables)){
+    const pii=info.pii||{}; const cols=Object.keys(pii); if(!cols.length) continue;
+    h+=`<div class="sub-label">${esc(t)}</div>`;
+    for(const c of cols){ n++;
+      h+=`<div class="pii-row" data-t="${esc(t)}" data-c="${esc(c)}">
+        <span class="pii-col" title="${esc(c)}">${esc(c)}</span>
+        <span class="pii-kind">${esc(pii[c])}</span>
+        <select class="pii-pol">
+          <option value="fake" selected>Fake</option>
+          <option value="shuffle">Shuffle real</option>
+          <option value="drop">Drop</option>
+        </select></div>`;
+    }
+  }
+  host.innerHTML = n? h : `<p class="hint">No PII-like columns detected.</p>`;
+  host.querySelectorAll(".pii-pol").forEach(sel=>sel.addEventListener("change",()=>{
+    sel.classList.toggle("leaky", sel.value==="shuffle"); updateSummaries();
+  }));
+}
+function collectPii(){
+  const out={};
+  $$("#pii-rows .pii-row").forEach(r=>{
+    (out[r.dataset.t]=out[r.dataset.t]||{})[r.dataset.c]=r.querySelector(".pii-pol").value;
+  });
+  return out;
+}
+function piiSummary(){
+  const rows=$$("#pii-rows .pii-row");
+  if(!rows.length) return "none detected";
+  const cnt={fake:0, shuffle:0, drop:0};
+  rows.forEach(r=>cnt[r.querySelector(".pii-pol").value]++);
+  const bits=[];
+  if(cnt.fake) bits.push(cnt.fake+" faked");
+  if(cnt.drop) bits.push(cnt.drop+" dropped");
+  if(cnt.shuffle) bits.push("\u26a0 "+cnt.shuffle+" real");
+  return bits.join(" \u00b7 ");
+}
 $("#btn-add-constraint").addEventListener("click",()=>{$("#constraint-rows").appendChild(conRow());updateSummaries();});
 function collectConstraints(){
   return [...$$(".con-row")].map(r=>{
@@ -1523,6 +1584,7 @@ $("#btn-run").addEventListener("click",async()=>{
   }
   const targets={}; Object.keys(DATA.tables).forEach(t=>targets[t]=$(`#target-${t}`).value);
   const cfg={schema, relationships:MODEL.rels.slice(), targets, constraints:collectConstraints(),
+    pii:collectPii(),
     entity_key:MODEL.hub.key||"", entity_children:MODEL.hub.children.slice(),
     scd_effective:$("#in-scd-eff").value||"", scd_end:$("#in-scd-end").value||"", scd_current:$("#in-scd-cur").value||"",
     synths:[...selectedSynths],
