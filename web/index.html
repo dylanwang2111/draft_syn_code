@@ -2085,7 +2085,9 @@ function renderReport(res){
       subs:[
         ["MIA protection", p.mia_protection, {tip:"1 − 2|AUC − 0.5| — this is the term in the mean, not the raw AUC"}],
         ["from attacker AUC", p.mia_auc, {sub:true, raw:true, tip:"raw membership-inference AUC — ideal is 0.5 (a coin flip), so it is NOT averaged directly"}],
-        ["NewRowSynthesis", p.new_row_synthesis, {tip:"share of synthetic rows that are not copies of a real row — ideal 1"}],
+        ["NewRowSynthesis", p.new_row_synthesis, {tip:"share of synthetic rows that are not copies of a real row on the evaluated (modelable) columns"}],
+        ["real-holdout ceiling", p.new_row_baseline, {sub:true, raw:true,
+          tip:"what a REAL holdout scores against the training rows on the same columns — the achievable ceiling. When the evaluated columns hold few distinct combinations, even real rows duplicate each other; a low NewRowSynthesis near this ceiling is expected, not leakage."}],
         ["CategoricalCAP", p.categorical_cap, {tip:"protection against attribute inference — ideal 1"}],
       ]};
     }, {unit:"/1 privacy", note:`Mean of the three protection scores${ihelp(

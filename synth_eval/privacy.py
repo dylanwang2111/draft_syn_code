@@ -206,6 +206,21 @@ def sdmetrics_privacy(
             numerical_match_tolerance=0.01, synthetic_sample_size=cap,
         )
         out["NewRowSynthesis"] = float(score)
+        # Baseline: what does a REAL holdout score against the training rows on
+        # the same columns?  On a low-entropy projection (a few code columns)
+        # even real rows duplicate each other, so the achievable ceiling is far
+        # below 1 — the synthesizer should be judged against this, not 1.0.
+        if holdout is not None and len(holdout):
+            try:
+                h = holdout[nrs_cols] if list(nrs_real.columns) != list(real.columns) else holdout
+                hcap = int(min(len(h), 1000)) or None
+                base = NewRowSynthesis.compute(
+                    real_data=nrs_real, synthetic_data=h, metadata=nrs_meta,
+                    numerical_match_tolerance=0.01, synthetic_sample_size=hcap,
+                )
+                out["NewRowSynthesis_baseline"] = float(base)
+            except Exception:  # pragma: no cover - baseline is best-effort context
+                pass
     except Exception as e:  # pragma: no cover
         out["NewRowSynthesis"] = None
         out["NewRowSynthesis_error"] = str(e)[:200]
@@ -280,10 +295,26 @@ def privacy_report(
 
     nrs = sdm.get("NewRowSynthesis")
     if nrs is not None:
-        verdicts["new_row_synthesis"] = (
-            "PASS" if nrs >= 0.9 else "WARN" if nrs >= 0.7 else "FAIL",
-            f"NewRowSynthesis={nrs:.3f} (fraction of synthetic rows that are not copies of real rows)",
-        )
+        base = sdm.get("NewRowSynthesis_baseline")
+        if base is not None:
+            # Judge against what real data achieves on the same columns: on a
+            # low-entropy projection even a real holdout duplicates training
+            # rows, so an absolute bar would fail every synthesizer for a
+            # property of the table.  gap = how far below the real ceiling.
+            gap = base - nrs
+            verdicts["new_row_synthesis"] = (
+                "PASS" if gap <= 0.05 else "WARN" if gap <= 0.20 else "FAIL",
+                f"NewRowSynthesis={nrs:.3f} vs {base:.3f} for a real holdout on the same "
+                f"columns — {'matches the achievable ceiling' if gap <= 0.05 else f'{gap:.2f} below it'}"
+                + ("" if base >= 0.9 else
+                   " (low ceiling: the evaluated columns hold few distinct combinations, "
+                   "so duplicates are expected even between real rows)"),
+            )
+        else:
+            verdicts["new_row_synthesis"] = (
+                "PASS" if nrs >= 0.9 else "WARN" if nrs >= 0.7 else "FAIL",
+                f"NewRowSynthesis={nrs:.3f} (fraction of synthetic rows that are not copies of real rows)",
+            )
 
     cap = sdm.get("CategoricalCAP")
     if cap is not None and not (isinstance(cap, float) and np.isnan(cap)):
