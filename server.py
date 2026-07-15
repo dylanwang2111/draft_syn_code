@@ -197,6 +197,7 @@ def _tables_payload(st: dict):
             "primary_key": tmeta.get("primary_key"),
             "preview": df.head(5).astype(str).to_dict(orient="split"),
             "targets": roles.modelable,
+            "categoricals": roles.categorical,           # CAP sensitive-column options
             "pii": se.detect_pii(df, roles.modelable),   # {col: kind} for the PII panel
         }
     # structural profile + recommended synthesis tier (safe: structure only)
@@ -704,7 +705,8 @@ def _run_job(cfg: dict, st: dict):
                 ck()
                 say(f"Privacy · {s} · {t}")
                 privacy_all[s][t] = se.privacy_report(
-                    train[t], hold[t], sdf, roles[t], t, REPORTS_DIR, full_metadata)
+                    train[t], hold[t], sdf, roles[t], t, REPORTS_DIR, full_metadata,
+                    cap_sensitive=(cfg.get("cap_sensitive") or {}).get(t) or None)
                 done_p += 1; set_pct(60 + 20 * done_p / max(1, n_st))
 
         eff_frames = []

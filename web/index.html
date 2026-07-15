@@ -390,6 +390,12 @@ table.rep th{font-family:var(--mono); font-size:10px; letter-spacing:.1em; text-
 table.rep td{padding:6px 10px; border-bottom:1px solid var(--line-soft)}
 table.rep tbody tr:hover td{background:var(--tint)}
 table.rep td{font-variant-numeric:tabular-nums}
+/* per-column value filters (privacy checks table) */
+.colfilter{display:block; width:100%; margin-top:4px; padding:2px 4px; font-family:var(--mono);
+  font-size:10px; color:var(--ink); background:var(--bg); border:1px solid var(--line);
+  border-radius:5px; text-transform:none; letter-spacing:0; cursor:pointer}
+.colfilter:focus-visible{outline:2px solid var(--blue); outline-offset:1px}
+.colfilter.active{border-color:var(--blue); color:var(--blue); font-weight:600}
 .score-cell{font-family:var(--mono); font-size:12px; text-align:right}
 .pill{display:inline-block; font-family:var(--mono); font-size:10px; font-weight:600; letter-spacing:.06em;
   padding:2px 10px; border-radius:999px; border:1px solid}
@@ -612,18 +618,19 @@ table.rep td{font-variant-numeric:tabular-nums}
       <div class="panel-h"><h2><span class="step">4 ·</span> Synthesizers</h2><span class="panel-sum" id="sum-synths"></span></div>
       <div class="field" style="margin-top:0"><div class="chips" id="synth-chips"></div>
         <p class="hint">HMA = multi-table; the rest are single-table. CTGAN/TVAE/CopulaGAN are neural (slower).</p></div>
-      <div class="field" id="field-epochs" style="display:none">
-        <label>GAN epochs <output id="out-epochs">60</output></label>
-        <input type="range" id="in-epochs" min="10" max="600" step="10" value="60"></div>
     </div>
 
     <div class="panel collapsed" id="params-panel" style="display:none">
       <div class="panel-h"><h2><span class="step">5 ·</span> Run parameters</h2><span class="panel-sum" id="sum-params"></span></div>
       <div class="field" style="margin-top:0"><label>Sample scale ×rows <output id="out-scale">1.0</output></label>
         <input type="range" id="in-scale" min="0.25" max="2" step="0.25" value="1"></div>
+      <div class="field" id="field-epochs" style="display:none">
+        <label>Neural epochs (CTGAN / TVAE / CopulaGAN) <output id="out-epochs">60</output></label>
+        <input type="range" id="in-epochs" min="10" max="600" step="10" value="60"></div>
       <div class="field"><label>Holdout fraction (privacy / TSTR) <output id="out-holdout">0.25</output></label>
         <input type="range" id="in-holdout" min="0.10" max="0.40" step="0.05" value="0.25"></div>
       <div class="field"><label>ML-efficacy target / table</label><div id="target-fields"></div></div>
+      <div class="field"><label>Privacy attack: sensitive column / table</label><div id="cap-fields"></div></div>
     </div>
 
     <div class="panel" id="synthetic-panel" style="display:none">
@@ -1495,6 +1502,13 @@ function renderRecipe(){
     <div class="tgt-row"><span title="${t}">${t}</span>
       <select id="target-${t}"><option value="auto">(auto)</option>
         ${v.targets.map(c=>`<option>${c}</option>`).join("")}</select></div>`).join("");
+  // CategoricalCAP sensitive column: what the attribute-inference attack tries
+  // to guess. (auto) = the most balanced categorical, picked server-side.
+  $("#cap-fields").innerHTML=Object.entries(DATA.tables).map(([t,v])=>`
+    <div class="tgt-row"><span title="${t}">${t}</span>
+      <select id="cap-${t}" title="column the attribute-inference attack tries to guess — (auto) picks the most balanced categorical">
+        <option value="auto">(auto)</option>
+        ${(v.categoricals||[]).map(c=>`<option>${c}</option>`).join("")}</select></div>`).join("");
   // hidden entity-key store — the Data Model tab (hub generator) sets its value;
   // options list every shared candidate key so syncEntity() can select any of them
   const shared={};
@@ -1583,7 +1597,11 @@ $("#btn-run").addEventListener("click",async()=>{
     schema[t]={sdtypes, primary_key:$(`#pk-${t}`).value||null};
   }
   const targets={}; Object.keys(DATA.tables).forEach(t=>targets[t]=$(`#target-${t}`).value);
-  const cfg={schema, relationships:MODEL.rels.slice(), targets, constraints:collectConstraints(),
+  const cap_sensitive={};
+  Object.keys(DATA.tables).forEach(t=>{
+    const v=($(`#cap-${t}`)||{}).value; if(v && v!=="auto") cap_sensitive[t]=v;
+  });
+  const cfg={schema, relationships:MODEL.rels.slice(), targets, cap_sensitive, constraints:collectConstraints(),
     pii:collectPii(),
     entity_key:MODEL.hub.key||"", entity_children:MODEL.hub.children.slice(),
     scd_effective:$("#in-scd-eff").value||"", scd_end:$("#in-scd-end").value||"", scd_current:$("#in-scd-cur").value||"",
@@ -2150,7 +2168,9 @@ function renderReport(res){
         ["NewRowSynthesis", p.new_row_synthesis, {tip:"share of synthetic rows that are not copies of a real row on the evaluated (modelable) columns"}],
         ["real-holdout ceiling", p.new_row_baseline, {sub:true, raw:true,
           tip:"what a REAL holdout scores against the training rows on the same columns — the achievable ceiling. When the evaluated columns hold few distinct combinations, even real rows duplicate each other; a low NewRowSynthesis near this ceiling is expected, not leakage."}],
-        ["CategoricalCAP", p.categorical_cap, {tip:"protection against attribute inference — ideal 1"}],
+        ["CategoricalCAP", p.categorical_cap, {tip:"protection against attribute inference — judged against the real-holdout ceiling below, not an absolute bar"}],
+        ["real-holdout ceiling", p.categorical_cap_baseline, {sub:true, raw:true,
+          tip:"what a REAL holdout scores under the same attack — the achievable ceiling. When the sensitive field is guessable from the real data's own distribution (imbalance, correlations), even real rows score low; a synthetic score near this ceiling means the generator adds no leakage beyond population statistics."}],
       ]};
     }, {unit:"/1 privacy", note:`Mean of the three protection scores${ihelp(
       "The MIA term is 1 − 2|AUC − 0.5|, not the AUC itself: the raw attacker AUC is shown indented beneath "
@@ -2158,13 +2178,38 @@ function renderReport(res){
       + "(AUC 0.0) are penalised. NewRowSynthesis = synthetic rows that are not copies of a real row. "
       + "CategoricalCAP = protection against attribute inference.")}`})
     +fig(res.figures.privacy,"NewRowSynthesis (ideal 1) · Membership-Inference attacker AUC (ideal 0.5) · CategoricalCAP (ideal 1)");
-  pv+=`<table class="rep"><thead><tr><th>synthesizer</th><th>table</th><th>check</th><th>status</th><th>detail</th></tr></thead><tbody>`;
+  // flatten, then sort synthesizer → table → check so each synth reads as one block
+  const pvRows=[];
   for(const [s,tabs] of Object.entries(res.privacy)) for(const [t,rep] of Object.entries(tabs))
     for(const [chk,v] of Object.entries(rep.verdicts||{}))
-      pv+=`<tr><td class="mono">${s}</td><td class="mono dim">${t}</td><td class="mono">${chk}</td>
-        <td>${pill(v.status)}</td><td class="dim" style="font-size:11.5px">${esc(v.detail)}</td></tr>`;
+      pvRows.push({s,t,chk,status:v.status,detail:v.detail});
+  pvRows.sort((a,b)=>a.s.localeCompare(b.s)||a.t.localeCompare(b.t)||a.chk.localeCompare(b.chk));
+  const pvCols=["s","t","chk","status"], pvLabels=["synthesizer","table","check","status"];
+  const opts=k=>[...new Set(pvRows.map(r=>r[k]))].sort()
+    .map(v=>`<option value="${esc(v)}">${esc(v)}</option>`).join("");
+  pv+=`<table class="rep" id="priv-checks"><thead><tr>
+      ${pvCols.map((k,i)=>`<th>${pvLabels[i]}
+        <select class="colfilter" data-col="${k}" title="filter ${pvLabels[i]}">
+          <option value="">all</option>${opts(k)}</select></th>`).join("")}
+      <th>detail</th></tr></thead><tbody>`;
+  for(const r of pvRows)
+    pv+=`<tr data-s="${esc(r.s)}" data-t="${esc(r.t)}" data-chk="${esc(r.chk)}" data-status="${esc(r.status)}">
+      <td class="mono">${esc(r.s)}</td><td class="mono dim">${esc(r.t)}</td><td class="mono">${esc(r.chk)}</td>
+      <td>${pill(r.status)}</td><td class="dim" style="font-size:11.5px">${esc(r.detail)}</td></tr>`;
   pv+=`</tbody></table>`;
   $("#sec-privacy").innerHTML=pv;
+  // wire the header filters: a row must match every active dropdown to stay visible
+  const pvTable=$("#sec-privacy").querySelector("#priv-checks");
+  if(pvTable){
+    const filters=[...pvTable.querySelectorAll(".colfilter")];
+    const apply=()=>{
+      const want=filters.map(f=>[f.dataset.col,f.value]).filter(([,v])=>v);
+      filters.forEach(f=>f.classList.toggle("active",!!f.value));
+      for(const tr of pvTable.tBodies[0].rows)
+        tr.style.display=want.every(([k,v])=>tr.dataset[k]===v)?"":"none";
+    };
+    filters.forEach(f=>f.addEventListener("change",apply));
+  }
 
   flushMeters();                                   // animate every score bar, all sections
   activateTab("pane-report"); showSection("sec-overview");
