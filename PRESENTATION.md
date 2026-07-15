@@ -1,213 +1,226 @@
-# Synth/Lab — live-demo presentation script
+# Synth/Lab — live-demo script (spoken)
 
-Demo-led: the app carries the talk. ~10 minutes + Q&A.
-Each beat has **DO** (your clicks) and **SAY** (spoken lines). Square brackets = notes to self, not spoken.
+~10 minutes + Q&A. Pure script — everything below is spoken, in order, while
+driving the app. [Square brackets] = quiet notes to self, not spoken.
 
----
-
-## Before the audience arrives — setup checklist
-
-1. Start the server from the project root (`uvicorn server:app`), open **two
-   browser tabs** on the app. Tabs are isolated sessions — this is the safety net.
-2. **Tab B (backup):** Load Sample → entity key `CONT_ID` over all three tables →
-   HMA + GaussianCopula → Synthesize → let it finish. Leave it sitting on the Report.
-3. **Tab A (live):** fresh and empty — this is the one you present in.
-4. Zoom ~110 %, pick the theme that suits the room lighting, unfold the report
-   nav, close dev tools.
-5. [Bad network? Charts silently fall back from interactive to static images —
-   nothing to do, don't mention it.]
+**Setup beforehand:** Tab B has a finished HMA + GaussianCopula run sitting on
+the Report; Tab A is fresh for the live part.
 
 ---
 
-## Intro (30 s) — before touching the app
+## Intro (1–1.5 min)
 
-> When a team here needs realistic data — a dev environment, a vendor PoC, a
-> model to train — that's usually weeks: access requests, masking, approvals or even getting a pad.
-> "Just use the real data" is the cheapest sentence in analytics and the most
-> expensive one in practice.
->
-> So instead of slides, let me just show you the alternative. This is Synth/Lab —
-> a capability we want to embed in **bmo.ai**. The idea: upload your tables,
-> a few clicks, and you leave with synthetic data that behaves like the real
-> thing — **plus a report that proves it**.
+When a team needs realistic data — a dev environment, a vendor PoC, a model to
+train — that's usually weeks of work: access requests, masking, approvals, getting a pad.
+"Just use the real data" is the cheapest sentence in analytics and the most
+expensive one in practice in terms of approval, and privacy.
 
----
+First, what synthetic data is *not*: it's not random data. Anyone can write a
+Python function that fills a string column with random characters and a
+percentage column with random numbers from zero to a hundred. That has no utility
+ — no patterns, no relationships, nothing a model
+can learn from.
 
-## Beat 1 — Load data & schema (2 min)
+What we do instead has two halves. One: we use statistical methods that
+*learn* the real data's patterns — the distributions, the correlations, how
+tables relate to each other — and generate brand-new rows from what they
+learned. 
+and just as important: we provide an evaluation framework that
+measures how well the synthetic data behaves like the real thing. Because
+generating is easy — *trusting* the output is the hard part. The report is
+what gives the end user confidence the data is usable for their needs: model
+training and testing, dev and test environments, sharing — with privacy
+checked.
 
-**DO:** In Tab A, click **Load Sample**. You land on the Schema tab. Scroll the
-CONTACT table slowly. Change one sdtype dropdown so they see the red override,
-then change it back. Point at the advisor banner on the left; hover its ⓘ and
-pause two seconds.
-
-**SAY:**
-
-> One click and three related tables are in — contact, person, person-name,
-> 1,600 rows each, tied together by a customer ID. With real data this is a
-> drag-and-drop of CSVs.
->
-> The schema is detected automatically: every column gets a type, distinct
-> counts, missing rates. If the detector gets one wrong, it's a dropdown — red
-> means "you overrode it".
->
-> Two details that matter in our environment. IDs, dates and free-text names are
-> **excluded from statistical modelling** automatically — they're refilled
-> structurally afterwards, so no model ever memorises a customer ID. And this
-> advisor has already profiled the dataset and recommended a strategy — using
-> **structure only**, so it's safe even on data nobody is allowed to eyeball.
-> The full reasoning is one hover away. [hover the ⓘ]
+This is Synth/Lab — a capability we want to embed in bmo.ai. Let me just show
+it.
 
 ---
 
-## Beat 2 — Data Model canvas (2 min)
+## Loading data & schema (1 min — move fast)
 
-**DO:** Open the **Data Model** tab. Drag one column port onto a port in another
-table → the relationship sidebar opens → point at the cardinality picker →
-**Save**. Click the arrow to select it, press **Delete** to remove it. Then:
-pick `CONT_ID` in the hub bar, tick the three tables, **Generate hub** — the hub
-card parks itself left of its children. Click **Validate**.
+One click and we've loaded three related tables — contact, person, and
+person-name — tied together by a customer ID. With real data this is just a
+drag-and-drop of your CSVs.
 
-**SAY:**
-
-> Real banking data is never one table, so relationships are first-class. I drag
-> from column to column — like Power BI — pick one-to-many or one-to-one, save.
-> Don't like it? Select the arrow, hit Delete.
->
-> But the common case is simpler: these tables share a customer ID. One click
-> builds an **entity hub** over it — a derived parent table of distinct
-> customers — and now a multi-table synthesizer can preserve **referential
-> integrity**: every synthetic row still points at a valid synthetic customer.
-> Single-table tools break exactly this.
->
-> And before spending any compute, **Validate** sanity-checks the whole model —
-> key uniqueness, coverage — in a second. [point at the green PASS rows]
+Column types are detected automatically — the date columns here came in as
+real timestamps and were recognized as datetime on their own. If it gets one
+wrong, you fix it with a dropdown — red means it's your override. For example,
+this transit-number column looks numeric, but it's really a branch code — a
+category — so I'll override it.
 
 ---
 
-## Beat 3 — Configure & run (1.5 min)
+## The data model (1.5 min)
 
-**DO:** In the left panel, open **Synthesizers** and click the **HMA** and
-**GaussianCopula** chips. Open **Run parameters**: nudge the scale slider, point
-at the holdout slider. Hit **▶ Synthesize**. Let the progress bar and console
-run for ~15 seconds. Point at **■ Cancel**.
+When you upload multiple tables, chances are they're connected — and here's
+where you tell the tool how. You draw the connections column to column: drag, pick one-to-many or one-to-one, save.
 
-**SAY:**
+There's also a trickier case these three tables happen to have: they all share
+the same customer ID, but it isn't unique in *any* of them — one customer has
+many rows in each table. One click generates a table of unique IDs — we call
+it the entity hub — and connects all three tables to it. That's what lets the
+multi-table synthesizer keep the keys consistent across tables.
 
-> I'm picking two generators on purpose — a hierarchical one that learns the
-> cross-table structure, and a fast copula model. This isn't "generate an
-> answer"; it's **run a competition**.
->
-> Scale is a slider — half the rows, double the rows. The holdout is the
-> important one: a slice of real data the generators **never see**, kept aside
-> to attack the output later.
->
-> [run starts] Live progress, a real log, and a Cancel that actually stops
-> everything. The hierarchical model needs a few minutes on this data — and
-> since every browser tab is its own isolated session, I ran this exact
-> configuration before we started. Let me switch to that tab rather than make
-> you watch a progress bar.
-
-**DO:** Switch to **Tab B**, already sitting on the finished Report.
+Before spending any compute, Validate sanity-checks the whole model in a
+second.
 
 ---
 
-## Beat 4 — The report (3 min — the payoff)
+## The synthesizers (1 min), then run
 
-### 4a. Leaderboard (30 s)
+You can pick several generators at once — because different data favours
+different models, and the report will tell us which one won. A quick tour of
+what's on the menu:
 
-**DO:** Show the podium. Point at the BEST tag and the three meters on a card.
+GaussianCopula — named after the copula, a statistical tool that links
+individual column distributions into one joint model. It learns each column's
+distribution and how columns move together, then samples new rows.
 
-**SAY:**
+HMA — Hierarchical Modeling Algorithm — the multi-table one. It also learns
+how parent and child tables relate, so it's the only one that preserves the
+links between tables by construction.
 
-> One card per generator, ranked. Three dimensions: **fidelity** — does it look
-> like the real data; **utility** — can you train a model on it; **privacy** —
-> can an attacker get anything back out. The overall score is the mean of the
-> three — and I can prove every digit on this screen.
+CTGAN — Conditional Tabular Generative Adversarial Network — two neural
+networks trained against each other: one generates fake rows, the other tries
+to tell fake from real, until it can't. Better on complex, imbalanced data,
+but much slower.
 
-### 4b. Fidelity (45 s)
+TVAE — Tabular Variational AutoEncoder — another neural approach: it
+compresses rows into a compact representation and generates new rows from it.
+Also slower.
 
-**DO:** Click **Fidelity** in the right nav. Point at the formula line printed
-on a score card. Then click **Column Pair Trends** and hover a heatmap cell.
+Today I'll run HMA and GaussianCopula — the structural one versus the fast
+one. [Hit Synthesize.] You get live progress, a real log, and a Cancel that
+actually works. The multi-table model needs a few minutes — so I ran this exact configuration before we started.
+Let me switch to that tab.
 
-**SAY:**
+---
 
-> Here's what I mean by "prove". The fidelity card doesn't just say 0.88 — it
-> prints the arithmetic: two parts column statistics, one part referential
-> integrity, with the actual numbers substituted in. Every number on this screen
-> can be reconstructed by hand. In a regulated environment that's not a nicety —
-> it's the difference between a demo and something risk will sign off on.
->
-> Drill-down is one click. This heatmap is every **pair** of columns — whether
-> the relationships *between* fields survived, not just each field on its own.
-> That's where most generators quietly fail. [hover a red cell]
+## The report (4 min — the payoff)
 
-### 4c. Referential integrity (45 s)
+### The leaderboard (45 s)
 
-**DO:** Click **Referential Integrity**. Point at a parent-coverage badge
-(`= real` / `↑ pts`), then at the cardinality table.
+Top-level assessment first: one card per generator, ranked. Three dimensions,
+each scored zero to one.
 
-**SAY:**
+Fidelity — how well the synthetic data *looks like* the real data. Utility —
+how *usable* it is: does a model trained on it give similar results to one
+trained on real data? And privacy — can an attacker get anything about real
+people back out?
 
-> The cross-table check. Forward coverage says no synthetic row points at a
-> customer that doesn't exist — no orphans. The subtle one is this badge: in
-> the real data only about a third of customers have a row in each child table.
-> A naive generator gives **every** customer one — which looks perfect on a
-> coverage metric and is actually wrong. We score **matching reality**, not
-> maximising a number. That's the honesty built into this report.
+Overall is just the average of the three. That's the quick read — now let's
+drill into what the scores actually mean.
 
-### 4d. Utility & privacy (60 s)
+### Fidelity (1.5 min — quick on shapes, slow on referential integrity)
 
-**DO:** Click **Utility**; point at a `÷ real` column, then the roll-up table.
-Click **Privacy**; point at the MIA line on a score card.
+Fidelity is column statistics plus referential integrity — and the card
+prints the exact arithmetic with the real numbers in it, so nothing here is a
+black box.
 
-**SAY:**
+Column shapes first: this compares the distribution
+of each column between synthetic and real — how close does each column look?
+One cell per column, for every table: green good, red bad. So per table, you
+can see exactly which columns each generator got right.
 
-> Utility is the acid test: train the same model once on real data, once on
-> each generator's output, test both on the **same real holdout**. This column
-> is the ratio, panel by panel — the headline is literally the mean of the
-> numbers you can see. Around 0.9 means a model trained on the synthetic data
-> performs ninety-plus percent as well as one trained on real.
->
-> Privacy is attacked, not asserted. A **membership-inference attack** tries to
-> tell training rows from unseen rows — ideal is a coin flip, 0.5, and the raw
-> attacker score is shown right here. Plus a copy-detection check and an
-> attribute-inference check. If the synthetic data leaks, this page says so
-> **before** anyone ships it.
+Column pair trends is the same idea for *pairs* of columns — is the
+correlation between two columns kept in the synthetic data? Dark or blank
+cells just mean the real data had no measurable relationship there to compare.
+This is where generators usually fail: columns look right one at a time, and
+the relationships between them fall apart.
 
-### 4e. Download (15 s)
+Now referential integrity — and I want to spend a moment here, because the
+previous tool didn't have this at all; it's new for our group. This table
+shows one row per parent-child relationship, and three things about each.
 
-**DO:** Open the **Synthetic Data** panel on the left; click one ↓ download.
+Foreign-key coverage is table stakes: every child row must point at a parent
+that exists. Anything under one hundred percent means broken keys.
 
-**SAY:**
+The interesting one is parent coverage. In the real data, only about a third
+of customers have a row in each child table. It's *not supposed to be* one
+hundred percent — the synthetic value should *match the real value*, and the
+badge shows exactly that: "equals real", or how many points off it is. A
+generator that gives every customer a child row looks perfect on coverage and
+is actually wrong.
 
-> And the deliverable itself: one CSV per generator per table, at whatever scale
-> you asked for. That's the whole loop — upload to evidence-backed synthetic
-> data in a handful of clicks.
+And the score for this section is cardinality shape similarity — one number,
+closer to one the better, answering: does each parent have the right *number*
+of children, distribution-wise? [If asked about "statistic similarity": it
+compares the mean instead of the whole distribution; both come from the
+sdmetrics framework — take details offline.]
+
+### Utility (45 s)
+
+Utility answers one question: is this data usable for machine learning? We
+train the same model twice — once on real data, once on the synthetic — and
+test both on the same held-back real data.
+
+The table shows the results side by side, per table: F1, accuracy, precision,
+recall — the real-trained score, the synthetic-trained score, and a "divided
+by real" column for each. For each metric we take that ratio,
+synthetic-trained over real-trained, and the headline number is the average of
+those ratios. Around zero-point-nine means: training on synthetic gets you
+ninety-plus percent of what training on real would.
+
+One honest caveat, printed right on the card: the ratio is relative to the
+real baseline — if the real model is weak, matching it is easy.
+
+### Privacy (45 s)
+
+Privacy is attacked, not assumed. Before training, a slice of real data is
+held back — the generators never see it — and then we attack the output three
+ways.
+
+A membership-inference attack: can an attacker tell which real records were
+used for training? Ideal is a coin flip. A copy check: are synthetic rows just
+copies of real rows? — judged against what real data itself scores, so tables
+with few distinct values aren't unfairly failed. And an attribute-inference
+attack: knowing a few fields about someone, can you guess a sensitive one?
+
+The point is: if the data leaks, this page says so *before* anyone ships it.
+
+---
+
+## More customization (1 min, back in the live tab)
+
+Beyond the defaults, each run is tunable.
+
+Constraints are business rules the output must satisfy by construction — like
+effective-date must be before end-date.
+
+PII handling: name, email, and phone-like columns are detected automatically
+and, by default, replaced with generated fake values that never existed in the
+source. Per column, you can also choose to keep or drop them instead.
+
+Run parameters: output size — half the rows, double the rows — how much real
+data to hold back for the evaluation, and which column the machine-learning
+test predicts.
+
+And the deliverable: one CSV per generator per table, downloadable right here.
 
 ---
 
 ## Close (30 s)
 
-> Everything you just watched ran on this machine — the data never left it,
-> sessions are isolated per user, and the stack underneath is open source, so
-> there's no per-row vendor cost. Landing it in bmo.ai is a new tab and an auth
-> pass-through — integration work, not invention.
->
-> The ask: a pilot — one team, one dev/test dataset, inside bmo.ai. If the
-> report says the data is faithful and private for their use case, we've turned
-> a weeks-long data request into a five-minute self-serve, with the evidence
-> attached.
+Everything you saw ran on our own machine — the data never left it, and the
+stack underneath is open source.
+
+To set expectations: this is a proof of concept. The goal today is to show
+what's possible and get ideas flowing. What lands in bmo.ai, and in what form,
+is the broader team's call — keep some of it, drop some, extend some.
+
+The ask: your feedback now, and a pilot candidate — one team, one dev/test
+dataset — to try this on real needs.
 
 ---
 
 ## If something goes wrong mid-demo
 
-- **Run looks stuck around 28 %** — it isn't; that's the hierarchical model's
-  silent learning phase and the log prints "still working — elapsed…". Say:
-  *"this is the slow model doing the actual multi-table learning"* and switch
-  to Tab B.
+- **Run looks stuck around 28 %** — it isn't; that's the multi-table model's
+  silent learning phase. Say: "this is the slow model doing the actual
+  multi-table learning" and switch to Tab B.
 - **Anything else breaks in Tab A** — Tab B has the finished run; the whole
-  report section of the demo lives there anyway.
+  report section lives there anyway.
 - **A metric question you don't remember** — hover the ⓘ next to it and read
   it out; the explanations are written to be spoken.
 - **No network** — charts render as static images automatically; the demo
@@ -216,20 +229,25 @@ Click **Privacy**; point at the MIA line on a score card.
 ## Q&A back-pocket
 
 - **"Is synthetic data automatically non-sensitive?"** No — that's why the
-  privacy report exists. Policy should treat the *report* as the gate, not the
-  word "synthetic".
-- **"What about IDs, dates, free-text names?"** Never modelled — excluded by
-  design and refilled structurally. Faithful timelines need real date columns
-  (the profiler flags Excel-mangled ones).
-- **"How long does a run take?"** Copula models: seconds to a minute.
-  Hierarchical multi-table on a few thousand rows: minutes. GANs are the slow
-  option and are labelled as such.
-- **"Slowly-changing-dimension history tables?"** Detected and handled —
-  version patterns are modelled and timelines repaired so effective/end dates
-  don't overlap per entity.
-- **"What leaves the machine?"** Nothing. Data lives in memory per session; the
-  profiler's recommendation uses structure only, so it's safe even on data we
-  can't visually inspect.
+  privacy report exists. The *report* is the gate, not the word "synthetic".
+- **"What's the difference between the generators?"** Statistical
+  (GaussianCopula: fast, learns distributions + correlations), hierarchical
+  (HMA — Hierarchical Modeling Algorithm: multi-table, keeps cross-table
+  links), neural (CTGAN — Conditional Tabular GAN; TVAE — Tabular Variational
+  AutoEncoder: slower, better on complex patterns). Different data favours
+  different ones — that's why we run several and rank them.
+- **"What about IDs, dates, names?"** Never modelled. Names/emails/phones are
+  replaced with generated fake values by default — they never existed in the
+  source. Dates are resampled from the real timeline rather than modelled.
+- **"What is statistic similarity / [deep metric question]?"** Shape compares
+  the whole child-per-parent distribution; statistic compares its mean. These
+  come from the sdmetrics framework — take the details offline rather than
+  derail.
+- **"How long does a run take?"** Statistical models: seconds. Multi-table on
+  a few thousand rows: minutes. Neural models are the slow option and are
+  labelled as such.
+- **"What leaves the machine?"** Nothing. Data lives in memory per session;
+  the profiler's recommendation uses structure only.
 - **"How does this get into bmo.ai?"** It's already a REST API plus one
-  embeddable web module — a new tab and an auth pass-through. Batch pipelines
-  can skip the UI and call the API directly.
+  embeddable web module — a new tab and an auth pass-through. And that's a
+  decision for the broader team after today.
