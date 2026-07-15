@@ -197,6 +197,7 @@ def _tables_payload(st: dict):
             "primary_key": tmeta.get("primary_key"),
             "preview": df.head(5).astype(str).to_dict(orient="split"),
             "targets": roles.modelable,
+            "pii": se.detect_pii(df, roles.modelable),   # {col: kind} for the PII panel
         }
     # structural profile + recommended synthesis tier (safe: structure only)
     try:
@@ -596,6 +597,47 @@ def _run_job(cfg: dict, st: dict):
                     suite[s][t] = _refill(suite[s][t], train[t], fill[t],
                                           list(train[t].columns), seed0)
 
+        # PII policies: the bootstrap refill above re-deals REAL values, so name/
+        # email/phone-like columns would carry real strings into the "synthetic"
+        # output.  Default = fake (Faker values that never existed in the source);
+        # the UI can opt a column into shuffle (keep bootstrap) or drop.
+        pii_cfg = cfg.get("pii") or {}
+        pii_plan, pii_log = {}, {"fake": [], "drop": [], "shuffle": []}
+        for t in train:
+            plan = {}
+            for c, kind in se.detect_pii(train[t], roles[t].modelable).items():
+                pol = str((pii_cfg.get(t) or {}).get(c, "fake")).lower()
+                if pol in ("fake", "drop"):
+                    plan[c] = (pol, kind)
+                    pii_log[pol].append(f"{t}.{c}")
+                else:
+                    pii_log["shuffle"].append(f"{t}.{c}")
+            if plan:
+                pii_plan[t] = plan
+        if any(pii_log.values()):
+            parts = []
+            if pii_log["fake"]:
+                parts.append(f"faked {len(pii_log['fake'])} column(s): {', '.join(pii_log['fake'])}")
+            if pii_log["drop"]:
+                parts.append(f"dropped {', '.join(pii_log['drop'])}")
+            if pii_log["shuffle"]:
+                parts.append(f"⚠ kept REAL values (shuffled) in {', '.join(pii_log['shuffle'])}")
+            say("PII: " + " · ".join(parts))
+        for s in suite:
+            for t in list(suite[s]):
+                if pii_plan.get(t):
+                    suite[s][t] = se.apply_pii_plan(suite[s][t], pii_plan[t], train[t], seed0)
+        # faked/dropped columns are deliberately NOT faithful to the real
+        # marginals (that's the point) — take them out of the evaluation
+        # metadata so QualityReport neither crashes on a dropped column nor
+        # scores fidelity we intentionally destroyed for privacy.  Shuffled
+        # columns keep the real marginal, so they stay scoreable.
+        for t, plan in pii_plan.items():
+            tmeta = eval_meta_dict.get("tables", {}).get(t)
+            if tmeta:
+                for c in plan:
+                    tmeta.get("columns", {}).pop(c, None)
+
         # SCD timeline repair: per entity, tile non-overlapping effective/end
         # windows and mark one current row (needs an entity key + real dates).
         scd_eff = (cfg.get("scd_effective") or "").strip()
@@ -632,7 +674,14 @@ def _run_job(cfg: dict, st: dict):
                 ck()
                 say(f"QualityReport · {s} · {t}")
                 qr = QualityReport()
-                qr.generate(train[t], sdf, meta_dict["tables"][t], verbose=False)
+                # slice both frames to the evaluation metadata's columns: PII
+                # policies may have removed/faked columns, and sdmetrics wants
+                # data and metadata to agree exactly.
+                tmeta = meta_dict["tables"][t]
+                mcols = [c for c in tmeta.get("columns", {})
+                         if c in train[t].columns and c in sdf.columns]
+                sub_meta = {**tmeta, "columns": {c: tmeta["columns"][c] for c in mcols}}
+                qr.generate(train[t][mcols], sdf[mcols], sub_meta, verbose=False)
                 props = qr.get_properties().set_index("Property")["Score"]
                 quality_scores[s][t] = {
                     "overall": float(qr.get_score()),

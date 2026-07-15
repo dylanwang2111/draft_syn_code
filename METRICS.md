@@ -56,7 +56,7 @@ per-column real-vs-synthetic distribution plots; correlation heatmaps; SDV
 
 | Metric | Source | What it measures | Range / target |
 |---|---|---|---|
-| **NewRowSynthesis** | sdmetrics (`sdmetrics.single_table.NewRowSynthesis`) | Fraction of synthetic rows that are *not* copies of real rows (numeric tolerance 1%) | 0–1; **PASS ≥ 0.9**, WARN ≥ 0.7 |
+| **NewRowSynthesis** | sdmetrics (`sdmetrics.single_table.NewRowSynthesis`) | Fraction of synthetic rows that are *not* copies of real rows (numeric tolerance 1%), on the **modelable columns only**. Verdict is judged against the **real-holdout baseline** on the same columns — on a low-entropy projection (a few code columns) even real rows duplicate each other, so the achievable ceiling can be far below 1 | 0–1; **PASS = within 0.05 of the real-holdout ceiling**, WARN within 0.20 |
 | **CategoricalCAP** | sdmetrics (`sdmetrics.single_table.CategoricalCAP`) | Correct Attribution Probability attack: risk that an attacker knowing key categorical fields infers a sensitive categorical field. Score is privacy protection (1 = safe). Run when ≥ 2 categorical columns exist | 0–1, higher better |
 | **Membership Inference Attack (MIA)** | custom (`synth_eval.membership_inference_attack`) | Hold out 25% of real rows *before* fitting; features = distances to the k=5 nearest synthetic records; a RandomForest **attacker** tries to distinguish training members from holdouts. Reports attack **AUC** | AUC ≈ 0.5 = no leakage. **PASS \|AUC−0.5\| ≤ 0.10**, WARN ≤ 0.20, else FAIL |
 

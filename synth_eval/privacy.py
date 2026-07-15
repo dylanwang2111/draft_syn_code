@@ -206,6 +206,21 @@ def sdmetrics_privacy(
             numerical_match_tolerance=0.01, synthetic_sample_size=cap,
         )
         out["NewRowSynthesis"] = float(score)
+        # Baseline: what does a REAL holdout score against the training rows on
+        # the same columns?  On a low-entropy projection (a few code columns)
+        # even real rows duplicate each other, so the achievable ceiling is far
+        # below 1 — the synthesizer should be judged against this, not 1.0.
+        if holdout is not None and len(holdout):
+            try:
+                h = holdout[nrs_cols] if list(nrs_real.columns) != list(real.columns) else holdout
+                hcap = int(min(len(h), 1000)) or None
+                base = NewRowSynthesis.compute(
+                    real_data=nrs_real, synthetic_data=h, metadata=nrs_meta,
+                    numerical_match_tolerance=0.01, synthetic_sample_size=hcap,
+                )
+                out["NewRowSynthesis_baseline"] = float(base)
+            except Exception:  # pragma: no cover - baseline is best-effort context
+                pass
     except Exception as e:  # pragma: no cover
         out["NewRowSynthesis"] = None
         out["NewRowSynthesis_error"] = str(e)[:200]
@@ -213,16 +228,29 @@ def sdmetrics_privacy(
     # CategoricalCAP: only meaningful with >=1 key field and 1 sensitive field.
     if len(roles.categorical) >= 2:
         try:
-            from sdmetrics.single_table import CategoricalCAP
+            from sdmetrics.single_table import CategoricalCAP, CategoricalGeneralizedCAP
 
             sensitive = roles.categorical[-1]
             key = [c for c in roles.categorical if c != sensitive][:3]
-            cap = CategoricalCAP.compute(
+            cap = float(CategoricalCAP.compute(
                 real_data=real, synthetic_data=synth,
                 key_fields=key, sensitive_fields=[sensitive],
-            )
-            out["CategoricalCAP"] = float(cap)
-            out["CategoricalCAP_fields"] = {"key": key, "sensitive": sensitive}
+            ))
+            variant = "exact"
+            if np.isnan(cap):
+                # Plain CAP only scores real rows whose *exact* key combination
+                # occurs in the synthetic data; with high-cardinality code
+                # columns as keys that can be zero rows -> NaN. Fall back to the
+                # generalized attacker, which matches the closest synthetic key
+                # (hamming distance) instead, so the attack is always scoreable.
+                cap = float(CategoricalGeneralizedCAP.compute(
+                    real_data=real, synthetic_data=synth,
+                    key_fields=key, sensitive_fields=[sensitive],
+                ))
+                variant = "generalized"
+            out["CategoricalCAP"] = None if np.isnan(cap) else cap
+            out["CategoricalCAP_fields"] = {"key": key, "sensitive": sensitive,
+                                            "variant": variant}
         except Exception as e:  # pragma: no cover
             out["CategoricalCAP"] = None
             out["CategoricalCAP_error"] = str(e)[:200]
@@ -267,18 +295,49 @@ def privacy_report(
 
     nrs = sdm.get("NewRowSynthesis")
     if nrs is not None:
-        verdicts["new_row_synthesis"] = (
-            "PASS" if nrs >= 0.9 else "WARN" if nrs >= 0.7 else "FAIL",
-            f"NewRowSynthesis={nrs:.3f} (fraction of synthetic rows that are not copies of real rows)",
-        )
+        base = sdm.get("NewRowSynthesis_baseline")
+        if base is not None:
+            # Judge against what real data achieves on the same columns: on a
+            # low-entropy projection even a real holdout duplicates training
+            # rows, so an absolute bar would fail every synthesizer for a
+            # property of the table.  gap = how far below the real ceiling.
+            gap = base - nrs
+            verdicts["new_row_synthesis"] = (
+                "PASS" if gap <= 0.05 else "WARN" if gap <= 0.20 else "FAIL",
+                f"NewRowSynthesis={nrs:.3f} vs {base:.3f} for a real holdout on the same "
+                f"columns — {'matches the achievable ceiling' if gap <= 0.05 else f'{gap:.2f} below it'}"
+                + ("" if base >= 0.9 else
+                   " (low ceiling: the evaluated columns hold few distinct combinations, "
+                   "so duplicates are expected even between real rows)"),
+            )
+        else:
+            verdicts["new_row_synthesis"] = (
+                "PASS" if nrs >= 0.9 else "WARN" if nrs >= 0.7 else "FAIL",
+                f"NewRowSynthesis={nrs:.3f} (fraction of synthetic rows that are not copies of real rows)",
+            )
 
     cap = sdm.get("CategoricalCAP")
-    if cap is not None:
+    if cap is not None and not (isinstance(cap, float) and np.isnan(cap)):
+        variant = (sdm.get("CategoricalCAP_fields") or {}).get("variant", "exact")
+        note = " · nearest-key attacker (no real key combo occurs verbatim in the synthetic data)" \
+            if variant == "generalized" else ""
         verdicts["categorical_cap"] = (
             "PASS" if cap >= 0.5 else "WARN" if cap >= 0.3 else "FAIL",
             f"CategoricalCAP={cap:.3f} (1.0 => a sensitive field cannot be "
-            f"inferred from the key fields)",
+            f"inferred from the key fields){note}",
         )
+    elif "CategoricalCAP" in sdm:
+        # attempted but not computable — a SKIP, never a FAIL: NaN carries no
+        # evidence of leakage (nan >= 0.5 is False, which used to fall to FAIL)
+        why = sdm.get("CategoricalCAP_error", "no scoreable rows")
+        verdicts["categorical_cap"] = (
+            "SKIP", f"CategoricalCAP not computable ({why}) — no evidence either way")
+    else:
+        # not even attempted: the attack needs >=1 categorical key field plus a
+        # categorical sensitive field — say so instead of silently omitting the row
+        verdicts["categorical_cap"] = (
+            "SKIP", f"needs ≥2 categorical columns (1 key + 1 sensitive); this table "
+                    f"has {len(roles.categorical)} — attack not applicable")
 
     return {
         "table": table_name,
