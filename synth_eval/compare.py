@@ -559,7 +559,7 @@ def compute_summary(
         fidelity = columns if (st is None or np.isnan(st_score)) else (2.0 * columns + st_score) / 3.0
 
         # ---- privacy: three protection scores, higher = safer ----
-        mia, new_rows, nrs_base, cap = [], [], [], []
+        mia, new_rows, nrs_base, cap, cap_base = [], [], [], [], []
         for rep in (privacy_all.get(s) or {}).values():
             auc = rep.get("membership_inference", {}).get("auc")
             if auc is not None and not (isinstance(auc, float) and np.isnan(auc)):
@@ -571,6 +571,8 @@ def compute_summary(
                 nrs_base.append(float(np.clip(sdm["NewRowSynthesis_baseline"], 0.0, 1.0)))
             if sdm.get("CategoricalCAP") is not None:
                 cap.append(float(np.clip(sdm["CategoricalCAP"], 0.0, 1.0)))
+            if sdm.get("CategoricalCAP_baseline") is not None:
+                cap_base.append(float(np.clip(sdm["CategoricalCAP_baseline"], 0.0, 1.0)))
         mia_auc = _mean(mia)
         mia_prot = float("nan") if np.isnan(mia_auc) else max(0.0, 1.0 - 2.0 * abs(mia_auc - 0.5))
         privacy = _mean([mia_prot, _mean(new_rows), _mean(cap)])
@@ -632,7 +634,8 @@ def compute_summary(
             "structure": st or {},
             "privacy": {"score": privacy, "mia_auc": mia_auc, "mia_protection": mia_prot,
                         "new_row_synthesis": _mean(new_rows),
-                        "new_row_baseline": _mean(nrs_base), "categorical_cap": _mean(cap)},
+                        "new_row_baseline": _mean(nrs_base), "categorical_cap": _mean(cap),
+                        "categorical_cap_baseline": _mean(cap_base)},
             "utility": {"score": utility, "synth": u_synth, "real": u_real,
                         "gap": (float("nan") if np.isnan(u_synth) or np.isnan(u_real)
                                 else u_real - u_synth),
