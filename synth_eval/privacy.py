@@ -158,6 +158,7 @@ def sdmetrics_privacy(
     metadata=None,
     table_name: str = "",
     holdout: Optional[pd.DataFrame] = None,
+    cap_sensitive: Optional[str] = None,
 ) -> Dict[str, object]:
     """Run sdmetrics single-table privacy metrics that apply generically.
 
@@ -230,27 +231,58 @@ def sdmetrics_privacy(
         try:
             from sdmetrics.single_table import CategoricalCAP, CategoricalGeneralizedCAP
 
-            sensitive = roles.categorical[-1]
+            cands = [c for c in roles.categorical
+                     if c in real.columns and c in synth.columns
+                     and real[c].nunique(dropna=True) >= 2]
+            if not cands:
+                raise ValueError("no categorical column with >=2 distinct values")
+            if cap_sensitive and cap_sensitive in cands:
+                sensitive, picked = cap_sensitive, "user"
+            else:
+                # Auto-pick the most BALANCED candidate (smallest majority-class
+                # share).  With a heavily skewed sensitive field the attacker wins
+                # by guessing the majority value everywhere — that is population
+                # knowledge, not individual disclosure, and it fails every
+                # synthesizer identically.  A balanced field makes the attack
+                # (and the score) actually about the synthetic data.
+                sensitive = min(cands, key=lambda c: float(
+                    real[c].value_counts(normalize=True, dropna=True).iloc[0]))
+                picked = ("auto" if not cap_sensitive
+                          else f"auto ('{cap_sensitive}' not usable)")
             key = [c for c in roles.categorical if c != sensitive][:3]
-            cap = float(CategoricalCAP.compute(
-                real_data=real, synthetic_data=synth,
-                key_fields=key, sensitive_fields=[sensitive],
-            ))
-            variant = "exact"
-            if np.isnan(cap):
-                # Plain CAP only scores real rows whose *exact* key combination
-                # occurs in the synthetic data; with high-cardinality code
-                # columns as keys that can be zero rows -> NaN. Fall back to the
-                # generalized attacker, which matches the closest synthetic key
-                # (hamming distance) instead, so the attack is always scoreable.
-                cap = float(CategoricalGeneralizedCAP.compute(
-                    real_data=real, synthetic_data=synth,
-                    key_fields=key, sensitive_fields=[sensitive],
-                ))
-                variant = "generalized"
+
+            def _attack(attacker: pd.DataFrame):
+                v = float(CategoricalCAP.compute(
+                    real_data=real, synthetic_data=attacker,
+                    key_fields=key, sensitive_fields=[sensitive]))
+                var = "exact"
+                if np.isnan(v):
+                    # Plain CAP only scores real rows whose *exact* key combination
+                    # occurs in the attacker's data; with high-cardinality code
+                    # columns as keys that can be zero rows -> NaN. Fall back to the
+                    # generalized attacker, which matches the closest key (hamming
+                    # distance) instead, so the attack is always scoreable.
+                    v = float(CategoricalGeneralizedCAP.compute(
+                        real_data=real, synthetic_data=attacker,
+                        key_fields=key, sensitive_fields=[sensitive]))
+                    var = "generalized"
+                return v, var
+
+            cap, variant = _attack(synth)
             out["CategoricalCAP"] = None if np.isnan(cap) else cap
             out["CategoricalCAP_fields"] = {"key": key, "sensitive": sensitive,
-                                            "variant": variant}
+                                            "variant": variant, "picked": picked}
+            # Baseline: run the SAME attack armed with a real holdout instead of
+            # the synthetic data.  If the sensitive field is inferable from the
+            # real data's own structure, the holdout scores just as low — that is
+            # the achievable ceiling the synthesizer should be judged against.
+            if out["CategoricalCAP"] is not None and holdout is not None and len(holdout):
+                try:
+                    base, _ = _attack(holdout)
+                    if not np.isnan(base):
+                        out["CategoricalCAP_baseline"] = float(base)
+                except Exception:  # pragma: no cover - baseline is best-effort
+                    pass
         except Exception as e:  # pragma: no cover
             out["CategoricalCAP"] = None
             out["CategoricalCAP_error"] = str(e)[:200]
@@ -265,6 +297,7 @@ def privacy_report(
     table_name: str,
     reports_dir: str,
     metadata=None,
+    cap_sensitive: Optional[str] = None,
 ) -> Dict[str, object]:
     """Compact privacy module for one table: three metrics + verdicts.
 
@@ -279,7 +312,8 @@ def privacy_report(
     inference threat; we report the trained-attacker AUC framing here.
     """
     mia = membership_inference_attack(train_real, holdout_real, synth, roles)
-    sdm = sdmetrics_privacy(train_real, synth, roles, metadata, table_name, holdout=holdout_real)
+    sdm = sdmetrics_privacy(train_real, synth, roles, metadata, table_name,
+                            holdout=holdout_real, cap_sensitive=cap_sensitive)
 
     verdicts = {}
     # MIA AUC close to 0.5 == attacker cannot tell members from non-members.
@@ -318,14 +352,33 @@ def privacy_report(
 
     cap = sdm.get("CategoricalCAP")
     if cap is not None and not (isinstance(cap, float) and np.isnan(cap)):
-        variant = (sdm.get("CategoricalCAP_fields") or {}).get("variant", "exact")
+        f = sdm.get("CategoricalCAP_fields") or {}
         note = " · nearest-key attacker (no real key combo occurs verbatim in the synthetic data)" \
-            if variant == "generalized" else ""
-        verdicts["categorical_cap"] = (
-            "PASS" if cap >= 0.5 else "WARN" if cap >= 0.3 else "FAIL",
-            f"CategoricalCAP={cap:.3f} (1.0 => a sensitive field cannot be "
-            f"inferred from the key fields){note}",
-        )
+            if f.get("variant") == "generalized" else ""
+        sens = f" (sensitive: {f['sensitive']})" if f.get("sensitive") else ""
+        base = sdm.get("CategoricalCAP_baseline")
+        if base is not None:
+            # Judge against what a REAL holdout scores under the same attack: if
+            # the sensitive field is inferable from the real data's own structure
+            # (correlations, imbalance), even real rows "leak" it — an absolute
+            # bar would fail every synthesizer for a property of the table.
+            gap = base - cap
+            verdicts["categorical_cap"] = (
+                "PASS" if gap <= 0.05 else "WARN" if gap <= 0.20 else "FAIL",
+                f"CategoricalCAP={cap:.3f} vs {base:.3f} for a real holdout under the "
+                f"same attack{sens} — "
+                + ("matches the real-data ceiling" if gap <= 0.05 else f"{gap:.2f} below it")
+                + ("" if base >= 0.5 else
+                   " (low ceiling: the sensitive field is largely guessable from the real "
+                   "data itself — population statistics, not individual disclosure)")
+                + note,
+            )
+        else:
+            verdicts["categorical_cap"] = (
+                "PASS" if cap >= 0.5 else "WARN" if cap >= 0.3 else "FAIL",
+                f"CategoricalCAP={cap:.3f} (1.0 => a sensitive field cannot be "
+                f"inferred from the key fields){sens}{note}",
+            )
     elif "CategoricalCAP" in sdm:
         # attempted but not computable — a SKIP, never a FAIL: NaN carries no
         # evidence of leakage (nan >= 0.5 is False, which used to fall to FAIL)
