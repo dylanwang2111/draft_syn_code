@@ -13,17 +13,16 @@ the Report; Tab A is fresh for the live part.
 ## Intro (45 s)
 
 Why we built this: when a team needs realistic data — a dev environment, a
-vendor PoC, a model to train — that's weeks of access requests, masking, and
-approvals, and every copy of real customer data is one more place it can leak
-from. Synthetic data goes after both at once: data that behaves like the real
-thing, with no real person's record in it.
+vendor PoC, a model to train — that's weeks of access requests and approvals,
+and every copy of real customer data is one more place it can leak from.
+Synthetic data attacks both: data that behaves like the real thing, with no
+real person's record in it.
 
-One misconception up front: synthetic doesn't mean random — random strings
-and numbers have nothing a model can learn from. We generate from models that
-*learned* the real data's distributions, correlations, and table
-relationships — and we ship a report that measures how well the output
-behaves like the real thing, including whether it leaks. The report is the
-trust.
+And it's not random data — random values have nothing a model can learn
+from. Our models *learn* the real data's distributions, correlations, and
+table relationships, then generate brand-new rows — and a report measures
+how well the output behaves like the real thing, including whether it leaks.
+Generating is easy; the report is the trust.
 
 This is Synth/Lab — a capability we want to embed in bmo.ai. Let me show it.
 [Say each sentence ONCE. No rephrasing.]
@@ -33,8 +32,7 @@ This is Synth/Lab — a capability we want to embed in bmo.ai. Let me show it.
 ## Loading data & schema (30 s)
 
 One click loads three related tables — contact, person, person-name — tied
-together by a customer ID. With real data, this is a drag-and-drop of your
-CSVs.
+by a customer ID. With real data, drag and drop your CSVs.
 
 Column types are auto-detected. One fix to show: this transit-number column
 looks numeric but it's a branch code — a category — so I override it. Red
@@ -45,32 +43,30 @@ them.]
 
 ## The data model (45 s)
 
-The tool already detected how the tables connect — a relationship is just a
-drag from column to column, one-to-many or one-to-one. [Keep the
-auto-detected ones; show ONE drag at most. Do not delete and rebuild.]
+The tool already detected how the tables connect — a relationship is one
+drag, column to column, one-to-many or one-to-one. [Keep the auto-detected
+ones; show ONE drag at most. Do not delete and rebuild.]
 
-The trickier case: all three tables share the customer ID, but it isn't
-unique in *any* of them. One click builds the entity hub — a table of unique
-IDs — and connects all three to it. That's what keeps keys consistent across
-tables. [Click while talking; don't read the button path out loud.]
+The trickier case: all three tables share the customer ID, but it's unique
+in *none* of them. One click builds the entity hub — a table of unique IDs —
+and connects all three to it; that keeps keys consistent across tables.
+[Click while talking; don't read the button path out loud.]
 
-Validate sanity-checks the whole model in a second, before any compute is
-spent.
+Validate sanity-checks the whole model in a second.
 
 ---
 
 ## The synthesizers (30 s), then run
 
 You can pick several generators and let the report rank them. Today, two:
-GaussianCopula — statistical, learns each column's distribution and how
-columns move together, fast — versus HMA, the Hierarchical Modeling
-Algorithm — the multi-table one, preserves cross-table links by
-construction. There are two neural options too — CTGAN and TVAE — slower,
-for complex data. [That's the whole tour — expansions live in Q&A.]
+GaussianCopula — statistical, fast, learns each column's distribution and
+how columns move together — versus HMA, Hierarchical Modeling Algorithm —
+multi-table, preserves cross-table links by construction. Two neural options
+exist too — CTGAN and TVAE — slower, for complex data. [That's the whole
+tour — expansions live in Q&A.]
 
 [Hit Synthesize.] Live progress, a real log, a Cancel that works. The
-multi-table model needs a few minutes, so I ran this exact configuration
-before we started — switching to that tab.
+multi-table model needs minutes, so here's the run I did earlier.
 
 ---
 
@@ -86,48 +82,58 @@ Overall is the average.
 [Say who won and read the numbers — one pass, no re-explaining the
 dimensions.]
 
-### Fidelity (1.5 min)
+### Fidelity (2 min, four screens — one framing line each, numbers off the screen)
 
-Fidelity is column statistics plus referential integrity — and the card
-prints the exact arithmetic, so nothing here is a black box.
+**[Fidelity tab — score cards + per-table breakdown]**
+Fidelity is column statistics plus referential integrity — I'll define each
+on its own tab. Each card prints the exact arithmetic — nothing is a black
+box. Below, one row per synthesizer per table. [Read the overall column: who
+wins which table.]
 
-Column shapes: how close each column's distribution is to the real one — one
-cell per column, green good, red bad. Column pair trends: the same for
-*pairs* — are the correlations kept? That's where generators usually fail:
-columns look right one at a time and the relationships fall apart.
+**[Column Shapes tab — one heatmap per table]**
+Column shapes: one column at a time, does its distribution match real — same
+spread of ages, same mix of codes? One cell per column: green matches, red
+doesn't — you see exactly which columns each generator got right. [Best and
+worst cell, name the column — hover shows the score. One example, move on.]
 
-Referential integrity is the new part — the previous tool had none. One row
-per parent-child relationship, three things. Foreign-key coverage: every
-child row must point at a parent that exists — under one hundred percent
-means broken keys. Parent coverage: in the real data only about a third of
-customers have a row in each child table, and the synthetic value should
-*match* that — a generator that gives everyone a child row looks perfect and
-is wrong. And the score, cardinality shape similarity: does each parent have
-the right *number* of children, distribution-wise?
+**[Column Pair Trends tab — one heatmap per synthesizer]**
+Column pair trends: do columns still move *together* — older customers still
+married more often — for every pair of columns? This is where generators
+usually fail: every column right on its own, the relationships between them
+fall apart. Blank cells: the real data had nothing measurable there. [One
+kept pair, one lost pair. Don't read the grid.]
 
-[Walk the table: who wins and why, off the screen.]
+**[Referential Integrity tab — coverage table + cardinality table]**
+Referential integrity: the same question *across* tables — does every child
+row point at a customer that exists, and does each customer have a realistic
+number of rows in each table? This is new — the previous tool had nothing
+here. FK coverage under one hundred percent is broken keys. Parent coverage:
+the gray *real* row is the target, and the badge shows how far each
+synthesizer landed from it — one hundred percent when real isn't, is wrong.
+And the score, cardinality shape: the right *number* of child rows per
+customer, distribution-wise. [Winner off the cards, then Utility.]
 
 ### Utility (45 s)
 
-One question: can you do machine learning on this data? We train the same
-model twice — once on real, once on synthetic — and test both on the same
-held-back real data. Each metric gets a synthetic-over-real ratio; the
-headline is their average. Zero-point-nine means training on synthetic gets
-you ninety percent of what real would.
+One question: can you train a model on this data? The same model is trained
+twice — on real, on synthetic — and both are tested on the same held-back
+real data. Each metric becomes a synthetic-over-real ratio; the headline is
+their average — point-nine means synthetic training gets you ninety percent
+of real.
 
-One caveat, printed on the card: it's relative — if the real baseline is
-weak, matching it is easy.
+One caveat, printed on the card: it's relative — a weak real baseline is
+easy to match.
 
 [Read the per-table rows and the winner off the screen.]
 
 ### Privacy (45 s)
 
 Privacy is attacked, not assumed. A slice of real data is held back before
-training, and then three attacks. Membership inference: can an attacker tell
-which records were used for training? Ideal is a coin flip. A copy check: are
-synthetic rows just copies of real ones? — judged against what real data
-itself scores. And attribute inference: knowing a few fields about someone,
-can you guess a sensitive one? — also judged against that real-data ceiling.
+training, then three attacks. Membership inference: can an attacker tell who
+was in the training data? Ideal is a coin flip. A copy check: are synthetic
+rows copies of real ones? And attribute inference: knowing a few fields, can
+you guess a sensitive one? The last two are judged against what real data
+itself scores — a fair ceiling, not an absolute bar.
 
 If the data leaks, this page says so *before* anyone ships it.
 
@@ -137,26 +143,21 @@ If the data leaks, this page says so *before* anyone ships it.
 
 ## More customization (45 s, back in the live tab)
 
-Each run is tunable. Constraints — business rules the output must satisfy by
-construction, like effective-date before end-date. PII handling — names,
-emails, phones are detected automatically and replaced with generated fakes
-that never existed in the source; per column you can keep or drop instead.
-Run parameters — output size, holdout share, which column the ML test
-predicts. And the deliverable: one CSV per generator per table, downloadable
-right here.
+Each run is tunable. Constraints — business rules the output must satisfy,
+like effective-date before end-date. PII — names, emails, phones are
+auto-detected and replaced with fakes that never existed in the source; or
+keep or drop, per column. Run parameters — output size, holdout share, the
+ML target. And the deliverable: one CSV per generator per table,
+downloadable right here.
 
 ---
 
 ## Close (30 s)
 
-Everything ran on our own machine — the data never left it, and the stack is
-open source.
-
-This is a proof of concept: the goal is to show what's possible and get ideas
+This is a PoC: the goal is to show what's possible and get ideas
 flowing. What lands in bmo.ai is the broader team's call.
 
-The ask: your feedback now, and a pilot candidate — one team, one dev/test
-dataset — to try this on real needs.
+The ask: your feedback now, next step we'll test it out with real production data.
 
 ---
 
