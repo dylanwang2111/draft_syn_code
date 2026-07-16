@@ -12,67 +12,62 @@ the Report; Tab A is fresh for the live part.
 
 ## Intro (45 s)
 
-When a team needs realistic data — a dev environment, a vendor PoC, a model
-to train — that's weeks of access requests, masking, and approvals. And every
-copy of real customer data is also a privacy liability: one more place it can
-leak from. Synthetic data goes after both problems at once — data that behaves
-like the real thing, with no real person's record in it.
+Why we built this: when a team needs realistic data — a dev environment, a
+vendor PoC, a model to train — that's weeks of access requests, masking, and
+approvals, and every copy of real customer data is one more place it can leak
+from. Synthetic data goes after both at once: data that behaves like the real
+thing, with no real person's record in it.
 
-It's not random data — random strings and random numbers have no patterns,
-nothing a model can learn from. We do two things instead. One: statistical
-models that *learn* the real data's distributions, correlations, and
-table relationships, and generate brand-new rows from what they learned.
-Two: an evaluation report that measures how well the output behaves like the
-real thing — including whether it leaks. Generating is easy; *trusting* the
-output is the hard part, and the report is the trust.
+One misconception up front: synthetic doesn't mean random — random strings
+and numbers have nothing a model can learn from. We generate from models that
+*learned* the real data's distributions, correlations, and table
+relationships — and we ship a report that measures how well the output
+behaves like the real thing, including whether it leaks. The report is the
+trust.
 
 This is Synth/Lab — a capability we want to embed in bmo.ai. Let me show it.
+[Say each sentence ONCE. No rephrasing.]
 
 ---
 
-## Loading data & schema (45 s)
+## Loading data & schema (30 s)
 
-One click loads three related tables — contact, person, and person-name —
-tied together by a customer ID. With real data this is a drag-and-drop of
-your CSVs.
+One click loads three related tables — contact, person, person-name — tied
+together by a customer ID. With real data, this is a drag-and-drop of your
+CSVs.
 
-Column types are detected automatically — the dates came in as real
-timestamps and were recognized on their own. If it gets one wrong, you fix it
-with a dropdown — like this transit-number column: looks numeric, really a
-branch code — a category — so I override it. Red means it's my override.
-
----
-
-## The data model (1 min)
-
-Multiple tables are usually connected, and here's where you tell the tool
-how: drag column to column, pick one-to-many or one-to-one, save.
-
-These three have a trickier case: they all share the customer ID, but it
-isn't unique in *any* of them. One click builds a table of unique IDs — the
-entity hub — and connects all three tables to it. That's what lets the
-multi-table synthesizer keep the keys consistent across tables.
-
-Validate then sanity-checks the whole model in a second, before any compute
-is spent.
+Column types are auto-detected. One fix to show: this transit-number column
+looks numeric but it's a branch code — a category — so I override it. Red
+means my override. [Don't narrate distinct/missing counts — the screen shows
+them.]
 
 ---
 
-## The synthesizers (45 s), then run
+## The data model (45 s)
 
-You can pick several generators at once — different data favours different
-models, and the report tells us which one won.
+The tool already detected how the tables connect — a relationship is just a
+drag from column to column, one-to-many or one-to-one. [Keep the
+auto-detected ones; show ONE drag at most. Do not delete and rebuild.]
 
-GaussianCopula — statistical: learns each column's distribution and how
-columns move together. Fast. HMA — Hierarchical Modeling Algorithm — the
-multi-table one, the only one that preserves cross-table links by
-construction. CTGAN — Conditional Tabular Generative Adversarial Network —
-two neural networks trained against each other until the fake is
-indistinguishable. TVAE — Tabular Variational AutoEncoder — compresses rows
-into a compact form and generates from it. The neural two are slower, better
-on complex data.
+The trickier case: all three tables share the customer ID, but it isn't
+unique in *any* of them. One click builds the entity hub — a table of unique
+IDs — and connects all three to it. That's what keeps keys consistent across
+tables. [Click while talking; don't read the button path out loud.]
 
-Today: HMA and GaussianCopula — the structural one versus the fast one.
+Validate sanity-checks the whole model in a second, before any compute is
+spent.
+
+---
+
+## The synthesizers (30 s), then run
+
+You can pick several generators and let the report rank them. Today, two:
+GaussianCopula — statistical, learns each column's distribution and how
+columns move together, fast — versus HMA, the Hierarchical Modeling
+Algorithm — the multi-table one, preserves cross-table links by
+construction. There are two neural options too — CTGAN and TVAE — slower,
+for complex data. [That's the whole tour — expansions live in Q&A.]
+
 [Hit Synthesize.] Live progress, a real log, a Cancel that works. The
 multi-table model needs a few minutes, so I ran this exact configuration
 before we started — switching to that tab.
@@ -81,14 +76,15 @@ before we started — switching to that tab.
 
 ## The report (4.5 min — framing below, numbers off the screen)
 
-### Leaderboard (45 s)
+### Leaderboard (30 s)
 
-One card per generator, ranked. Three scores, zero to one. Fidelity — does it
-*look like* the real data. Utility — is it *usable*: does a model trained on
-it perform like one trained on real? Privacy — can an attacker get real
-people back out? Overall is the average of the three.
+One card per generator, ranked. Three scores, zero to one: fidelity — looks
+like the real data; utility — a model trained on it performs like one
+trained on real; privacy — an attacker can't get real people back out.
+Overall is the average.
 
-[Read the ranking and each card's three numbers off the screen.]
+[Say who won and read the numbers — one pass, no re-explaining the
+dimensions.]
 
 ### Fidelity (1.5 min)
 
