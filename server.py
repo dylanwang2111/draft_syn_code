@@ -96,6 +96,7 @@ import numpy as np
 import pandas as pd
 from fastapi import FastAPI, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import synth_eval as se
@@ -105,6 +106,7 @@ app = FastAPI(title="Synthetic Data Studio")
 
 REPORTS_DIR = "reports"
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
+app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 
 
 class _Cancelled(Exception):
