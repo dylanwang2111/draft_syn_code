@@ -110,12 +110,21 @@ apart. Green kept the trend, red lost it, blank means the real data had
 nothing measurable there. [ONE red cell, name the pair, winner, move. Don't
 tour the grid and don't report the winning margin — nobody needs 0.01.]
 
-**[Referential Integrity]** This is the across-tables question, and it's new
-— the previous tool had nothing here. Does every child row point at a
-customer that exists, and does each customer have a realistic number of rows?
-The gray real row is the target — matching real is the goal, not scoring one
-hundred percent. HMA wins it by construction: it's the only one fitted with
-the relationships. [Say "matching real is the goal" ONCE. Winner. Move.]
+**[Referential Integrity]** The across-tables question, and it's new — the
+previous tool had nothing here. Three numbers, only one is the score.
+
+**FK coverage** — the gate: every child row points at a customer that exists.
+It says n/a because our hub is built from each synthesizer's own keys, so it
+can't fail — no credit for that.
+
+**Parent coverage** — the diagnostic: the gray real row is the target.
+Matching real is the goal, not hitting one hundred percent.
+
+**Cardinality shape** — the score, and the only one that feeds fidelity: does
+each customer have the right *number* of rows, across the whole distribution?
+
+[HMA wins by construction — the only one fitted with the relationships. Each
+line ONCE. Winner, move.]
 
 [End of Fidelity — the one place you're allowed to acknowledge depth:
 "There's more behind every one of these — happy to go deeper in Q&A." Say it
@@ -202,6 +211,15 @@ we're requesting access to — and potentially unstructured data after that.
   the whole child-per-parent distribution; statistic compares its mean. These
   come from the sdmetrics framework — take the details offline rather than
   derail.
+- **"Why is FK coverage n/a instead of 100%?"** Because the hub is derived
+  from the keys each synthesizer emitted — every child key is in it by
+  construction. It's a free 1.0 for everyone, so we report it as a gate, not
+  a score. Link two real tables directly and it becomes a real pass/fail.
+- **"Why isn't parent coverage part of the score?"** Parent coverage is
+  "share of customers with at least one row" — a single point on the
+  distribution cardinality shape already measures in full. Scoring both would
+  count the same thing twice. It stays as a diagnostic because it should
+  *match* real, not be maximised.
 - **"How long does a run take?"** Statistical models: seconds. Multi-table on
   a few thousand rows: minutes. Neural models are the slow option and are
   labelled as such.
