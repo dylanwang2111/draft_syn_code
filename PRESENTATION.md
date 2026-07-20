@@ -21,18 +21,20 @@ already ticked, Tab B has the finished run on the Report.
 
 ---
 
-## Intro (25 s)
+## Intro (30 s)
 
-Why we built this: when a team needs realistic data — a dev environment, a
-vendor PoC, a model to train — that's weeks of access requests and approvals,
-and every copy of real customer data is one more place it can leak from.
-Synthetic data attacks both.
+Why we built this: developers and analysts constantly need real data — to
+train a model when there isn't enough real data, to stress-test an app, to
+stand up a dev environment. Getting the real thing is weeks of access requests
+and approvals, and every copy of it is one more place it can leak from.
+Synthetic data solves both.
 
 Not random data — our synthesizers learn the real data's distributions,
 correlations and table relationships, then generate brand-new rows with no
 real person's record in them. Generating is easy, so we also ship a report
-that measures whether the output behaves like real data and whether it leaks.
-The report is the trust.
+that proves three things: fidelity — it behaves like real data; utility — a
+model trained on it works; privacy — nothing links back to a real person.
+That report is what lets someone build on it.
 
 This is Synth/Lab — we want to embed it in bmo.ai. Let me show it.
 
@@ -194,6 +196,13 @@ we're requesting access to — and potentially unstructured data after that.
 
 - **"Is synthetic data automatically non-sensitive?"** No — that's why the
   privacy report exists. The *report* is the gate, not the word "synthetic".
+- **"What are the actual use cases / who uses this?"** Developers and analysts.
+  Analysts: train an ML model when there isn't enough real data — synthesize
+  more, validate fidelity and utility, then train on it. Developers:
+  stress-testing and test data without touching production. And a bigger one to
+  keep in your back pocket — cloud migration: teams moving on-prem data to the
+  cloud who want to test the move without exposing real customer data. HR and
+  other teams are going through exactly that now.
 - **"What's the difference between the generators?"** Statistical
   (GaussianCopula: fast, learns distributions + correlations), hierarchical
   (HMA — Hierarchical Modeling Algorithm: multi-table, keeps cross-table
