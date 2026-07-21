@@ -1378,6 +1378,65 @@ function renderReport(res){
   }
   $("#sec-ri").innerHTML=riH;
 
+  /* --- Fidelity › Cross-table Trends (entity-level, across tables) --- */
+  const cx=res.cross_table||{};
+  let cxH;
+  if(!Object.keys(cx).length){
+    cxH=`<p class="note">No entity key defined — cross-table correlation needs a shared key
+      linking tables (build an entity-key hub in the <b>Data Model</b> tab).</p>`;
+  }else{
+    cxH=head("Cross-table Trends",
+      "For a given customer, do attributes in DIFFERENT tables hang together like real — "
+      + "e.g. marital status in PERSON vs province in CONTACT? Each table is collapsed to one "
+      + "row per entity, joined on the key, and every cross-table column pair is scored real-vs-"
+      + "synth (1 = the relationship is preserved). This is the only fidelity view that looks "
+      + "ACROSS tables; Column Pair Trends only looks inside one.",
+      "Per synthesizer. The headline is the score on pairs that actually correlate in real data.");
+    // per-synth summary: all-pairs mean + the signal-carrying (strong) mean
+    cxH+=`<table class="rep"><thead><tr><th>synthesizer</th>
+      <th style="text-align:right">strong-pair score</th>
+      <th style="text-align:right">all-pair score</th>
+      <th style="text-align:right">entities</th><th>note</th></tr></thead><tbody>`;
+    for(const s of res.synths){
+      const r=cx[s]; if(!r) continue;
+      const strong=num(r.score_strong), all=num(r.score);
+      const nt=r.note ? `<span class="dim">${esc(r.note)}</span>`
+        : (r.n_strong ? `<span class="dim">${r.n_strong} of ${r.n_pairs} pairs carry real correlation</span>`
+                      : `<span class="dim">no strongly-correlated pairs in this data</span>`);
+      cxH+=`<tr><td class="mono">${dot(s)}${esc(s)}</td>
+        <td class="score-cell" style="color:${strong==null?"var(--faint)":meterColor(strong)}">${fmt(strong)}</td>
+        <td class="score-cell" style="color:${all==null?"var(--faint)":meterColor(all)}">${fmt(all)}</td>
+        <td class="score-cell dim">${r.n_entities||"—"}</td><td>${nt}</td></tr>`;
+    }
+    cxH+=`</tbody></table>`;
+    // the pairs that carry signal, per synth, ranked by how correlated they are in real
+    const anyPairs=res.synths.some(s=>(cx[s]&&cx[s].pairs||[]).length);
+    if(anyPairs){
+      cxH+=head("Which pairs carry the signal",
+        "Ranked by real-data correlation strength (assoc). Pairs near 0 assoc are independent in "
+        + "real data too, so every model scores high on them — the separation between models shows "
+        + "on the high-assoc rows. A single-table model can only reach these by coincidence, so it "
+        + "falls toward independence here.");
+      for(const s of res.synths){
+        const r=cx[s]; if(!r||!(r.pairs||[]).length) continue;
+        const rows=[...r.pairs].filter(p=>p.real_assoc!=null)
+          .sort((a,b)=>b.real_assoc-a.real_assoc).slice(0,12);
+        if(!rows.length) continue;
+        cxH+=`<h4 class="block-title" style="font-size:15px;margin-top:20px">${dot(s)}${esc(s)}</h4>
+          <table class="rep"><thead><tr><th>cross-table pair</th>
+            <th style="text-align:right">real assoc</th>
+            <th style="text-align:right">preserved</th></tr></thead><tbody>`;
+        for(const p of rows)
+          cxH+=`<tr><td class="mono">${esc(p.table1)}.${esc(p.col1)}
+            <span class="dim">×</span> ${esc(p.table2)}.${esc(p.col2)}</td>
+            <td class="score-cell dim">${fmt(p.real_assoc)}</td>
+            <td class="score-cell" style="color:${meterColor(p.score)}">${fmt(p.score)}</td></tr>`;
+        cxH+=`</tbody></table>`;
+      }
+    }
+  }
+  $("#sec-crosstab").innerHTML=cxH;
+
   /* --- Utility (ML efficacy · TSTR) --- */
   if(!res.efficacy.length){ $("#sec-utility").innerHTML=`<h4 class="block-title">Utility · ML efficacy</h4><p class="note">No usable modelling target found.</p>`; }
   else{

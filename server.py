@@ -661,6 +661,21 @@ def _run_job(cfg: dict, st: dict):
                             say(f"SCD timeline repaired for {t}: non-overlapping windows per {entity_key}")
                             noted.add(t)
 
+        # Entity-level cross-table correlation: do a customer's attributes across
+        # tables (marital status in PERSON vs province in CONTACT) hang together
+        # like real?  Single-table Column Pair Trends can't see across tables and
+        # the built-in Intertable Trends needs an attribute-bearing parent (our
+        # hub is keys only), so this is measured directly per synthesizer.  A
+        # model that doesn't keep the entity key consistent across tables reads
+        # n/a here rather than being scored (see synth_eval.cross_table).
+        cross_table = {}
+        if entity_key:
+            cur_flags = {t: scd_cur for t in tables} if scd_cur else None
+            eff_cols = {t: scd_eff for t in tables} if scd_eff else None
+            for s, tabs in suite.items():
+                cross_table[s] = se.entity_cross_table_trends(
+                    train, tabs, entity_key, roles, cur_flags, eff_cols)
+
         meta_dict = eval_meta_dict
         from sdmetrics.reports.single_table import QualityReport
 
@@ -779,6 +794,7 @@ def _run_job(cfg: dict, st: dict):
             "pair_details": pair_details,
             "referential": ri,
             "cardinality": cardinality,
+            "cross_table": cross_table,
             "relationships_modeled": rels_ok and bool(rels),
             "privacy": {s: {t: {k: v for k, v in rep.items() if k != "dcr_arrays"}
                             for t, rep in tabs.items()}
