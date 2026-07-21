@@ -871,7 +871,7 @@ function updateEpochsVisibility(){
 
 /* ---------------- tabs ---------------- */
 function lockReportTabs(lock){
-  const keep=["pane-schema","pane-model"];   // schema + data model stay usable pre-run
+  const keep=["pane-schema","pane-model","pane-docs"];   // static/pre-run panes stay usable
   $$('.tab[data-pane]').forEach(t=>{ if(!keep.includes(t.dataset.pane)){
     t.classList.toggle("locked",lock);
     if(lock) t.title="Run a synthesis to unlock the report"; else t.removeAttribute("title");
@@ -1250,12 +1250,21 @@ function renderReport(res){
           + "Link tables in the Data Model tab to have referential integrity counted here too.")}`})
     +head("QualityReport","Per synthesizer per table. Overall is the mean of column shapes and column pair trends.")
     +`<table class="rep"><thead><tr><th>synthesizer</th><th>table</th><th style="text-align:right">column shapes</th>
-    <th style="text-align:right">column pair trends</th><th style="text-align:right">overall</th></tr></thead><tbody>`;
-  for(const s of res.synths) for(const [t,v] of Object.entries(res.quality[s]||{}))
-    qy+=`<tr><td class="mono">${dot(s)}${s}</td>
-      <td class="mono dim">${t}</td><td class="score-cell">${fmt(v.column_shapes)}</td>
-      <td class="score-cell">${fmt(v.column_pair_trends)}</td>
-      <td class="score-cell" style="color:${meterColor(v.overall)}">${fmt(v.overall)}</td></tr>`;
+    <th style="text-align:right">column pair trends</th><th style="text-align:right">overall</th>
+    <th style="text-align:right" title="Referential integrity (cardinality shape similarity) — how closely child-rows-per-parent matches real. It is ONE score per synthesizer (not per table), spanning the synthesizer's rows here, and it feeds fidelity at 1/3 weight. n/a when no relationships are defined. See the Referential Integrity tab.">ref. integrity</th></tr></thead><tbody>`;
+  for(const s of res.synths){
+    const entries=Object.entries(res.quality[s]||{});
+    const ri=num(((((res.summary||{})[s]||{}).fidelity)||{}).structure);
+    entries.forEach(([t,v],i)=>{
+      qy+=`<tr><td class="mono">${dot(s)}${s}</td>
+        <td class="mono dim">${t}</td><td class="score-cell">${fmt(v.column_shapes)}</td>
+        <td class="score-cell">${fmt(v.column_pair_trends)}</td>
+        <td class="score-cell" style="color:${meterColor(v.overall)}">${fmt(v.overall)}</td>`;
+      if(i===0) qy+=`<td class="score-cell" rowspan="${entries.length}"
+        style="border-left:1px solid var(--line); color:${ri==null?"var(--faint)":meterColor(ri)}">${ri==null?"n/a":fmt(ri)}</td>`;
+      qy+=`</tr>`;
+    });
+  }
   qy+=`</tbody></table>`+qualityBlock(res.figures.quality_data, res.figures.quality);
   $("#sec-quality").innerHTML=qy;
 
