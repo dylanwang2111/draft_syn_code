@@ -88,7 +88,8 @@
     <div class="panel collapsed" id="synth-panel" style="display:none">
       <div class="panel-h"><h2><span class="step">4 ·</span> Synthesizers</h2><span class="panel-sum" id="sum-synths"></span></div>
       <div class="field" style="margin-top:0"><div class="chips" id="synth-chips"></div>
-        <p class="hint">HMA = multi-table; the rest are single-table. CTGAN/TVAE/CopulaGAN are neural (slower).</p></div>
+        <p class="hint">HMA = multi-table; the rest are single-table. CTGAN/TVAE/CopulaGAN are neural (slower).
+          <a href="#" class="link-inline" id="link-how-works">How do these work?</a></p></div>
     </div>
 
     <div class="panel collapsed" id="params-panel" style="display:none">
@@ -182,6 +183,14 @@
       <div class="pane" id="pane-report">
         <div class="rep-wrap">
           <div class="rep-body">
+            <div class="rep-viewbar">
+              <span class="rvb-label">View</span>
+              <div class="viewtoggle" id="view-toggle" role="tablist" aria-label="Report detail level">
+                <button class="vt-btn active" data-view="business" role="tab">Business</button>
+                <button class="vt-btn" data-view="technical" role="tab">Technical</button>
+              </div>
+              <span class="rvb-hint" id="rvb-hint">Plain-language summary. Switch to Technical for the full metrics.</span>
+            </div>
             <section class="rep-sec active" id="sec-overview"></section>
             <section class="rep-sec" id="sec-quality"></section>
             <section class="rep-sec" id="sec-shapes"></section>
@@ -217,6 +226,155 @@
       <span class="jobbar-lbl" id="jobbar-lbl"></span></div>
     <div class="console" id="console"></div>
   </main>
+</div>
+
+<div class="modal-backdrop" id="docs-backdrop">
+  <div class="modal" id="docs-modal" role="dialog" aria-modal="true" aria-label="How the synthesizers work">
+    <button class="modal-close" id="docs-close" aria-label="Close">&times;</button>
+    <div class="doc-wrap">
+      <div class="blk-head"><h3>How the synthesizers work</h3></div>
+      <p class="doc-lead">Every synthesizer below does the same two things in a different way: <b>fit</b>
+        (learn a model of the real table(s)) and <b>sample</b> (draw brand-new rows from that model, never
+        copies, always freshly generated). The two statistical models learn distributions and correlations
+        directly, so they're fast and their output is easy to reason about; the neural models learn a network
+        that produces rows, which can capture more complex, non-linear relationships at the cost of a training
+        loop.</p>
+
+      <div class="doc-card" style="border-left-color:#2ca02c">
+        <div class="doc-card-h"><span class="dot" style="background:#2ca02c"></span><h3>Gaussian Copula</h3></div>
+        <div class="doc-tag">Single-table · statistical · fastest</div>
+        <ol class="doc-steps">
+          <li><b>Fit each column's own shape.</b> Learn a univariate distribution (Beta, Gamma, Gaussian,
+            truncated, or an empirical curve) that best matches each column alone, ignoring every other
+            column.</li>
+          <li><b>Convert real values to percentiles.</b> Using that per-column curve, turn every value into
+            "where does this fall in the distribution": a number between 0 and 1.</li>
+          <li><b>Convert percentiles to normal scores.</b> Pass each percentile through the inverse
+            standard-normal curve so every column now looks like the same bell curve, with row-to-row
+            relationships preserved.</li>
+          <li><b>Learn the correlation matrix.</b> Now that every column sits on the same scale, measure how
+            they move together (e.g. age ↔ income).</li>
+          <li><b>Sample new correlated points.</b> Draw fresh rows from a multivariate normal distribution
+            shaped by that correlation matrix.</li>
+          <li><b>Invert back to real units.</b> normal score → percentile → each column's own inverse
+            distribution → a realistic value in its original scale.</li>
+        </ol>
+        <div class="doc-foot"><b>Best for:</b> a clean single table where you mainly need correct per-column
+          shapes plus linear/rank correlation preserved, near-instantly and with no training loop.
+          <b>Trade-off:</b> only captures linear/rank relationships; a 3-way interaction between columns can
+          slip through.</div>
+      </div>
+
+      <div class="doc-card" style="border-left-color:#1f77b4">
+        <div class="doc-card-h"><span class="dot" style="background:#1f77b4"></span><h3>HMA (Hierarchical Modeling Algorithm)</h3></div>
+        <div class="doc-tag">Multi-table · statistical · preserves keys</div>
+        <ol class="doc-steps">
+          <li><b>Walk the table tree from the leaves up.</b> Starting at child tables, augment each parent
+            row with summary statistics of its children: how many children it has, and the mean/covariance
+            of their numeric columns.</li>
+          <li><b>Fit a Gaussian Copula per table</b>, with those extra "child-shape" columns baked in, so a
+            parent's copula model implicitly encodes what its children usually look like.</li>
+          <li><b>Recurse up multiple levels.</b> Grandparents inherit shape statistics from parents (which
+            already encode their own children), all the way to the root table.</li>
+          <li><b>Sample top-down.</b> Generate the root table first, including its sampled "child-shape"
+            parameters.</li>
+          <li><b>Generate children per parent.</b> For each sampled parent row, use its own sampled
+            child-shape parameters to decide how many child rows to create, and draw them already stamped
+            with that parent's key.</li>
+          <li><b>Recurse down</b> for grandchildren, and so on, until every table is generated.</li>
+        </ol>
+        <div class="doc-foot"><b>Best for:</b> multiple linked tables where foreign-key relationships must
+          hold, because every child row is generated already carrying a valid parent key, so referential
+          integrity holds by construction, not by luck. <b>Trade-off:</b> more moving parts than a single
+          copula fit, so it's slower and the dead-zone during "Modeling Tables" can take a while on wide
+          schemas.</div>
+      </div>
+
+      <div class="doc-card" style="border-left-color:#d62728">
+        <div class="doc-card-h"><span class="dot" style="background:#d62728"></span><h3>CTGAN</h3></div>
+        <div class="doc-tag">Single-table · neural (GAN) · captures non-linear structure</div>
+        <ol class="doc-steps">
+          <li><b>Preprocess numeric columns.</b> Fit a Gaussian-mixture model per numeric column and
+            represent each value as (which "mode" it belongs to, how far into that mode); this handles
+            lumpy, multi-modal columns a single bell curve can't.</li>
+          <li><b>Preprocess categorical columns.</b> One-hot encode them, and rebalance sampling
+            ("training-by-sampling") so rare categories are shown to the model often enough to be learned,
+            not drowned out by the dominant ones.</li>
+          <li><b>Train two competing networks.</b> A <i>Generator</i> turns random noise (plus a condition
+            on one column's value) into a fake row; a <i>Critic</i> tries to tell real rows from the
+            Generator's fake ones.</li>
+          <li><b>Adversarial training loop.</b> Every epoch the Critic gets better at spotting fakes and the
+            Generator gets better at fooling it, repeated for many epochs until the Generator's rows are
+            statistically indistinguishable.</li>
+          <li><b>Sample.</b> After training, discard the Critic; feed the Generator fresh random noise
+            (plus conditions) to produce as many new rows as you want.</li>
+        </ol>
+        <div class="doc-foot"><b>Best for:</b> tables with skewed, multi-modal numeric columns or complex
+          non-linear joint patterns a copula can't see. <b>Trade-off:</b> needs real training time (epochs),
+          and is less predictable/interpretable than a statistical model.</div>
+      </div>
+
+      <div class="doc-card" style="border-left-color:#9467bd">
+        <div class="doc-card-h"><span class="dot" style="background:#9467bd"></span><h3>TVAE</h3></div>
+        <div class="doc-tag">Single-table · neural (VAE) · steadier training</div>
+        <ol class="doc-steps">
+          <li><b>Same preprocessing as CTGAN:</b> mode-specific normalization for numeric columns, one-hot
+            for categorical.</li>
+          <li><b>Encode.</b> A neural <i>Encoder</i> compresses each real row into a small latent vector (a
+            mean and spread in a compressed space).</li>
+          <li><b>Decode.</b> A neural <i>Decoder</i> tries to reconstruct the original row from that latent
+            vector.</li>
+          <li><b>Train on two goals at once:</b> minimize reconstruction error (the rebuilt row should match
+            the original) while keeping the latent space close to a clean standard-normal shape, so it's easy
+            to sample from later.</li>
+          <li><b>Sample.</b> After training, skip the Encoder entirely: draw a random latent vector from a
+            standard normal and run it through the Decoder to get a new row.</li>
+        </ol>
+        <div class="doc-foot"><b>Best for:</b> similar cases to CTGAN, but trains faster and more stably (no
+          adversarial min-max game, so no mode collapse). <b>Trade-off:</b> can produce slightly softer,
+          blurrier distribution edges than CTGAN's sharper mode fidelity.</div>
+      </div>
+
+      <div class="doc-card" style="border-left-color:#ff7f0e">
+        <div class="doc-card-h"><span class="dot" style="background:#ff7f0e"></span><h3>CopulaGAN</h3></div>
+        <div class="doc-tag">Single-table · hybrid (copula + GAN)</div>
+        <ol class="doc-steps">
+          <li><b>CDF-transform numeric columns.</b> Like Gaussian Copula's percentile step, convert each
+            numeric column to a uniform 0-1 scale using its own empirical distribution first, taming skew
+            and long tails before anything else sees the data.</li>
+          <li><b>Hand off to CTGAN.</b> Run the same mode-specific normalization and conditional
+            Generator/Critic adversarial training as CTGAN, but on these pre-tamed columns.</li>
+          <li><b>Sample</b> via the trained Generator, exactly as in CTGAN.</li>
+          <li><b>Invert the CDF transform</b> to convert each generated uniform value back to the original
+            column's real scale.</li>
+        </ol>
+        <div class="doc-foot"><b>Best for:</b> a middle ground: the calibrated, well-behaved marginals of a
+          copula, plus more of the GAN's ability to capture complex joint structure than a pure Gaussian
+          Copula gets alone. <b>Trade-off:</b> still a full GAN training loop under the hood, so it's as slow
+          as CTGAN.</div>
+      </div>
+
+      <h4 class="block-title">At a glance</h4>
+      <table class="rep">
+        <thead><tr><th>Synthesizer</th><th>Scope</th><th>Approach</th><th>Relative speed</th>
+          <th>Preserves FK relationships</th><th>Non-linear structure</th></tr></thead>
+        <tbody>
+          <tr><td class="mono"><span class="dot" style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#2ca02c;margin-right:7px"></span>GaussianCopula</td>
+            <td>single-table</td><td>statistical (copula)</td><td>fastest</td><td>no</td><td>limited (linear/rank only)</td></tr>
+          <tr><td class="mono"><span class="dot" style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#1f77b4;margin-right:7px"></span>HMA</td>
+            <td>multi-table</td><td>statistical (recursive copula)</td><td>fast to moderate</td><td>yes, by construction</td><td>limited (per table, same as above)</td></tr>
+          <tr><td class="mono"><span class="dot" style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#d62728;margin-right:7px"></span>CTGAN</td>
+            <td>single-table</td><td>neural (GAN)</td><td>slow (needs epochs)</td><td>no</td><td>yes</td></tr>
+          <tr><td class="mono"><span class="dot" style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#9467bd;margin-right:7px"></span>TVAE</td>
+            <td>single-table</td><td>neural (VAE)</td><td>moderate to slow</td><td>no</td><td>yes (softer than CTGAN)</td></tr>
+          <tr><td class="mono"><span class="dot" style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#ff7f0e;margin-right:7px"></span>CopulaGAN</td>
+            <td>single-table</td><td>hybrid (copula + GAN)</td><td>slow</td><td>no</td><td>yes</td></tr>
+        </tbody>
+      </table>
+      <p class="hint">See <b>METRICS.md</b> for how each of these is scored (fidelity / privacy / utility) once
+        you run a synthesis.</p>
+    </div>
+  </div>
 </div>
 
 <script src="/static/app.js"></script>
