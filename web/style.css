@@ -270,7 +270,8 @@ select:hover{border-color:var(--sky)} select:focus{outline:none; border-color:va
 
 /* ---- business dimension rows (Realism / Safety / Usefulness) ---- */
 .bizdims{display:grid; gap:11px; margin-top:16px}
-.bizdim{display:grid; grid-template-columns:150px 1fr auto; align-items:center; gap:14px}
+.bizdim{display:grid; grid-template-columns:150px 1fr auto auto; align-items:center; gap:14px}
+.bizdim-val{font-family:var(--mono); font-size:12px; font-weight:600; color:var(--ink); min-width:40px; text-align:right}
 .bizdim-name{font-weight:600; font-size:13.5px; color:var(--ink)}
 .bizdim-name small{display:block; font-family:var(--mono); font-size:10px; color:var(--faint); font-weight:400}
 .bizdim-track{height:8px; background:var(--panel-2); border:1px solid var(--line-soft); border-radius:999px; overflow:hidden}
@@ -295,7 +296,30 @@ select:hover{border-color:var(--sky)} select:focus{outline:none; border-color:va
 /* compact dim rows inside the narrow per-generator cards */
 .bizdims.mini{gap:7px}
 .bizdim-mini{display:flex; align-items:center; justify-content:space-between; gap:8px; font-size:12.5px; color:var(--ink)}
+.bizdim-mini .bm-r{display:inline-flex; align-items:center; gap:8px}
+.bizdim-mini .bm-pct{font-family:var(--mono); font-size:11px; color:var(--muted); min-width:34px; text-align:right}
 .lb-card .bizdim-mini .verdict{font-size:10px; padding:2px 8px}
+.lb-why{font-size:12px; color:var(--muted); margin:0 0 12px; line-height:1.45; min-height:2.6em}
+/* use-case readiness chips in the exec card */
+.uc-label{font-family:var(--mono); font-size:10px; letter-spacing:.1em; text-transform:uppercase;
+  color:var(--muted); margin:20px 0 9px}
+.uc-row{display:grid; grid-template-columns:repeat(auto-fit,minmax(190px,1fr)); gap:10px}
+.uc-chip{border:1px solid var(--line); border-radius:11px; padding:11px 13px; background:var(--panel)}
+.uc-chip.ready{border-color:color-mix(in srgb, var(--pass) 40%, var(--line)); background:color-mix(in srgb, var(--pass) 6%, var(--panel))}
+.uc-chip.review{border-color:color-mix(in srgb, var(--warn) 40%, var(--line)); background:color-mix(in srgb, var(--warn) 7%, var(--panel))}
+.uc-chip.notready{border-color:color-mix(in srgb, var(--fail) 40%, var(--line)); background:color-mix(in srgb, var(--fail) 6%, var(--panel))}
+.uc-top{display:flex; align-items:center; gap:7px; font-size:13.5px; color:var(--ink)}
+.uc-chip.ready .uc-top{color:var(--pass)} .uc-chip.review .uc-top{color:var(--warn)} .uc-chip.notready .uc-top{color:var(--fail)}
+.uc-top b{color:var(--ink); font-weight:600}
+.uc-reason{font-size:11.5px; color:var(--muted); margin-top:4px; line-height:1.45}
+/* at-a-glance per-generator verdict strip on each metric tab */
+.biz-glance{display:grid; gap:8px; margin:0 0 20px; max-width:520px}
+.glance-row{display:flex; align-items:center; justify-content:space-between; gap:12px;
+  padding:9px 14px; background:var(--panel); border:1px solid var(--line); border-radius:9px}
+.glance-name{display:inline-flex; align-items:center; font-family:var(--mono); font-size:12.5px; color:var(--ink)}
+.glance-r{display:inline-flex; align-items:center; gap:9px}
+.glance-r .bm-pct{font-family:var(--mono); font-size:11.5px; color:var(--muted); min-width:38px; text-align:right}
+.verdict-na{font-family:var(--mono); font-size:11px; color:var(--faint)}
 .rep-nav{flex:none; width:190px; border-left:1px solid var(--line); background:var(--panel);
   padding:14px 12px; position:sticky; top:0; align-self:flex-start; display:flex; flex-direction:column; gap:1px;
   transition:width .18s ease; overflow:hidden}
