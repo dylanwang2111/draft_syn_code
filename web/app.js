@@ -871,7 +871,7 @@ function updateEpochsVisibility(){
 
 /* ---------------- tabs ---------------- */
 function lockReportTabs(lock){
-  const keep=["pane-schema","pane-model","pane-docs"];   // static/pre-run panes stay usable
+  const keep=["pane-schema","pane-model"];   // schema + data model stay usable pre-run
   $$('.tab[data-pane]').forEach(t=>{ if(!keep.includes(t.dataset.pane)){
     t.classList.toggle("locked",lock);
     if(lock) t.title="Run a synthesis to unlock the report"; else t.removeAttribute("title");
@@ -917,6 +917,16 @@ $("#tabbar").addEventListener("click",e=>{
   const b=e.target.closest(".tab"); if(!b||b.classList.contains("locked")) return;
   activateTab(b.dataset.pane);
 });
+/* "How it Works" docs modal, opened from the Synthesizers panel link */
+(function(){
+  const backdrop=$("#docs-backdrop");
+  const open=()=>backdrop.classList.add("show");
+  const close=()=>backdrop.classList.remove("show");
+  $("#link-how-works").addEventListener("click",e=>{ e.preventDefault(); open(); });
+  $("#docs-close").addEventListener("click",close);
+  backdrop.addEventListener("click",e=>{ if(e.target===backdrop) close(); });
+  document.addEventListener("keydown",e=>{ if(e.key==="Escape") close(); });
+})();
 
 /* ---------------- run + poll ---------------- */
 $("#btn-run").addEventListener("click",async()=>{
@@ -1190,7 +1200,95 @@ function restylePlotly(){
   }
 }
 
+/* ============================ business view ============================
+   The report speaks two languages: a plain-language "business" view (default)
+   and the full "technical" view.  VIEW drives both; LAST_RES lets the toggle
+   re-render from stored results without re-fetching. */
+let VIEW="business", LAST_RES=null;
+const VERDICT={ready:{label:"Ready",cls:"ready"}, review:{label:"Review",cls:"review"},
+               notready:{label:"Not ready",cls:"notready"}};
+// score → verdict, using a "good" and an "ok" threshold
+const scoreVerdict=(v,good,ok)=>(v==null||Number.isNaN(v))?null:(v>=good?"ready":v>=ok?"review":"notready");
+// safety is a GATE, not a threshold: take the worst of the privacy checks that
+// already carry PASS/WARN/FAIL verdicts (a single FAIL is a red flag)
+function safetyVerdict(res,s){
+  let worst="ready"; const tabs=(res.privacy||{})[s]||{};
+  for(const t in tabs){ const vs=tabs[t].verdicts||{};
+    for(const k in vs){ const st=vs[k].status;
+      if(st==="FAIL") return "notready"; if(st==="WARN") worst="review"; } }
+  return worst;
+}
+const worstVerdict=l=>l.includes("notready")?"notready":l.includes("review")?"review":(l.length?"ready":null);
+const verdictBadge=(k,big)=>k?`<span class="verdict ${VERDICT[k].cls}${big?" lg":""}">${VERDICT[k].label}</span>`:"";
+// the three business dimensions for one synthesizer
+function bizDims(res,s){
+  const sum=(res.summary||{})[s]||{};
+  const fid=num((sum.fidelity||{}).score), util=num((sum.utility||{}).score), priv=num((sum.privacy||{}).score);
+  return [
+    {name:"Realism", q:"Does it look like real data?", score:fid, verdict:scoreVerdict(fid,0.8,0.6)},
+    {name:"Safety", q:"Could it be traced to a real customer?", score:priv, verdict:safetyVerdict(res,s)},
+    {name:"Usefulness", q:"Can teams use it like real data?", score:util, verdict:scoreVerdict(util,0.85,0.7)},
+  ];
+}
+function bizDimRow(d){
+  const pct=d.score!=null?Math.round(d.score*100):0;
+  return `<div class="bizdim"><div class="bizdim-name">${d.name}<small>${esc(d.q)}</small></div>
+    <div class="bizdim-track"><div class="bizdim-fill" style="width:${pct}%;background:${meterColor(d.score||0)}"></div></div>
+    ${verdictBadge(d.verdict)}</div>`;
+}
+// compact variant for the narrow per-generator cards: name + verdict, no track
+function bizDimMini(d){
+  return `<div class="bizdim-mini"><span>${d.name}</span>${verdictBadge(d.verdict)}</div>`;
+}
+// one plain-English recommendation sentence built from the verdicts
+function recommendation(res,s,dims){
+  const [realism,safety,useful]=dims;
+  const overall=worstVerdict(dims.map(d=>d.verdict));
+  const usefulPct=useful.score!=null?Math.round(useful.score*100)+"%":"—";
+  if(overall==="notready"){
+    const bad=dims.filter(d=>d.verdict==="notready").map(d=>d.name.toLowerCase());
+    return `<b>Not ready to use as-is.</b> ${bad.join(" and ")} ${bad.length>1?"need":"needs"} `
+      + `attention — review the flagged checks before sharing or training on this data.`;
+  }
+  const realPhrase=realism.verdict==="ready"?"behaves like your real data":"roughly matches your real data";
+  const safePhrase=safety.verdict==="ready"?"carries no privacy red flags":"has privacy notes worth a look";
+  const close=overall==="ready"
+    ? "Recommended for dev/test environments, vendor sharing, and model training."
+    : "Fine for exploration; review the flagged items before production use.";
+  return `This synthetic data <b>${realPhrase}</b>, <b>${safePhrase}</b>, and is about `
+    + `<b>${usefulPct}</b> as useful as real data for analytics. ${close}`;
+}
+const NAV_LABELS={
+  business:{"sec-overview":"Summary","sec-quality":"Realism","sec-shapes":"Fields match",
+    "sec-pairs":"Field relationships","sec-ri":"Records link up","sec-crosstab":"Cross-table links",
+    "sec-utility":"Usefulness","sec-privacy":"Safety"},
+  technical:{"sec-overview":"Leaderboard","sec-quality":"Fidelity","sec-shapes":"Column Shapes",
+    "sec-pairs":"Column Pair Trends","sec-ri":"Referential Integrity","sec-crosstab":"Cross-table Trends",
+    "sec-utility":"Utility","sec-privacy":"Privacy"}};
+function applyNavLabels(){
+  const m=NAV_LABELS[VIEW]||NAV_LABELS.technical;
+  document.querySelectorAll("#rep-nav .rep-navbtn").forEach(b=>{
+    const sec=b.dataset.sec, txt=b.querySelector(".txt");
+    if(sec&&txt&&m[sec]){ txt.textContent=m[sec]; b.setAttribute("title",m[sec]); }
+  });
+}
+(function wireViewToggle(){
+  const tg=document.getElementById("view-toggle"); if(!tg) return;
+  tg.addEventListener("click",e=>{
+    const btn=e.target.closest(".vt-btn"); if(!btn||btn.dataset.view===VIEW) return;
+    VIEW=btn.dataset.view;
+    tg.querySelectorAll(".vt-btn").forEach(b=>b.classList.toggle("active",b===btn));
+    const hint=document.getElementById("rvb-hint");
+    if(hint) hint.textContent = VIEW==="business"
+      ? "Plain-language summary. Switch to Technical for the full metrics."
+      : "Full metrics and formulas. Switch to Business for the plain-language view.";
+    if(LAST_RES){ const cur=(document.querySelector(".rep-sec.active")||{}).id||"sec-overview";
+      renderReport(LAST_RES); showSection(cur); }
+  });
+})();
+
 function renderReport(res){
+  LAST_RES=res;
   lockReportTabs(false);
   const P=n=>res.palette[n]||PALETTE[n]||"#888";
   const dot=n=>`<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${P(n)};margin-right:7px"></span>`;
@@ -1212,8 +1310,31 @@ function renderReport(res){
   $("#synth-list").innerHTML=sl; $("#synthetic-panel").style.display="block";
   $("#synth-count").textContent=count; $("#synth-count").className="count";
 
+  applyNavLabels();
+
   /* --- Leaderboard (overview) --- */
   const lb=[...res.leaderboard].sort((a,b)=>(b.overall??0)-(a.overall??0));
+  if(VIEW==="business"){
+    const top=lb[0], tDims=bizDims(res,top.synthesizer);
+    const tOverall=worstVerdict(tDims.map(d=>d.verdict));
+    let bh=`<div class="exec ${tOverall||""}">
+      <div class="exec-top"><h3>Trust assessment</h3>${verdictBadge(tOverall,true)}
+        <span class="winner">best generator: ${dot(top.synthesizer)}${esc(top.synthesizer)}</span></div>
+      <p class="exec-rec">${recommendation(res,top.synthesizer,tDims)}</p>
+      <div class="bizdims">${tDims.map(bizDimRow).join("")}</div></div>`;
+    if(lb.length>1){
+      bh+=`<p class="biz-note">Every generator we tried, ranked by overall trust:</p>
+        <div class="podium">${lb.map((r,i)=>{
+          const ds=bizDims(res,r.synthesizer), ov=worstVerdict(ds.map(d=>d.verdict));
+          return `<div class="lb-card ${i===0?"first":""}"><div class="rank">${i+1}</div>
+            <div class="lb-name"><span class="dot" style="background:${P(r.synthesizer)}"></span>${esc(r.synthesizer)}</div>
+            <div style="margin:9px 0 13px">${verdictBadge(ov,true)}</div>
+            <div class="bizdims mini">${ds.map(bizDimMini).join("")}</div></div>`;
+        }).join("")}</div>`;
+    }
+    $("#sec-overview").innerHTML=bh;
+    flushMeters("#sec-overview");
+  } else {
   $("#sec-overview").innerHTML=`<div class="podium">${lb.map((r,i)=>`
     <div class="lb-card ${i===0?"first":""}"><div class="rank">${i+1}</div>
       <div class="lb-name"><span class="dot" style="background:${P(r.synthesizer)}"></span>${r.synthesizer}</div>
@@ -1225,6 +1346,7 @@ function renderReport(res){
       + ". privacy = the mean of MIA protection, NewRowSynthesis and CategoricalCAP. "
       + "utility = the TSTR/TRTR ratio. Each dimension is broken down on its own tab; see METRICS.md.")}</p>`;
   flushMeters("#sec-overview");
+  }
 
   /* --- Fidelity (score strip + summary table + combined Overall/Shapes/Pairs figure) --- */
   const shapesData=res.figures.shapes_data||{}, pairsData=res.figures.pairs_data||{};
