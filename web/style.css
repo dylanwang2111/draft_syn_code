@@ -271,6 +271,11 @@ select:hover{border-color:var(--sky)} select:focus{outline:none; border-color:va
 .bizdim-track{height:8px; background:var(--panel-2); border:1px solid var(--line-soft); border-radius:999px; overflow:hidden}
 .bizdim-fill{height:100%; border-radius:999px; transition:width .5s cubic-bezier(.2,.7,.2,1)}
 .biz-note{font-size:12.5px; color:var(--muted); margin:14px 0 2px}
+/* plain-language intro at the top of each metric tab in business view */
+.biz-intro{background:var(--tint); border:1px solid var(--line-soft); border-left:3px solid var(--blue);
+  border-radius:10px; padding:14px 18px; margin-bottom:20px}
+.biz-intro h4{font-family:var(--disp); font-weight:600; font-size:16px; color:var(--ink); margin-bottom:5px}
+.biz-intro p{font-size:13.5px; color:var(--muted); line-height:1.55; max-width:78ch}
 /* compact dim rows inside the narrow per-generator cards */
 .bizdims.mini{gap:7px}
 .bizdim-mini{display:flex; align-items:center; justify-content:space-between; gap:8px; font-size:12.5px; color:var(--ink)}
