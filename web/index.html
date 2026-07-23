@@ -57,8 +57,8 @@
 
     <div class="panel collapsed" id="structure-panel" style="display:none">
       <div class="panel-h"><h2><span class="step">1 ·</span> Structure &amp; keys</h2><span class="panel-sum" id="sum-structure"></span></div>
-      <p class="hint">Relationships and the entity-key hub are edited visually in the
-        <b>Data Model</b> tab. This is a summary of what's set there.</p>
+      <p class="hint">How your tables connect, and the shared-ID hub that links them, are set
+        visually in the <b>Data Model</b> tab. This is a summary of what's there.</p>
       <div id="structure-mirror"></div>
       <select id="in-entity" style="display:none"><option value="">(none)</option></select>
       <button class="mini-btn" id="btn-open-model" style="margin-top:10px">Open Data Model →</button>
@@ -74,7 +74,7 @@
       <div class="panel-h"><h2><span class="step">2 ·</span> Constraints</h2><span class="panel-sum" id="sum-constraints"></span></div>
       <div id="constraint-rows"></div>
       <button class="mini-btn" id="btn-add-constraint">+ add constraint</button>
-      <p class="hint">rules enforced during synthesis (SDV cag), e.g. EFFECTIVE_DATE ≤ END_DATE.</p>
+      <p class="hint">Business rules the output must always satisfy, e.g. effective date ≤ end date.</p>
     </div>
 
     <div class="panel collapsed" id="pii-panel" style="display:none">
@@ -94,15 +94,15 @@
 
     <div class="panel collapsed" id="params-panel" style="display:none">
       <div class="panel-h"><h2><span class="step">5 ·</span> Run parameters</h2><span class="panel-sum" id="sum-params"></span></div>
-      <div class="field" style="margin-top:0"><label>Sample scale ×rows <output id="out-scale">1.0</output></label>
+      <div class="field" style="margin-top:0"><label><span class="lbl-main">How many rows to generate <i class="lbl-tech">scale × real rows</i></span> <output id="out-scale">1.0</output></label>
         <input type="range" id="in-scale" min="0.25" max="2" step="0.25" value="1"></div>
       <div class="field" id="field-epochs" style="display:none">
-        <label>Neural epochs (CTGAN / TVAE / CopulaGAN) <output id="out-epochs">60</output></label>
+        <label><span class="lbl-main">Training passes — neural models <i class="lbl-tech">epochs · CTGAN / TVAE / CopulaGAN</i></span> <output id="out-epochs">60</output></label>
         <input type="range" id="in-epochs" min="10" max="600" step="10" value="60"></div>
-      <div class="field"><label>Holdout fraction (privacy / TSTR) <output id="out-holdout">0.25</output></label>
+      <div class="field"><label><span class="lbl-main">Data held back for testing <i class="lbl-tech">holdout · privacy &amp; usefulness</i></span> <output id="out-holdout">0.25</output></label>
         <input type="range" id="in-holdout" min="0.10" max="0.40" step="0.05" value="0.25"></div>
-      <div class="field"><label>ML-efficacy target / table</label><div id="target-fields"></div></div>
-      <div class="field"><label>Privacy attack: sensitive column / table</label><div id="cap-fields"></div></div>
+      <div class="field"><label><span class="lbl-main">What the usefulness test predicts <i class="lbl-tech">ML-efficacy target / table</i></span></label><div id="target-fields"></div></div>
+      <div class="field"><label><span class="lbl-main">Sensitive field the safety test guesses <i class="lbl-tech">privacy attack column / table</i></span></label><div id="cap-fields"></div></div>
     </div>
 
     <div class="panel" id="synthetic-panel" style="display:none">
@@ -140,7 +140,7 @@
           <button class="mini-btn" id="dm-autolayout" style="margin:0">Auto-layout</button>
         </div>
         <div class="dm-hub">
-          <span class="lbl">Entity-key hub</span>
+          <span class="lbl">Shared customer ID <span class="lbl-tech">entity-key hub</span></span>
           <select id="dm-hub-key"><option value="">(choose a shared key…)</option></select>
           <span class="lbl">children</span>
           <div class="dm-childs" id="dm-hub-childs"></div>
