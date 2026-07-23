@@ -1761,8 +1761,18 @@ const BIZ_INTRO={
 function applyBizIntros(){
   for(const id in BIZ_INTRO){
     const sec=document.getElementById(id); if(!sec || sec.querySelector(".biz-intro")) continue;
-    const e=BIZ_INTRO[id], div=document.createElement("div");
-    div.className="biz-intro"; div.innerHTML=`<h4>${esc(e.t)}</h4><p>${esc(e.b)}</p>`;
-    sec.insertBefore(div, sec.firstChild);
+    const e=BIZ_INTRO[id];
+    // move the technical content (score cards, formulas, tables, charts) into a
+    // collapsed "Show the numbers" expander, leaving only the plain intro visible
+    const details=document.createElement("details"); details.className="biz-expander";
+    details.innerHTML=`<summary><span class="bx-open">Show the numbers</span>`
+      + `<span class="bx-close">Hide the numbers</span></summary>`;
+    const wrap=document.createElement("div"); wrap.className="biz-details";
+    while(sec.firstChild) wrap.appendChild(sec.firstChild);   // listeners move with the nodes
+    details.appendChild(wrap);
+    const intro=document.createElement("div"); intro.className="biz-intro";
+    intro.innerHTML=`<h4>${esc(e.t)}</h4><p>${esc(e.b)}</p>`;
+    sec.appendChild(intro);
+    sec.appendChild(details);
   }
 }
