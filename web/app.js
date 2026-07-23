@@ -1230,15 +1230,48 @@ function bizDims(res,s){
     {name:"Usefulness", q:"Can teams use it like real data?", score:util, verdict:scoreVerdict(util,0.85,0.7)},
   ];
 }
+const bizPct=d=>d.score!=null?Math.round(d.score*100)+"%":"—";
 function bizDimRow(d){
   const pct=d.score!=null?Math.round(d.score*100):0;
   return `<div class="bizdim"><div class="bizdim-name">${d.name}<small>${esc(d.q)}</small></div>
     <div class="bizdim-track"><div class="bizdim-fill" style="width:${pct}%;background:${meterColor(d.score||0)}"></div></div>
-    ${verdictBadge(d.verdict)}</div>`;
+    <div class="bizdim-val">${bizPct(d)}</div>${verdictBadge(d.verdict)}</div>`;
 }
-// compact variant for the narrow per-generator cards: name + verdict, no track
+// compact variant for the narrow per-generator cards: name + score + verdict
 function bizDimMini(d){
-  return `<div class="bizdim-mini"><span>${d.name}</span>${verdictBadge(d.verdict)}</div>`;
+  return `<div class="bizdim-mini"><span>${d.name}</span>
+    <span class="bm-r"><span class="bm-pct">${bizPct(d)}</span>${verdictBadge(d.verdict)}</span></div>`;
+}
+// concrete go/no-go per use case, from the dimension verdicts
+function bizUseCases(dims){
+  const [realism,safety,useful]=dims;
+  return [
+    {label:"Dev / test environments", verdict:realism.verdict,
+      reason: realism.verdict==="ready"?"realistic enough to build and test against":"resembles real data — check the flagged fields"},
+    {label:"Vendor / partner sharing", verdict:safety.verdict,
+      reason: safety.verdict==="ready"?"no privacy red flags in the safety checks":"review the privacy notes before sharing"},
+    {label:"Training ML models", verdict:worstVerdict([useful.verdict,realism.verdict]),
+      reason: useful.verdict==="ready"?"models train about as well as on real data":"usable, but less than real data"},
+  ];
+}
+const useCaseChip=u=>`<div class="uc-chip ${VERDICT[u.verdict].cls}">
+  <div class="uc-top">${VERDICT[u.verdict].cls==="ready"?"✓":VERDICT[u.verdict].cls==="review"?"!":"✕"} <b>${esc(u.label)}</b></div>
+  <div class="uc-reason">${esc(u.reason)}</div></div>`;
+// one factual line on why a generator ranks where it does
+function bizWhy(res,s,lb){
+  const ct=(res.cross_table||{})[s];
+  // "crossable" = kept the entity consistent across ALL table pairs (no unaligned)
+  const crossable = ct && ct.score!=null && !ct.note && !(ct.unaligned&&ct.unaligned.length);
+  const my=bizDims(res,s);
+  const bestFid=Math.max(...lb.map(r=>bizDims(res,r.synthesizer)[0].score||0));
+  const bestUtil=Math.max(...lb.map(r=>bizDims(res,r.synthesizer)[2].score||0));
+  const leads=[];
+  if(my[0].score!=null && my[0].score>=bestFid-1e-9) leads.push("realism");
+  if(crossable) leads.push("links across tables");
+  if(my[2].score!=null && my[2].score>=bestUtil-1e-9) leads.push("usefulness");
+  if(leads.length) return "Leads on "+leads.slice(0,2).join(" and ")+".";
+  return crossable ? "Keeps customers consistent across tables."
+                   : "Single-table — links across tables aren't preserved.";
 }
 // one plain-English recommendation sentence built from the verdicts
 function recommendation(res,s,dims){
@@ -1317,18 +1350,22 @@ function renderReport(res){
   if(VIEW==="business"){
     const top=lb[0], tDims=bizDims(res,top.synthesizer);
     const tOverall=worstVerdict(tDims.map(d=>d.verdict));
+    const useCases=bizUseCases(tDims);
     let bh=`<div class="exec ${tOverall||""}">
       <div class="exec-top"><h3>Trust assessment</h3>${verdictBadge(tOverall,true)}
         <span class="winner">best generator: ${dot(top.synthesizer)}${esc(top.synthesizer)}</span></div>
       <p class="exec-rec">${recommendation(res,top.synthesizer,tDims)}</p>
-      <div class="bizdims">${tDims.map(bizDimRow).join("")}</div></div>`;
+      <div class="bizdims">${tDims.map(bizDimRow).join("")}</div>
+      <div class="uc-label">Ready for</div>
+      <div class="uc-row">${useCases.map(useCaseChip).join("")}</div></div>`;
     if(lb.length>1){
       bh+=`<p class="biz-note">Every generator we tried, ranked by overall trust:</p>
         <div class="podium">${lb.map((r,i)=>{
           const ds=bizDims(res,r.synthesizer), ov=worstVerdict(ds.map(d=>d.verdict));
           return `<div class="lb-card ${i===0?"first":""}"><div class="rank">${i+1}</div>
             <div class="lb-name"><span class="dot" style="background:${P(r.synthesizer)}"></span>${esc(r.synthesizer)}</div>
-            <div style="margin:9px 0 13px">${verdictBadge(ov,true)}</div>
+            <div style="margin:9px 0 10px">${verdictBadge(ov,true)}</div>
+            <p class="lb-why">${esc(bizWhy(res,r.synthesizer,lb))}</p>
             <div class="bizdims mini">${ds.map(bizDimMini).join("")}</div></div>`;
         }).join("")}</div>`;
     }
@@ -1735,7 +1772,7 @@ function renderReport(res){
     filters.forEach(f=>f.addEventListener("change",apply));
   }
 
-  if(VIEW==="business") applyBizIntros();           // plain-language header on each metric tab
+  if(VIEW==="business") applyBizIntros(res);         // plain-language header + at-a-glance verdicts
   flushMeters();                                   // animate every score bar, all sections
   activateTab("pane-report"); showSection("sec-overview");
 }
@@ -1758,7 +1795,33 @@ const BIZ_INTRO={
   "sec-privacy":{t:"Safety — could it be traced to a real person?",
     b:"The data is attacked three ways: can someone tell who was in the real data, are any rows copied from it, and can a hidden detail be guessed? A PASS means the attack failed — which is what we want."},
 };
-function applyBizIntros(){
+// per-tab dimension score for the at-a-glance strip, and how to judge it
+const TAB_DIM={
+  "sec-quality": {get:(res,s)=>num((((res.summary||{})[s]||{}).fidelity||{}).score), good:0.8, ok:0.6},
+  "sec-shapes":  {get:(res,s)=>num((((res.summary||{})[s]||{}).fidelity||{}).column_shapes), good:0.8, ok:0.6},
+  "sec-pairs":   {get:(res,s)=>num((((res.summary||{})[s]||{}).fidelity||{}).column_pair_trends), good:0.8, ok:0.6},
+  "sec-ri":      {get:(res,s)=>num((((res.summary||{})[s]||{}).fidelity||{}).structure), good:0.8, ok:0.6},
+  "sec-crosstab":{get:(res,s)=>{const c=(res.cross_table||{})[s];
+    if(!c || c.note || (c.unaligned&&c.unaligned.length)) return null;   // single-table / misaligned → n/a
+    return num(c.score_strong!=null?c.score_strong:c.score);}, good:0.7, ok:0.5},
+  "sec-utility": {get:(res,s)=>num((((res.summary||{})[s]||{}).utility||{}).score), good:0.85, ok:0.7},
+  "sec-privacy": {safety:true},
+};
+function tabGlance(res,id){
+  const cfg=TAB_DIM[id]; if(!cfg) return "";
+  const pal=n=>(res.palette&&res.palette[n])||PALETTE[n]||"#888";
+  const dt=n=>`<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${pal(n)};margin-right:7px"></span>`;
+  const rows=(res.synths||[]).map(s=>{
+    let score=null, verdict;
+    if(cfg.safety){ verdict=safetyVerdict(res,s); }
+    else { score=cfg.get(res,s); verdict=scoreVerdict(score,cfg.good,cfg.ok); }
+    const val = score!=null ? Math.round(score*100)+"%" : "n/a";
+    return `<div class="glance-row"><span class="glance-name">${dt(s)}${esc(s)}</span>
+      <span class="glance-r"><span class="bm-pct">${val}</span>${verdict?verdictBadge(verdict):`<span class="verdict-na">n/a</span>`}</span></div>`;
+  }).join("");
+  return `<div class="biz-glance">${rows}</div>`;
+}
+function applyBizIntros(res){
   for(const id in BIZ_INTRO){
     const sec=document.getElementById(id); if(!sec || sec.querySelector(".biz-intro")) continue;
     const e=BIZ_INTRO[id];
@@ -1773,6 +1836,7 @@ function applyBizIntros(){
     const intro=document.createElement("div"); intro.className="biz-intro";
     intro.innerHTML=`<h4>${esc(e.t)}</h4><p>${esc(e.b)}</p>`;
     sec.appendChild(intro);
+    sec.insertAdjacentHTML("beforeend", tabGlance(res,id));   // at-a-glance verdict per generator
     sec.appendChild(details);
   }
 }
