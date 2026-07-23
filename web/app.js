@@ -1735,6 +1735,34 @@ function renderReport(res){
     filters.forEach(f=>f.addEventListener("change",apply));
   }
 
+  if(VIEW==="business") applyBizIntros();           // plain-language header on each metric tab
   flushMeters();                                   // animate every score bar, all sections
   activateTab("pane-report"); showSection("sec-overview");
+}
+// plain-language intro prepended to each metric section in the business view:
+// what the tab answers and how to read it, so a non-technical viewer who drills
+// in past the summary still lands on plain language, not a heatmap.
+const BIZ_INTRO={
+  "sec-quality":{t:"Realism — does it look like real data?",
+    b:"How closely the synthetic data resembles the real data, field by field and overall. In the tables below, higher is closer to real; the referential-integrity column shows how well records link across tables."},
+  "sec-shapes":{t:"Fields match — is each field realistic on its own?",
+    b:"For every column — age, region, status — does the spread of values look like the real one? Green cells match real; red cells are fields the generator reproduced poorly."},
+  "sec-pairs":{t:"Field relationships — do fields move together correctly?",
+    b:"Real data has patterns between fields — older customers are married more often, say. This checks whether those survived. Green kept the pattern, red lost it, blank means there was no real pattern to keep."},
+  "sec-ri":{t:"Records link up — do the tables connect correctly?",
+    b:"Every record should point to a real customer, and each customer should have a realistic number of records. The grey 'real' row is the target — matching it is the goal, not scoring 100%."},
+  "sec-crosstab":{t:"Cross-table links — does a customer stay consistent across tables?",
+    b:"For one customer, do details in different tables hang together like they do in real data? Only a model that keeps customers consistent across tables can preserve this — single-table generators can't, and read n/a."},
+  "sec-utility":{t:"Usefulness — can teams work with it like real data?",
+    b:"We train the same model twice — once on real data, once on synthetic — and test both on real data held back. A score near 1.0 means the synthetic data is about as useful as the real thing."},
+  "sec-privacy":{t:"Safety — could it be traced to a real person?",
+    b:"The data is attacked three ways: can someone tell who was in the real data, are any rows copied from it, and can a hidden detail be guessed? A PASS means the attack failed — which is what we want."},
+};
+function applyBizIntros(){
+  for(const id in BIZ_INTRO){
+    const sec=document.getElementById(id); if(!sec || sec.querySelector(".biz-intro")) continue;
+    const e=BIZ_INTRO[id], div=document.createElement("div");
+    div.className="biz-intro"; div.innerHTML=`<h4>${esc(e.t)}</h4><p>${esc(e.b)}</p>`;
+    sec.insertBefore(div, sec.firstChild);
+  }
 }
