@@ -108,6 +108,12 @@ REPORTS_DIR = "reports"
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 
+#: single-table synthesizers that get their foreign keys relinked post-fit
+#: (see synth_eval.link) so declared relationships hold by construction, the
+#: same way HMA's do natively.  GaussianCopula is left as the pure single-table
+#: baseline on purpose, for comparison.
+LINKABLE_SYNTHS = {"CTGAN", "TVAE", "COPULAGAN"}
+
 
 class _Cancelled(Exception):
     """Raised inside a job when the user cancels, to unwind and stop all work."""
@@ -558,6 +564,21 @@ def _run_job(cfg: dict, st: dict):
             raise RuntimeError("every synthesizer failed — check the schema edits")
         say(f"Synthesis done: {', '.join(suite)}")
 
+        # Single-table synthesizers (CTGAN/TVAE/CopulaGAN) fit each table on
+        # its own, so a child's foreign-key column is unrelated to the
+        # synthetic parent's keys: relink it now (HMA and the entity-key hub
+        # path above don't need this, they already model the link directly).
+        linked_synths: list[str] = []
+        if not parent_name and rels and rels_ok:
+            linkable = [s for s in suite if s.upper() in LINKABLE_SYNTHS]
+            if linkable:
+                linked = se.link_relationships(rels, reduced_train, suite, linkable,
+                                               seed=cfg.get("seed", 42))
+                linked_synths = [s for s in linked if linked[s]]
+                if linked_synths:
+                    say(f"Linked foreign keys for {', '.join(linked_synths)} so referential "
+                        f"integrity holds (cardinality resampled from the real per-parent shape).")
+
         # Referential integrity + cardinality are measured while the derived
         # parent is present (they need the parent table), then the parent is
         # dropped so only real tables are evaluated by the other metrics.
@@ -796,6 +817,7 @@ def _run_job(cfg: dict, st: dict):
             "cardinality": cardinality,
             "cross_table": cross_table,
             "relationships_modeled": rels_ok and bool(rels),
+            "linked_synths": linked_synths,
             "privacy": {s: {t: {k: v for k, v in rep.items() if k != "dcr_arrays"}
                             for t, rep in tabs.items()}
                         for s, tabs in privacy_all.items()},

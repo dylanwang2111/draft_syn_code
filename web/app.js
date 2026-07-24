@@ -16,7 +16,13 @@ function apiFetch(url,opts={}){
 const SDTYPES=["categorical","numerical","datetime","boolean","id","unknown"];
 const SYNTHS=["HMA","GaussianCopula","CTGAN","TVAE","CopulaGAN"];
 const GAN_SYNTHS=new Set(["CTGAN","TVAE","CopulaGAN"]);
-const MULTI_TABLE_SYNTHS=new Set(["HMA"]);   // the only synthesizer that models cross-table relationships
+// HMA fits every table jointly, so relationships come out of the model itself.
+// CTGAN/TVAE/CopulaGAN still fit each table independently, but their foreign
+// keys are relinked afterward (see synth_eval.link) so referential integrity
+// holds too: a weaker guarantee than HMA (no cross-table correlation), so
+// they get their own "linked" tier instead of being lumped in with HMA.
+const JOINT_MULTI_TABLE_SYNTHS=new Set(["HMA"]);
+const LINKED_MULTI_TABLE_SYNTHS=new Set(["CTGAN","TVAE","CopulaGAN"]);
 const PALETTE={real:"#555f5c",HMA:"#1f77b4",GaussianCopula:"#2ca02c",CTGAN:"#d62728",TVAE:"#9467bd",CopulaGAN:"#ff7f0e"};
 let DATA=null, detected={}, selectedTable=null;
 let selectedSynths=new Set(["HMA","GaussianCopula"]);
@@ -826,15 +832,21 @@ function renderAdvisor(profile){
 function renderRecipe(){
   const chip=s=>`<span class="chip ${selectedSynths.has(s)?"on":""}" data-s="${s}">
     <span class="dot" style="background:${PALETTE[s]}"></span>${s}</span>`;
-  const single=SYNTHS.filter(s=>!MULTI_TABLE_SYNTHS.has(s));
-  const multi=SYNTHS.filter(s=>MULTI_TABLE_SYNTHS.has(s));
-  // the multi-table group only earns its keep once there's more than one table to relate
+  const single=SYNTHS.filter(s=>!JOINT_MULTI_TABLE_SYNTHS.has(s) && !LINKED_MULTI_TABLE_SYNTHS.has(s));
+  const joint=SYNTHS.filter(s=>JOINT_MULTI_TABLE_SYNTHS.has(s));
+  const linked=SYNTHS.filter(s=>LINKED_MULTI_TABLE_SYNTHS.has(s));
+  // the multi-table groups only earn their keep once there's more than one table to relate
   const showMulti=DATA && Object.keys(DATA.tables).length>1;
   let h=`<div class="chip-group"><div class="chip-group-label">Single-table</div>
     <div class="chips">${single.map(chip).join("")}</div></div>`;
-  if(showMulti) h+=`<div class="chip-group"><div class="chip-group-label">Multi-table
-      <i class="ihelp" data-tip="Models relationships between tables directly, instead of generating each table on its own.">i</i></div>
-    <div class="chips">${multi.map(chip).join("")}</div></div>`;
+  if(showMulti){
+    h+=`<div class="chip-group"><div class="chip-group-label">Multi-table
+        <i class="ihelp" data-tip="Fits every table jointly, so relationships come straight out of the model.">i</i></div>
+      <div class="chips">${joint.map(chip).join("")}</div></div>`;
+    h+=`<div class="chip-group"><div class="chip-group-label">Multi-table (linked)
+        <i class="ihelp" data-tip="Fits each table on its own, then relinks foreign keys so they point at real synthetic parent rows, matching the real number of children per parent. Referential integrity holds, but cross-table correlations aren't modeled the way HMA's are.">i</i></div>
+      <div class="chips">${linked.map(chip).join("")}</div></div>`;
+  }
   $("#synth-chips").innerHTML=h;
   $$("#synth-chips .chip").forEach(ch=>ch.addEventListener("click",()=>{
     const s=ch.dataset.s;
@@ -1522,10 +1534,18 @@ function renderReport(res){
         + "coverage is NOT supposed to be 1 — each synthesizer should match the real value, and the badge "
         + "shows how many points away from real it landed."
         + (res.synths.includes("HMA")
-            ? " HMA was fitted WITH these relationships, so it preserves them by construction; single-table "
-              + "synthesizers reference a hub derived from their own output."
-            : " No multi-table model was selected, so no synthesizer here learned these relationships — "
-              + "referential integrity is being measured, not enforced."))
+            ? " HMA was fitted WITH these relationships, so it preserves them by construction."
+            : "")
+        + ((res.linked_synths||[]).length
+            ? ` ${(res.linked_synths||[]).join(", ")} ${(res.linked_synths||[]).length>1?"were":"was"} fitted `
+              + "per table independently, then had foreign keys relinked to real synthetic parent rows "
+              + "afterward: referential integrity holds, but (unlike HMA) cross-table correlations weren't "
+              + "modeled."
+            : "")
+        + (!res.synths.includes("HMA") && !(res.linked_synths||[]).length
+            ? " No multi-table model was selected, so no synthesizer here learned these relationships: "
+              + "referential integrity is being measured, not enforced."
+            : ""))
       +`<table class="rep"><thead><tr><th>synthesizer</th><th>relationship</th>
         <th style="text-align:right">fk coverage</th><th style="text-align:right">parent coverage</th><th>status</th></tr></thead>
       <tbody>${[...ri].sort((a,b)=>

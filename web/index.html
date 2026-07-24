@@ -288,7 +288,7 @@
 
       <div class="doc-card" style="border-left-color:#d62728">
         <div class="doc-card-h"><span class="dot" style="background:#d62728"></span><h3>CTGAN</h3></div>
-        <div class="doc-tag">Single-table · neural (GAN) · captures non-linear structure</div>
+        <div class="doc-tag">Single-table, FK-linked · neural (GAN) · captures non-linear structure</div>
         <ol class="doc-steps">
           <li><b>Preprocess numeric columns.</b> Fit a Gaussian-mixture model per numeric column and
             represent each value as (which "mode" it belongs to, how far into that mode); this handles
@@ -307,12 +307,14 @@
         </ol>
         <div class="doc-foot"><b>Best for:</b> tables with skewed, multi-modal numeric columns or complex
           non-linear joint patterns a copula can't see. <b>Trade-off:</b> needs real training time (epochs),
-          and is less predictable/interpretable than a statistical model.</div>
+          and is less predictable/interpretable than a statistical model. When tables are linked, its foreign
+          keys are relinked to the synthetic parent's rows afterward (matching the real per-parent count), so
+          referential integrity holds too, just without HMA's joint cross-table modeling.</div>
       </div>
 
       <div class="doc-card" style="border-left-color:#9467bd">
         <div class="doc-card-h"><span class="dot" style="background:#9467bd"></span><h3>TVAE</h3></div>
-        <div class="doc-tag">Single-table · neural (VAE) · steadier training</div>
+        <div class="doc-tag">Single-table, FK-linked · neural (VAE) · steadier training</div>
         <ol class="doc-steps">
           <li><b>Same preprocessing as CTGAN:</b> mode-specific normalization for numeric columns, one-hot
             for categorical.</li>
@@ -328,12 +330,13 @@
         </ol>
         <div class="doc-foot"><b>Best for:</b> similar cases to CTGAN, but trains faster and more stably (no
           adversarial min-max game, so no mode collapse). <b>Trade-off:</b> can produce slightly softer,
-          blurrier distribution edges than CTGAN's sharper mode fidelity.</div>
+          blurrier distribution edges than CTGAN's sharper mode fidelity. Same FK-relinking as CTGAN when
+          tables are linked.</div>
       </div>
 
       <div class="doc-card" style="border-left-color:#ff7f0e">
         <div class="doc-card-h"><span class="dot" style="background:#ff7f0e"></span><h3>CopulaGAN</h3></div>
-        <div class="doc-tag">Single-table · hybrid (copula + GAN)</div>
+        <div class="doc-tag">Single-table, FK-linked · hybrid (copula + GAN)</div>
         <ol class="doc-steps">
           <li><b>CDF-transform numeric columns.</b> Like Gaussian Copula's percentile step, convert each
             numeric column to a uniform 0-1 scale using its own empirical distribution first, taming skew
@@ -347,7 +350,7 @@
         <div class="doc-foot"><b>Best for:</b> a middle ground: the calibrated, well-behaved marginals of a
           copula, plus more of the GAN's ability to capture complex joint structure than a pure Gaussian
           Copula gets alone. <b>Trade-off:</b> still a full GAN training loop under the hood, so it's as slow
-          as CTGAN.</div>
+          as CTGAN. Same FK-relinking as CTGAN when tables are linked.</div>
       </div>
 
       <h4 class="block-title">At a glance</h4>
@@ -360,11 +363,11 @@
           <tr><td class="mono"><span class="dot" style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#1f77b4;margin-right:7px"></span>HMA</td>
             <td>multi-table</td><td>statistical (recursive copula)</td><td>fast to moderate</td><td>yes, by construction</td><td>limited (per table, same as above)</td></tr>
           <tr><td class="mono"><span class="dot" style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#d62728;margin-right:7px"></span>CTGAN</td>
-            <td>single-table</td><td>neural (GAN)</td><td>slow (needs epochs)</td><td>no</td><td>yes</td></tr>
+            <td>single-table, FK-linked</td><td>neural (GAN)</td><td>slow (needs epochs)</td><td>yes, relinked after fitting</td><td>yes</td></tr>
           <tr><td class="mono"><span class="dot" style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#9467bd;margin-right:7px"></span>TVAE</td>
-            <td>single-table</td><td>neural (VAE)</td><td>moderate to slow</td><td>no</td><td>yes (softer than CTGAN)</td></tr>
+            <td>single-table, FK-linked</td><td>neural (VAE)</td><td>moderate to slow</td><td>yes, relinked after fitting</td><td>yes (softer than CTGAN)</td></tr>
           <tr><td class="mono"><span class="dot" style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#ff7f0e;margin-right:7px"></span>CopulaGAN</td>
-            <td>single-table</td><td>hybrid (copula + GAN)</td><td>slow</td><td>no</td><td>yes</td></tr>
+            <td>single-table, FK-linked</td><td>hybrid (copula + GAN)</td><td>slow</td><td>yes, relinked after fitting</td><td>yes</td></tr>
         </tbody>
       </table>
       <p class="hint">See <b>METRICS.md</b> for how each of these is scored (fidelity / privacy / utility) once
