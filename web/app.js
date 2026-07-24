@@ -796,9 +796,11 @@ function renderAdvisor(profile){
   // The reasoning is long and only needed once — park it behind a hover marker and
   // keep the panel to the headline plus anything actionable (warnings).
   const why=(r.reasons||[]).join(" ");
-  let h=`<div class="strat-head"><span class="tier-badge tier-${r.tier}">${TIER_LABEL[r.tier]||("TIER "+r.tier)}</span>
-    <span class="strat-name">${STRATEGY_LABEL[r.strategy]||r.strategy}</span>
-    ${why?ihelp(why+" — a suggestion from the profiler; you can override it below, and you can always set an entity key yourself if you know a business key that ties an entity's rows together."):""}</div>`;
+  let h=`<div class="strat-head">
+    <div class="strat-title"><span class="strat-name">${STRATEGY_LABEL[r.strategy]||r.strategy}</span>
+      ${why?ihelp(why+" This is a suggestion from the profiler: you can override it below, and you can always set an entity key yourself if you know a business key that ties an entity's rows together."):""}</div>
+    <span class="tier-badge tier-${r.tier}">${TIER_LABEL[r.tier]||("TIER "+r.tier)}</span>
+  </div>`;
   const warns=r.warnings||[];
   if(warns.length){
     h+=`<ul class="strat-list">`;
@@ -815,7 +817,7 @@ function renderAdvisor(profile){
   const apply=$("#btn-apply-rels");
   if(apply) apply.addEventListener("click",()=>{ MODEL.rels=RECOMMENDED_RELS.slice();
     afterModelChange(); openModel(false);
-    apply.className="mini-btn done"; apply.textContent="✓ applied — see Data Model"; apply.disabled=true; });
+    apply.className="mini-btn done"; apply.textContent="✓ applied, see Data Model"; apply.disabled=true; });
   $("#btn-goto-key").addEventListener("click",()=>openModel(true));
   updateSummaries();
 }
