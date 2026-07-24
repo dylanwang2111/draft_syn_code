@@ -236,15 +236,13 @@ select:hover{border-color:var(--sky)} select:focus{outline:none; border-color:va
 .rep-body{flex:1; min-width:0; padding:24px 28px}
 .rep-sec{display:none} .rep-sec.active{display:block; animation:fade .3s ease}
 
-/* ---- Business / Technical view toggle ---- */
-.rep-viewbar{display:flex; align-items:center; gap:12px; margin-bottom:18px; flex-wrap:wrap}
-.rvb-label{font-family:var(--mono); font-size:10px; letter-spacing:.1em; text-transform:uppercase; color:var(--muted)}
-.viewtoggle{display:inline-flex; background:var(--panel-2); border:1px solid var(--line); border-radius:999px; padding:2px}
-.vt-btn{background:transparent; border:none; color:var(--muted); font-family:var(--mono); font-size:11.5px;
-  font-weight:500; padding:5px 15px; border-radius:999px}
+/* ---- Business / Technical view toggle (docked in the report side-nav) ---- */
+.rep-nav-view{display:flex; align-items:center; gap:0; margin:2px 0 10px}
+.viewtoggle{flex:1; display:flex; background:var(--panel-2); border:1px solid var(--line); border-radius:999px; padding:2px; min-width:0}
+.vt-btn{flex:1; background:transparent; border:none; color:var(--muted); font-family:var(--mono); font-size:10.5px;
+  font-weight:500; padding:5px 6px; border-radius:999px; white-space:nowrap}
 .vt-btn.active{background:var(--blue); color:#fff; box-shadow:0 2px 7px rgba(0,121,193,.3)}
 .vt-btn:not(.active):hover{color:var(--blue)}
-.rvb-hint{font-size:11.5px; color:var(--faint)}
 
 /* ---- verdict badge (Ready / Review / Not ready) ---- */
 .verdict{display:inline-flex; align-items:center; gap:6px; font-family:var(--mono); font-size:11px;
@@ -339,10 +337,12 @@ select:hover{border-color:var(--sky)} select:focus{outline:none; border-color:va
 /* collapsed: a right-edge icon rail; hovering it expands to reveal the labels */
 .rep-nav.collapsed{width:54px}
 .rep-nav.collapsed .rep-fold{align-self:center; transform:rotate(180deg)}
+.rep-nav.collapsed .rep-nav-view{display:none}
 .rep-nav.collapsed .rep-navbtn{justify-content:center; padding-left:0; padding-right:0}
 .rep-nav.collapsed .rep-navbtn .txt{display:none}
 .rep-nav.collapsed:hover{width:190px; box-shadow:-10px 0 22px rgba(1,58,99,.06)}
 .rep-nav.collapsed:hover .rep-fold{align-self:flex-end; transform:none}
+.rep-nav.collapsed:hover .rep-nav-view{display:flex}
 .rep-nav.collapsed:hover .rep-navbtn{justify-content:flex-start; padding-left:11px}
 .rep-nav.collapsed:hover .rep-navbtn.child{padding-left:22px}
 .rep-nav.collapsed:hover .rep-navbtn .txt{display:inline}

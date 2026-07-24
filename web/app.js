@@ -1293,10 +1293,10 @@ function recommendation(res,s,dims){
 }
 const NAV_LABELS={
   business:{"sec-overview":"Summary","sec-quality":"Realism","sec-shapes":"Fields match",
-    "sec-pairs":"Field relationships","sec-ri":"Records link up","sec-crosstab":"Cross-table links",
+    "sec-pairs":"Field relationships","sec-ri":"Records link up",
     "sec-utility":"Usefulness","sec-privacy":"Safety"},
   technical:{"sec-overview":"Leaderboard","sec-quality":"Fidelity","sec-shapes":"Column Shapes",
-    "sec-pairs":"Column Pair Trends","sec-ri":"Referential Integrity","sec-crosstab":"Cross-table Trends",
+    "sec-pairs":"Column Pair Trends","sec-ri":"Referential Integrity",
     "sec-utility":"Utility","sec-privacy":"Privacy"}};
 function applyNavLabels(){
   const m=NAV_LABELS[VIEW]||NAV_LABELS.technical;
@@ -1311,10 +1311,10 @@ function applyNavLabels(){
     const btn=e.target.closest(".vt-btn"); if(!btn||btn.dataset.view===VIEW) return;
     VIEW=btn.dataset.view;
     tg.querySelectorAll(".vt-btn").forEach(b=>b.classList.toggle("active",b===btn));
-    const hint=document.getElementById("rvb-hint");
-    if(hint) hint.textContent = VIEW==="business"
+    const hint=document.getElementById("view-hint");
+    if(hint) hint.setAttribute("data-tip", VIEW==="business"
       ? "Plain-language summary. Switch to Technical for the full metrics."
-      : "Full metrics and formulas. Switch to Business for the plain-language view.";
+      : "Full metrics and formulas. Switch to Business for the plain-language view.");
     if(LAST_RES){ const cur=(document.querySelector(".rep-sec.active")||{}).id||"sec-overview";
       renderReport(LAST_RES); showSection(cur); }
   });
@@ -1546,65 +1546,6 @@ function renderReport(res){
   }
   $("#sec-ri").innerHTML=riH;
 
-  /* --- Fidelity › Cross-table Trends (entity-level, across tables) --- */
-  const cx=res.cross_table||{};
-  let cxH;
-  if(!Object.keys(cx).length){
-    cxH=`<p class="note">No entity key defined — cross-table correlation needs a shared key
-      linking tables (build an entity-key hub in the <b>Data Model</b> tab).</p>`;
-  }else{
-    cxH=head("Cross-table Trends",
-      "For a given customer, do attributes in DIFFERENT tables hang together like real — "
-      + "e.g. marital status in PERSON vs province in CONTACT? Each table is collapsed to one "
-      + "row per entity, joined on the key, and every cross-table column pair is scored real-vs-"
-      + "synth (1 = the relationship is preserved). This is the only fidelity view that looks "
-      + "ACROSS tables; Column Pair Trends only looks inside one.",
-      "Per synthesizer. The headline is the score on pairs that actually correlate in real data.");
-    // per-synth summary: all-pairs mean + the signal-carrying (strong) mean
-    cxH+=`<table class="rep"><thead><tr><th>synthesizer</th>
-      <th style="text-align:right">strong-pair score</th>
-      <th style="text-align:right">all-pair score</th>
-      <th style="text-align:right">entities</th><th>note</th></tr></thead><tbody>`;
-    for(const s of res.synths){
-      const r=cx[s]; if(!r) continue;
-      const strong=num(r.score_strong), all=num(r.score);
-      const nt=r.note ? `<span class="dim">${esc(r.note)}</span>`
-        : (r.n_strong ? `<span class="dim">${r.n_strong} of ${r.n_pairs} pairs carry real correlation</span>`
-                      : `<span class="dim">no strongly-correlated pairs in this data</span>`);
-      cxH+=`<tr><td class="mono">${dot(s)}${esc(s)}</td>
-        <td class="score-cell" style="color:${strong==null?"var(--faint)":meterColor(strong)}">${fmt(strong)}</td>
-        <td class="score-cell" style="color:${all==null?"var(--faint)":meterColor(all)}">${fmt(all)}</td>
-        <td class="score-cell dim">${r.n_entities||"—"}</td><td>${nt}</td></tr>`;
-    }
-    cxH+=`</tbody></table>`;
-    // the pairs that carry signal, per synth, ranked by how correlated they are in real
-    const anyPairs=res.synths.some(s=>(cx[s]&&cx[s].pairs||[]).length);
-    if(anyPairs){
-      cxH+=head("Which pairs carry the signal",
-        "Ranked by real-data correlation strength (assoc). Pairs near 0 assoc are independent in "
-        + "real data too, so every model scores high on them — the separation between models shows "
-        + "on the high-assoc rows. A single-table model can only reach these by coincidence, so it "
-        + "falls toward independence here.");
-      for(const s of res.synths){
-        const r=cx[s]; if(!r||!(r.pairs||[]).length) continue;
-        const rows=[...r.pairs].filter(p=>p.real_assoc!=null)
-          .sort((a,b)=>b.real_assoc-a.real_assoc).slice(0,12);
-        if(!rows.length) continue;
-        cxH+=`<h4 class="block-title" style="font-size:15px;margin-top:20px">${dot(s)}${esc(s)}</h4>
-          <table class="rep"><thead><tr><th>cross-table pair</th>
-            <th style="text-align:right">real assoc</th>
-            <th style="text-align:right">preserved</th></tr></thead><tbody>`;
-        for(const p of rows)
-          cxH+=`<tr><td class="mono">${esc(p.table1)}.${esc(p.col1)}
-            <span class="dim">×</span> ${esc(p.table2)}.${esc(p.col2)}</td>
-            <td class="score-cell dim">${fmt(p.real_assoc)}</td>
-            <td class="score-cell" style="color:${meterColor(p.score)}">${fmt(p.score)}</td></tr>`;
-        cxH+=`</tbody></table>`;
-      }
-    }
-  }
-  $("#sec-crosstab").innerHTML=cxH;
-
   /* --- Utility (ML efficacy · TSTR) --- */
   if(!res.efficacy.length){ $("#sec-utility").innerHTML=`<h4 class="block-title">Utility · ML efficacy</h4><p class="note">No usable modelling target found.</p>`; }
   else{
@@ -1788,8 +1729,6 @@ const BIZ_INTRO={
     b:"Real data has patterns between fields — older customers are married more often, say. This checks whether those survived. Green kept the pattern, red lost it, blank means there was no real pattern to keep."},
   "sec-ri":{t:"Records link up — do the tables connect correctly?",
     b:"Every record should point to a real customer, and each customer should have a realistic number of records. The grey 'real' row is the target — matching it is the goal, not scoring 100%."},
-  "sec-crosstab":{t:"Cross-table links — does a customer stay consistent across tables?",
-    b:"For one customer, do details in different tables hang together like they do in real data? Only a model that keeps customers consistent across tables can preserve this — single-table generators can't, and read n/a."},
   "sec-utility":{t:"Usefulness — can teams work with it like real data?",
     b:"We train the same model twice — once on real data, once on synthetic — and test both on real data held back. A score near 1.0 means the synthetic data is about as useful as the real thing."},
   "sec-privacy":{t:"Safety — could it be traced to a real person?",
@@ -1801,9 +1740,6 @@ const TAB_DIM={
   "sec-shapes":  {get:(res,s)=>num((((res.summary||{})[s]||{}).fidelity||{}).column_shapes), good:0.8, ok:0.6},
   "sec-pairs":   {get:(res,s)=>num((((res.summary||{})[s]||{}).fidelity||{}).column_pair_trends), good:0.8, ok:0.6},
   "sec-ri":      {get:(res,s)=>num((((res.summary||{})[s]||{}).fidelity||{}).structure), good:0.8, ok:0.6},
-  "sec-crosstab":{get:(res,s)=>{const c=(res.cross_table||{})[s];
-    if(!c || c.note || (c.unaligned&&c.unaligned.length)) return null;   // single-table / misaligned → n/a
-    return num(c.score_strong!=null?c.score_strong:c.score);}, good:0.7, ok:0.5},
   "sec-utility": {get:(res,s)=>num((((res.summary||{})[s]||{}).utility||{}).score), good:0.85, ok:0.7},
   "sec-privacy": {safety:true},
 };
