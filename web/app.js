@@ -16,6 +16,7 @@ function apiFetch(url,opts={}){
 const SDTYPES=["categorical","numerical","datetime","boolean","id","unknown"];
 const SYNTHS=["HMA","GaussianCopula","CTGAN","TVAE","CopulaGAN"];
 const GAN_SYNTHS=new Set(["CTGAN","TVAE","CopulaGAN"]);
+const MULTI_TABLE_SYNTHS=new Set(["HMA"]);   // the only synthesizer that models cross-table relationships
 const PALETTE={real:"#555f5c",HMA:"#1f77b4",GaussianCopula:"#2ca02c",CTGAN:"#d62728",TVAE:"#9467bd",CopulaGAN:"#ff7f0e"};
 let DATA=null, detected={}, selectedTable=null;
 let selectedSynths=new Set(["HMA","GaussianCopula"]);
@@ -821,8 +822,18 @@ function renderAdvisor(profile){
 
 /* ---------------- recipe ---------------- */
 function renderRecipe(){
-  $("#synth-chips").innerHTML=SYNTHS.map(s=>`<span class="chip ${selectedSynths.has(s)?"on":""}" data-s="${s}">
-    <span class="dot" style="background:${PALETTE[s]}"></span>${s}</span>`).join("");
+  const chip=s=>`<span class="chip ${selectedSynths.has(s)?"on":""}" data-s="${s}">
+    <span class="dot" style="background:${PALETTE[s]}"></span>${s}</span>`;
+  const single=SYNTHS.filter(s=>!MULTI_TABLE_SYNTHS.has(s));
+  const multi=SYNTHS.filter(s=>MULTI_TABLE_SYNTHS.has(s));
+  // the multi-table group only earns its keep once there's more than one table to relate
+  const showMulti=DATA && Object.keys(DATA.tables).length>1;
+  let h=`<div class="chip-group"><div class="chip-group-label">Single-table</div>
+    <div class="chips">${single.map(chip).join("")}</div></div>`;
+  if(showMulti) h+=`<div class="chip-group"><div class="chip-group-label">Multi-table
+      <i class="ihelp" data-tip="Models relationships between tables directly, instead of generating each table on its own.">i</i></div>
+    <div class="chips">${multi.map(chip).join("")}</div></div>`;
+  $("#synth-chips").innerHTML=h;
   $$("#synth-chips .chip").forEach(ch=>ch.addEventListener("click",()=>{
     const s=ch.dataset.s;
     selectedSynths.has(s)?selectedSynths.delete(s):selectedSynths.add(s);
