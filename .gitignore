@@ -9,5 +9,8 @@ __pycache__/
 .venv/
 venv/
 
+# chat/ secrets (see chat/.env.example) -- .venv/ above already covers chat/.venv/
+.env
+
 # Jupyter
 .ipynb_checkpoints/

@@ -37,6 +37,11 @@
     <button class="tbtn primary" id="btn-run" disabled>▶ Synthesize</button>
     <button class="tbtn danger" id="btn-cancel" style="display:none">■ Cancel</button>
     <span class="status-dot" id="status-dot" title="idle"></span>
+    <button class="tbtn icon" id="btn-chat" title="Toggle assistant" aria-label="Toggle assistant">
+      <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7"
+        stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+    </button>
     <button class="tbtn icon" id="btn-theme" title="Toggle dark mode" aria-label="Toggle dark mode"></button>
   </div>
 </div>
@@ -99,8 +104,6 @@
       <div class="field" id="field-epochs" style="display:none">
         <label><span class="lbl-main">Training passes — neural models <i class="lbl-tech">epochs · CTGAN / TVAE / CopulaGAN</i></span> <output id="out-epochs">60</output></label>
         <input type="range" id="in-epochs" min="10" max="600" step="10" value="60"></div>
-      <div class="field"><label><span class="lbl-main">Data held back for testing <i class="lbl-tech">holdout · privacy &amp; usefulness</i></span> <output id="out-holdout">0.25</output></label>
-        <input type="range" id="in-holdout" min="0.10" max="0.40" step="0.05" value="0.25"></div>
       <div class="field"><label><span class="lbl-main">What the usefulness test predicts <i class="lbl-tech">ML-efficacy target / table</i></span></label><div id="target-fields"></div></div>
       <div class="field"><label><span class="lbl-main">Sensitive field the safety test guesses <i class="lbl-tech">privacy attack column / table</i></span></label><div id="cap-fields"></div></div>
     </div>
@@ -110,6 +113,7 @@
       <div id="synth-list"></div>
     </div>
   </aside>
+  <div class="resizer" id="resize-left" title="Drag to resize"></div>
 
   <!-- ============ RIGHT ============ -->
   <main class="right">
@@ -222,6 +226,33 @@
       <span class="jobbar-lbl" id="jobbar-lbl"></span></div>
     <div class="console" id="console"></div>
   </main>
+  <div class="resizer" id="resize-chat" title="Drag to resize"></div>
+
+  <!-- ============ CHAT ============ -->
+  <aside class="chatdock" id="chatdock">
+    <div class="chatdock-head">
+      <span class="chatdock-title"><span class="chatdock-dot"></span>Assistant</span>
+      <div class="chatdock-head-actions">
+        <button class="chatdock-size" id="chatdock-size" title="Shrink to a side panel" aria-label="Shrink to a side panel"></button>
+        <button class="chatdock-close" id="chatdock-close" title="Hide assistant" aria-label="Hide assistant">›</button>
+      </div>
+    </div>
+    <div class="chat-log" id="chat-log"></div>
+    <div class="composer" id="chat-composer">
+      <form class="composer-row" id="chat-composer-form">
+        <label class="attach-icon" id="chat-attach-btn" title="Attach CSV files">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+        </label>
+        <input type="text" id="chat-text-input" class="text-input" autocomplete="off"
+          placeholder="Attach CSV files to begin, or ask a question…">
+        <button type="submit" class="send-btn" id="chat-send-btn" title="Send" aria-label="Send">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+        </button>
+      </form>
+    </div>
+  </aside>
 </div>
 
 <div class="modal-backdrop" id="docs-backdrop">
@@ -236,9 +267,9 @@
         that produces rows, which can capture more complex, non-linear relationships at the cost of a training
         loop.</p>
 
-      <div class="doc-card" style="border-left-color:#2ca02c">
+      <div class="doc-card" id="doc-gaussiancopula" style="border-left-color:#2ca02c">
         <div class="doc-card-h"><span class="dot" style="background:#2ca02c"></span><h3>Gaussian Copula</h3></div>
-        <div class="doc-tag">Single-table · statistical · fastest</div>
+        <div class="doc-tag">Single-table, FK-linked · statistical · fastest</div>
         <ol class="doc-steps">
           <li><b>Fit each column's own shape.</b> Learn a univariate distribution (Beta, Gamma, Gaussian,
             truncated, or an empirical curve) that best matches each column alone, ignoring every other
@@ -258,10 +289,12 @@
         <div class="doc-foot"><b>Best for:</b> a clean single table where you mainly need correct per-column
           shapes plus linear/rank correlation preserved, near-instantly and with no training loop.
           <b>Trade-off:</b> only captures linear/rank relationships; a 3-way interaction between columns can
-          slip through.</div>
+          slip through. When tables are linked, its foreign keys are relinked to the synthetic parent's
+          rows afterward (matching the real per-parent count), so referential integrity holds too, just
+          without HMA's joint cross-table modeling.</div>
       </div>
 
-      <div class="doc-card" style="border-left-color:#1f77b4">
+      <div class="doc-card" id="doc-hma" style="border-left-color:#1f77b4">
         <div class="doc-card-h"><span class="dot" style="background:#1f77b4"></span><h3>HMA (Hierarchical Modeling Algorithm)</h3></div>
         <div class="doc-tag">Multi-table · statistical · preserves keys</div>
         <ol class="doc-steps">
@@ -286,7 +319,7 @@
           schemas.</div>
       </div>
 
-      <div class="doc-card" style="border-left-color:#d62728">
+      <div class="doc-card" id="doc-ctgan" style="border-left-color:#d62728">
         <div class="doc-card-h"><span class="dot" style="background:#d62728"></span><h3>CTGAN</h3></div>
         <div class="doc-tag">Single-table, FK-linked · neural (GAN) · captures non-linear structure</div>
         <ol class="doc-steps">
@@ -312,7 +345,7 @@
           referential integrity holds too, just without HMA's joint cross-table modeling.</div>
       </div>
 
-      <div class="doc-card" style="border-left-color:#9467bd">
+      <div class="doc-card" id="doc-tvae" style="border-left-color:#9467bd">
         <div class="doc-card-h"><span class="dot" style="background:#9467bd"></span><h3>TVAE</h3></div>
         <div class="doc-tag">Single-table, FK-linked · neural (VAE) · steadier training</div>
         <ol class="doc-steps">
@@ -334,7 +367,7 @@
           tables are linked.</div>
       </div>
 
-      <div class="doc-card" style="border-left-color:#ff7f0e">
+      <div class="doc-card" id="doc-copulagan" style="border-left-color:#ff7f0e">
         <div class="doc-card-h"><span class="dot" style="background:#ff7f0e"></span><h3>CopulaGAN</h3></div>
         <div class="doc-tag">Single-table, FK-linked · hybrid (copula + GAN)</div>
         <ol class="doc-steps">
@@ -359,7 +392,7 @@
           <th>Preserves FK relationships</th><th>Non-linear structure</th></tr></thead>
         <tbody>
           <tr><td class="mono"><span class="dot" style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#2ca02c;margin-right:7px"></span>GaussianCopula</td>
-            <td>single-table</td><td>statistical (copula)</td><td>fastest</td><td>no</td><td>limited (linear/rank only)</td></tr>
+            <td>single-table, FK-linked</td><td>statistical (copula)</td><td>fastest</td><td>yes, relinked after fitting</td><td>limited (linear/rank only)</td></tr>
           <tr><td class="mono"><span class="dot" style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#1f77b4;margin-right:7px"></span>HMA</td>
             <td>multi-table</td><td>statistical (recursive copula)</td><td>fast to moderate</td><td>yes, by construction</td><td>limited (per table, same as above)</td></tr>
           <tr><td class="mono"><span class="dot" style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#d62728;margin-right:7px"></span>CTGAN</td>
@@ -376,6 +409,32 @@
   </div>
 </div>
 
+<!-- shown while the chat assistant has popped out the Schema or Data Model
+     tab for editing (server signals this via a "focus" field) -- hidden by
+     default, see .chat-savebar in style.css -->
+<div class="chat-savebar" id="chat-savebar">
+  <span id="chat-savebar-label">Editing the schema.</span>
+  <button class="tbtn primary" id="chat-savebar-save">Save &amp; continue</button>
+  <a class="link-inline" id="chat-savebar-cancel">Cancel</a>
+</div>
+
+<!-- the assistant's general open_config_panel tool: brings whichever
+     left-sidebar config panel (Structure & keys / Constraints / PII
+     handling / Synthesizers / Run parameters) the user needs into the
+     middle of the screen, highlighted -- the REAL panel element gets
+     moved in here (not a clone), so every control still works exactly as
+     it does in the sidebar, see openConfigPanel() in chat.js -->
+<div class="modal-backdrop" id="config-backdrop">
+  <div class="modal config-modal" id="config-modal" role="dialog" aria-modal="true" aria-label="Configuration">
+    <button class="modal-close" id="config-modal-close" aria-label="Close">&times;</button>
+    <div id="config-modal-body"></div>
+    <div class="config-modal-foot">
+      <button class="tbtn primary" id="config-modal-done">Done, continue</button>
+    </div>
+  </div>
+</div>
+
 <script src="/static/app.js"></script>
+<script src="/static/chat.js"></script>
 </body>
 </html>

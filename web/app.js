@@ -16,14 +16,15 @@ function apiFetch(url,opts={}){
 const SDTYPES=["categorical","numerical","datetime","boolean","id","unknown"];
 const SYNTHS=["HMA","GaussianCopula","CTGAN","TVAE","CopulaGAN"];
 const GAN_SYNTHS=new Set(["CTGAN","TVAE","CopulaGAN"]);
-// HMA fits every table jointly, so relationships come out of the model itself.
-// CTGAN/TVAE/CopulaGAN still fit each table independently, but their foreign
-// keys are relinked afterward (see synth_eval.link) so referential integrity
-// holds too: a weaker guarantee than HMA (no cross-table correlation), so
-// they get their own "linked" tier instead of being lumped in with HMA.
-const JOINT_MULTI_TABLE_SYNTHS=new Set(["HMA"]);
-const LINKED_MULTI_TABLE_SYNTHS=new Set(["CTGAN","TVAE","CopulaGAN"]);
+// When a relationship is declared, every synthesizer honors it: HMA fits
+// tables jointly, the other four fit independently and get their foreign
+// keys relinked afterward (see synth_eval.link). Same referential-integrity
+// guarantee either way, so they're not split into separate UI tiers.
 const PALETTE={real:"#555f5c",HMA:"#1f77b4",GaussianCopula:"#2ca02c",CTGAN:"#d62728",TVAE:"#9467bd",CopulaGAN:"#ff7f0e"};
+// how much real data to hold back for privacy/utility testing -- a fixed
+// best-practice value (the standard 20-30% test-split range), not something
+// worth exposing as a tunable knob
+const HOLDOUT_FRAC=0.25;
 let DATA=null, detected={}, selectedTable=null;
 let selectedSynths=new Set(["HMA","GaussianCopula"]);
 
@@ -54,7 +55,7 @@ $("#btn-theme").addEventListener("click",()=>{
 });
 
 const BACKEND_HELP="Can't reach the backend.\n\nOpen this dashboard THROUGH the server, not as a file:\n\n"
-  +"    uvicorn server:app --port 8000\n\nthen visit http://localhost:8000 (address must start with http://).";
+  +"    uvicorn backend.server:app --port 8000\n\nthen visit http://localhost:8000 (address must start with http://).";
 if(location.protocol==="file:") setTimeout(()=>alert(BACKEND_HELP),300);
 
 /* ---------------- collapsible left panels ---------------- */
@@ -99,6 +100,7 @@ function init(payload){
   syncEntity(); renderStructureMirror(); updateSummaries();
   selectTable(Object.keys(DATA.tables)[0]);
   activateTab("pane-schema");
+  if(typeof chatOnDataLoaded==="function") chatOnDataLoaded();
 }
 /* compact state chips shown in each collapsed panel header */
 function updateSummaries(){
@@ -109,7 +111,7 @@ function updateSummaries(){
   $("#sum-constraints").textContent = nc ? (nc+" rule"+(nc>1?"s":"")) : "none";
   $("#sum-synths").textContent=[...selectedSynths].join(", ")||"none";
   const sp=$("#sum-pii"); if(sp) sp.textContent=piiSummary();
-  $("#sum-params").textContent="×"+(+$("#in-scale").value).toFixed(2).replace(/0$/,"")+" · holdout "+Math.round(100*$("#in-holdout").value)+"%";
+  $("#sum-params").textContent="×"+(+$("#in-scale").value).toFixed(2).replace(/0$/,"");
 }
 
 /* ---------------- left: seed list ---------------- */
@@ -832,22 +834,10 @@ function renderAdvisor(profile){
 function renderRecipe(){
   const chip=s=>`<span class="chip ${selectedSynths.has(s)?"on":""}" data-s="${s}">
     <span class="dot" style="background:${PALETTE[s]}"></span>${s}</span>`;
-  const single=SYNTHS.filter(s=>!JOINT_MULTI_TABLE_SYNTHS.has(s) && !LINKED_MULTI_TABLE_SYNTHS.has(s));
-  const joint=SYNTHS.filter(s=>JOINT_MULTI_TABLE_SYNTHS.has(s));
-  const linked=SYNTHS.filter(s=>LINKED_MULTI_TABLE_SYNTHS.has(s));
-  // the multi-table groups only earn their keep once there's more than one table to relate
-  const showMulti=DATA && Object.keys(DATA.tables).length>1;
-  let h=`<div class="chip-group"><div class="chip-group-label">Single-table</div>
-    <div class="chips">${single.map(chip).join("")}</div></div>`;
-  if(showMulti){
-    h+=`<div class="chip-group"><div class="chip-group-label">Multi-table
-        <i class="ihelp" data-tip="Fits every table jointly, so relationships come straight out of the model.">i</i></div>
-      <div class="chips">${joint.map(chip).join("")}</div></div>`;
-    h+=`<div class="chip-group"><div class="chip-group-label">Multi-table (linked)
-        <i class="ihelp" data-tip="Fits each table on its own, then relinks foreign keys so they point at real synthetic parent rows, matching the real number of children per parent. Referential integrity holds, but cross-table correlations aren't modeled the way HMA's are.">i</i></div>
-      <div class="chips">${linked.map(chip).join("")}</div></div>`;
-  }
-  $("#synth-chips").innerHTML=h;
+  // one flat list -- when a relationship is declared, every synthesizer
+  // honors it (HMA by fitting tables jointly, the rest by relinking foreign
+  // keys afterward), so there's no single/multi-table split worth showing
+  $("#synth-chips").innerHTML=`<div class="chips">${SYNTHS.map(chip).join("")}</div>`;
   $$("#synth-chips .chip").forEach(ch=>ch.addEventListener("click",()=>{
     const s=ch.dataset.s;
     selectedSynths.has(s)?selectedSynths.delete(s):selectedSynths.add(s);
@@ -890,7 +880,7 @@ function updateScdVisibility(){ $("#field-scd").style.display=$("#in-entity").va
 function updateEpochsVisibility(){
   $("#field-epochs").style.display=[...selectedSynths].some(s=>GAN_SYNTHS.has(s))?"block":"none";
 }
-[["epochs",v=>v],["scale",v=>(+v).toFixed(2).replace(/0$/,"")],["holdout",v=>v]].forEach(([k,f])=>{
+[["epochs",v=>v],["scale",v=>(+v).toFixed(2).replace(/0$/,"")]].forEach(([k,f])=>{
   $(`#in-${k}`).addEventListener("input",e=>{$(`#out-${k}`).textContent=f(e.target.value); updateSummaries();});
 });
 
@@ -938,30 +928,85 @@ $("#rep-nav").addEventListener("click",e=>{ const b=e.target.closest(".rep-navbt
   apply();
   btn.addEventListener("click",toggle); rail.addEventListener("click",toggle);
 })();
+
+/* drag-to-resize: .left and #chatdock both use this, a plain px width on
+   the element (persisted per panel) that CSS !important collapse rules
+   still win over -- see .app.leftfold .left / .chatdock.collapsed */
+function makeResizer(handle,target,{min,max,storageKey,invert,onEnd}){
+  let startX=0,startW=0,curW=0,dragging=false;
+  const clamp=w=>Math.max(min,Math.min(max,w));
+  let saved=null; try{ saved=+localStorage.getItem(storageKey); }catch(e){}
+  if(saved>=min && saved<=max) target.style.width=saved+"px";
+  handle.addEventListener("mousedown",e=>{
+    dragging=true; startX=e.clientX; startW=curW=target.getBoundingClientRect().width;
+    handle.classList.add("active"); document.body.classList.add("resizing-x");
+    target.style.transition="none";   // 1:1 with the mouse, no lag; also avoids
+    e.preventDefault();               // reading a mid-transition width below
+  });
+  window.addEventListener("mousemove",e=>{
+    if(!dragging) return;
+    const dx=(e.clientX-startX)*(invert?-1:1);
+    curW=clamp(startW+dx);
+    target.style.width=curW+"px";
+  });
+  window.addEventListener("mouseup",()=>{
+    if(!dragging) return;
+    dragging=false; handle.classList.remove("active"); document.body.classList.remove("resizing-x");
+    target.style.transition="";       // restore the CSS transition for future programmatic changes
+    try{ localStorage.setItem(storageKey,Math.round(curW)); }catch(e){}
+    if(onEnd) onEnd();
+  });
+}
+makeResizer($("#resize-left"),$(".left"),{min:280,max:720,storageKey:"synthlab-left-w",
+  onEnd:()=>{ if(DATA) setTimeout(()=>{ if($("#pane-model").classList.contains("active")) drawLinks(); },50); }});
+makeResizer($("#resize-chat"),$("#chatdock"),{min:320,max:960,storageKey:"synthlab-chat-w",invert:true});
+
 $("#tabbar").addEventListener("click",e=>{
   const b=e.target.closest(".tab"); if(!b||b.classList.contains("locked")) return;
   activateTab(b.dataset.pane);
 });
-/* "How it Works" docs modal, opened from the Synthesizers panel link */
+/* "How it Works" docs modal, opened from the Synthesizers panel link, and by
+   the chat assistant's explain_synthesizer tool (openDocsModal, exposed
+   globally so chat.js can call it -- same modal, one definition) when the
+   user asks what a synthesizer is or how it works, instead of it writing
+   its own explanation from scratch every time */
+function openDocsModal(synth){
+  $("#docs-backdrop").classList.add("show");
+  if(synth && synth!=="all"){
+    const card=document.getElementById(`doc-${synth.toLowerCase()}`);
+    if(card){
+      card.scrollIntoView({behavior:"smooth",block:"start"});
+      card.classList.add("doc-card-highlight");
+      setTimeout(()=>card.classList.remove("doc-card-highlight"),1600);
+    }
+  }
+}
+function closeDocsModal(){ $("#docs-backdrop").classList.remove("show"); }
 (function(){
   const backdrop=$("#docs-backdrop");
-  const open=()=>backdrop.classList.add("show");
-  const close=()=>backdrop.classList.remove("show");
-  $("#link-how-works").addEventListener("click",e=>{ e.preventDefault(); open(); });
-  $("#docs-close").addEventListener("click",close);
-  backdrop.addEventListener("click",e=>{ if(e.target===backdrop) close(); });
-  document.addEventListener("keydown",e=>{ if(e.key==="Escape") close(); });
+  $("#link-how-works").addEventListener("click",e=>{ e.preventDefault(); openDocsModal(); });
+  $("#docs-close").addEventListener("click",closeDocsModal);
+  backdrop.addEventListener("click",e=>{ if(e.target===backdrop) closeDocsModal(); });
+  document.addEventListener("keydown",e=>{ if(e.key==="Escape") closeDocsModal(); });
 })();
 
 /* ---------------- run + poll ---------------- */
-$("#btn-run").addEventListener("click",async()=>{
-  if(!DATA) return;
+/* reads the live Schema tab -- used by the manual Synthesize button and
+   by the chat assistant (sent with every message so a link drawn there
+   and one described in words end up in the same plan) */
+function collectSchema(){
+  if(!DATA) return {};
   const schema={};
   for(const t of Object.keys(DATA.tables)){
     const sdtypes={};
     $$(`.sdtype-sel[data-table="${t}"]`).forEach(s=>{ if(s.value!==detected[t][s.dataset.col]) sdtypes[s.dataset.col]=s.value; });
     schema[t]={sdtypes, primary_key:$(`#pk-${t}`).value||null};
   }
+  return schema;
+}
+$("#btn-run").addEventListener("click",async()=>{
+  if(!DATA) return;
+  const schema=collectSchema();
   const targets={}; Object.keys(DATA.tables).forEach(t=>targets[t]=$(`#target-${t}`).value);
   const cap_sensitive={};
   Object.keys(DATA.tables).forEach(t=>{
@@ -972,16 +1017,23 @@ $("#btn-run").addEventListener("click",async()=>{
     entity_key:MODEL.hub.key||"", entity_children:MODEL.hub.children.slice(),
     scd_effective:$("#in-scd-eff").value||"", scd_end:$("#in-scd-end").value||"", scd_current:$("#in-scd-cur").value||"",
     synths:[...selectedSynths],
-    epochs:+$("#in-epochs").value, scale:+$("#in-scale").value, holdout:+$("#in-holdout").value};
+    epochs:+$("#in-epochs").value, scale:+$("#in-scale").value, holdout:HOLDOUT_FRAC};
   let r;
   try{ r=await apiFetch("/api/synthesize",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(cfg)}); }
   catch(e){ alert(BACKEND_HELP); return; }
   if(!r.ok){ alert((await r.json()).error||"failed to start"); return; }
+  beginJobUI();
+  poll();
+});
+/* shared by the manual Synthesize button and the chat assistant's
+   run_synthesis tool -- one job UI, whichever side started it */
+let JOB_START=0;
+function beginJobUI(){
   setRunningUI(true); setStatus("run","synthesizing");
   $("#console").classList.add("show"); $("#console").innerHTML="";
   $("#jobbar").classList.add("show"); $("#jobbar-fill").style.width="0%"; $("#jobbar-lbl").textContent="starting…";
-  poll();
-});
+  JOB_START=Date.now();
+}
 /* toggle the toolbar between Synthesize (idle) and Cancel (running) */
 function setRunningUI(running){
   $("#btn-run").style.display = running ? "none" : "";
@@ -1000,10 +1052,18 @@ function setJobBar(pct,status){
   pct=Math.max(0,Math.min(100, pct||0));
   $("#jobbar-fill").style.width=pct+"%";
   const label=status==="done"?"complete":status==="error"?"failed":status==="cancelled"?"cancelled":"synthesizing…";
-  $("#jobbar-lbl").textContent=`${label} ${pct.toFixed(0)}%`;
+  let t="";
+  if(status==="running"&&JOB_START){
+    const el=Math.floor((Date.now()-JOB_START)/1000);
+    t=` · ${Math.floor(el/60)}m${(el%60).toString().padStart(2,"0")}s`;
+  }
+  $("#jobbar-lbl").textContent=`${label} ${pct.toFixed(0)}%${t}`;
 }
-async function poll(){
-  let j; try{ j=await (await apiFetch("/api/progress")).json(); }catch(e){ setStatus("err","lost backend"); return; }
+/* onDone(res, err), if given, fires once with the fetched results (after
+   renderReport already ran) or an error string -- lets the chat assistant
+   narrate the same run the jobbar/report just showed, without polling twice */
+async function poll(onDone){
+  let j; try{ j=await (await apiFetch("/api/progress")).json(); }catch(e){ setStatus("err","lost backend"); if(onDone) onDone(null,"lost backend"); return; }
   const con=$("#console");
   con.innerHTML=j.log.map((l,i)=>{
     const cls=l.startsWith("⚠")?"warn":l.startsWith("✗")||l.startsWith("■")?"err":l.startsWith("Done")?"ok":l.startsWith("⏳")?"":"";
@@ -1012,14 +1072,17 @@ async function poll(){
   }).join("");
   con.scrollTop=con.scrollHeight;
   setJobBar(j.pct, j.status);
-  if(j.status==="running"){ setTimeout(poll,1500); return; }
+  if(j.status==="running"){ setTimeout(()=>poll(onDone),1500); return; }
   setRunningUI(false);
   if(j.status==="done"){ setJobBar(100,"done"); setStatus("done","complete");
-    renderReport(await (await apiFetch("/api/results")).json());
-    setTimeout(()=>{$("#console").classList.remove("show"); $("#jobbar").classList.remove("show");},1500); }
+    const res=await (await apiFetch("/api/results")).json();
+    renderReport(res);
+    setTimeout(()=>{$("#console").classList.remove("show"); $("#jobbar").classList.remove("show");},1500);
+    if(onDone) onDone(res,null); }
   else if(j.status==="cancelled"){ setStatus("","cancelled");
-    setTimeout(()=>{$("#console").classList.remove("show"); $("#jobbar").classList.remove("show");},1600); }
-  else { setStatus("err","failed — see log"); }
+    setTimeout(()=>{$("#console").classList.remove("show"); $("#jobbar").classList.remove("show");},1600);
+    if(onDone) onDone(null,"cancelled"); }
+  else { setStatus("err","failed — see log"); if(onDone) onDone(null, j.error||"failed"); }
 }
 
 /* ---------------- report ---------------- */
@@ -1295,8 +1358,10 @@ function bizWhy(res,s,lb){
   if(crossable) leads.push("links across tables");
   if(my[2].score!=null && my[2].score>=bestUtil-1e-9) leads.push("usefulness");
   if(leads.length) return "Leads on "+leads.slice(0,2).join(" and ")+".";
-  return crossable ? "Keeps customers consistent across tables."
-                   : "Single-table — links across tables aren't preserved.";
+  if(crossable) return "Keeps customers consistent across tables.";
+  if(s==="HMA" && res.relationships_modeled) return "Models every table jointly, so links hold by construction.";
+  if((res.linked_synths||[]).includes(s)) return "Foreign keys relinked after fitting, so referential integrity holds.";
+  return "Single-table — links across tables aren't preserved.";
 }
 // one plain-English recommendation sentence built from the verdicts
 function recommendation(res,s,dims){
@@ -1774,16 +1839,18 @@ const TAB_DIM={
   "sec-pairs":   {get:(res,s)=>num((((res.summary||{})[s]||{}).fidelity||{}).column_pair_trends), good:0.8, ok:0.6},
   "sec-ri":      {get:(res,s)=>num((((res.summary||{})[s]||{}).fidelity||{}).structure), good:0.8, ok:0.6},
   "sec-utility": {get:(res,s)=>num((((res.summary||{})[s]||{}).utility||{}).score), good:0.85, ok:0.7},
-  "sec-privacy": {safety:true},
+  // safety's verdict is a gate (PASS/WARN/FAIL across the attack checks), not a
+  // threshold on the score -- but the score itself still exists (same field
+  // bizDims uses for the exec summary card) and shouldn't show as n/a here
+  "sec-privacy": {safety:true, get:(res,s)=>num((((res.summary||{})[s]||{}).privacy||{}).score)},
 };
 function tabGlance(res,id){
   const cfg=TAB_DIM[id]; if(!cfg) return "";
   const pal=n=>(res.palette&&res.palette[n])||PALETTE[n]||"#888";
   const dt=n=>`<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${pal(n)};margin-right:7px"></span>`;
   const rows=(res.synths||[]).map(s=>{
-    let score=null, verdict;
-    if(cfg.safety){ verdict=safetyVerdict(res,s); }
-    else { score=cfg.get(res,s); verdict=scoreVerdict(score,cfg.good,cfg.ok); }
+    const score=cfg.get(res,s);
+    const verdict=cfg.safety ? safetyVerdict(res,s) : scoreVerdict(score,cfg.good,cfg.ok);
     const val = score!=null ? Math.round(score*100)+"%" : "n/a";
     return `<div class="glance-row"><span class="glance-name">${dt(s)}${esc(s)}</span>
       <span class="glance-r"><span class="bm-pct">${val}</span>${verdict?verdictBadge(verdict):`<span class="verdict-na">n/a</span>`}</span></div>`;
@@ -1792,20 +1859,28 @@ function tabGlance(res,id){
 }
 function applyBizIntros(res){
   for(const id in BIZ_INTRO){
-    const sec=document.getElementById(id); if(!sec || sec.querySelector(".biz-intro")) continue;
-    const e=BIZ_INTRO[id];
-    // move the technical content (score cards, formulas, tables, charts) into a
-    // collapsed "Show the numbers" expander, leaving only the plain intro visible
-    const details=document.createElement("details"); details.className="biz-expander";
-    details.innerHTML=`<summary><span class="bx-open">Show the numbers</span>`
-      + `<span class="bx-close">Hide the numbers</span></summary>`;
-    const wrap=document.createElement("div"); wrap.className="biz-details";
-    while(sec.firstChild) wrap.appendChild(sec.firstChild);   // listeners move with the nodes
-    details.appendChild(wrap);
-    const intro=document.createElement("div"); intro.className="biz-intro";
-    intro.innerHTML=`<h4>${esc(e.t)}</h4><p>${esc(e.b)}</p>`;
-    sec.appendChild(intro);
-    sec.insertAdjacentHTML("beforeend", tabGlance(res,id));   // at-a-glance verdict per generator
-    sec.appendChild(details);
+    const sec=document.getElementById(id); if(!sec) continue;
+    let intro=sec.querySelector(".biz-intro");
+    if(!intro){
+      const e=BIZ_INTRO[id];
+      // move the technical content (score cards, formulas, tables, charts) into a
+      // collapsed "Show the numbers" expander, leaving only the plain intro visible.
+      // Built ONCE per page load (moving sec's children into the expander a second
+      // time would just re-move an already-emptied node), unlike the glance table
+      // below, which reflects the latest run and must refresh every time.
+      const details=document.createElement("details"); details.className="biz-expander";
+      details.innerHTML=`<summary><span class="bx-open">Show the numbers</span>`
+        + `<span class="bx-close">Hide the numbers</span></summary>`;
+      const wrap=document.createElement("div"); wrap.className="biz-details";
+      while(sec.firstChild) wrap.appendChild(sec.firstChild);   // listeners move with the nodes
+      details.appendChild(wrap);
+      intro=document.createElement("div"); intro.className="biz-intro";
+      intro.innerHTML=`<h4>${esc(e.t)}</h4><p>${esc(e.b)}</p>`;
+      sec.appendChild(intro);
+      sec.appendChild(details);
+    }
+    const oldGlance=sec.querySelector(".biz-glance");
+    if(oldGlance) oldGlance.remove();
+    intro.insertAdjacentHTML("afterend", tabGlance(res,id));   // at-a-glance verdict per generator, refreshed every render
   }
 }

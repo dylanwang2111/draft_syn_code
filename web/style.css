@@ -84,8 +84,20 @@ button:not(:disabled):active{transform:translateY(1px)}
 .left{width:404px; flex:none; border-right:1px solid var(--line); background:var(--panel);
   overflow-y:auto; padding:18px; transition:width .18s ease, padding .18s ease}
 /* collapsed: the config column folds away entirely so the canvas / report gets
-   the full width.  The toolbar button (and the rail) bring it back. */
-.app.leftfold .left{width:0; padding:0; border-right:none; overflow:hidden}
+   the full width.  The toolbar button (and the rail) bring it back.
+   !important: a dragged .left carries an inline width (higher specificity
+   than any class selector), this still has to win over it when collapsed. */
+.app.leftfold .left{width:0 !important; padding:0; border-right:none; overflow:hidden}
+.app.leftfold #resize-left{display:none}
+
+/* drag handles between .left/<main>/.chatdock -- thin, nearly invisible at
+   rest, brightens on hover/drag so it doesn't clutter the chrome */
+.resizer{flex:none; width:5px; cursor:col-resize; position:relative; background:transparent}
+.resizer::after{content:""; position:absolute; top:0; bottom:0; left:1px; right:1px;
+  background:var(--line); transition:background .15s}
+.resizer:hover::after,.resizer.active::after{background:var(--blue)}
+body.resizing-x{cursor:col-resize !important; user-select:none}
+body.resizing-x *{user-select:none}
 .leftrail{display:none; flex:none; width:26px; border-right:1px solid var(--line);
   background:var(--panel-2); cursor:pointer; align-items:center; justify-content:center}
 .app.leftfold .leftrail{display:flex}
@@ -182,10 +194,6 @@ input[type=range]{width:100%; accent-color:var(--blue)}
 .chip .dot{width:9px; height:9px; border-radius:50%; opacity:.4}
 .chip:hover{border-color:var(--sky); color:var(--ink)}
 .chip.on{border-color:var(--blue); color:var(--ink); background:var(--tint)} .chip.on .dot{opacity:1}
-/* grouped synth chips: Single-table / Multi-table */
-.chip-group+.chip-group{margin-top:10px}
-.chip-group-label{display:flex; align-items:center; font-family:var(--mono); font-size:9.5px;
-  letter-spacing:.08em; text-transform:uppercase; color:var(--faint); margin-bottom:6px}
 .hint{font-size:11px; color:var(--faint); margin-top:5px; line-height:1.4}
 select{background:var(--panel); color:var(--ink); border:1px solid var(--line); border-radius:7px;
   font-family:var(--mono); font-size:11.5px; padding:5px 8px; cursor:pointer; width:100%}
@@ -486,6 +494,11 @@ table.rep td{font-variant-numeric:tabular-nums}
 .doc-lead{font-size:13px; color:var(--muted); max-width:820px; margin-bottom:22px; line-height:1.6}
 .doc-card{background:var(--panel); border:1px solid var(--line); border-left:4px solid var(--line);
   border-radius:12px; padding:16px 20px; margin-bottom:16px; box-shadow:var(--shadow)}
+/* briefly called out when the chat assistant's explain_synthesizer tool
+   scrolls to a specific card, so it's obvious which one it means */
+.doc-card-highlight{animation:doccardpulse 1.6s ease}
+@keyframes doccardpulse{0%{box-shadow:0 0 0 3px var(--blue), var(--shadow)}
+  70%{box-shadow:0 0 0 3px var(--blue), var(--shadow)} 100%{box-shadow:var(--shadow)}}
 .doc-card-h{display:flex; align-items:center; gap:10px; margin-bottom:2px}
 .doc-card-h .dot{width:10px; height:10px; border-radius:50%; flex:none}
 .doc-card-h h3{font-family:var(--disp); font-weight:600; font-size:16.5px; color:var(--ink)}
@@ -668,3 +681,127 @@ table.rep td{font-variant-numeric:tabular-nums}
 @keyframes sheen{from{background-position:180% 0}to{background-position:-80% 0}}
 .jobbar-lbl{position:absolute; inset:0; display:flex; align-items:center; gap:8px; padding:0 12px;
   font-family:var(--mono); font-size:11px; color:var(--ink); pointer-events:none}
+
+/* ============ chat assistant dock ============
+   A third flex child of .app, alongside .left and <main class="right">.
+   A run started from here shows up in the SAME #jobbar/#console/report as
+   one started from the toolbar's Synthesize button -- this only adds the
+   conversation layer, not a second copy of any of that.
+   Two sizes: expanded (default -- "the main interface is chat") and
+   .docked (a compact side panel for when the dashboard should lead). */
+.chatdock{width:min(42vw,640px); flex:none; border-left:1px solid var(--line);
+  display:flex; flex-direction:column; overflow:hidden;
+  transition:width .28s cubic-bezier(.2,.8,.2,1), opacity .2s ease;
+  background:
+    radial-gradient(560px 320px at 100% -6%, var(--tint) 0%, transparent 60%),
+    radial-gradient(420px 260px at -10% 0%, color-mix(in srgb, var(--red) 4%, transparent) 0%, transparent 55%),
+    var(--panel)}
+.chatdock.collapsed{width:0 !important; opacity:0; pointer-events:none}
+
+.chatdock-head{flex:none; display:flex; align-items:center; justify-content:space-between;
+  padding:13px 16px; border-bottom:1px solid var(--line); background:color-mix(in srgb, var(--panel) 70%, transparent);
+  backdrop-filter:blur(6px)}
+.chatdock-title{display:inline-flex; align-items:center; gap:8px;
+  font-family:var(--disp); font-weight:600; font-size:14.5px; color:var(--ink)}
+.chatdock-dot{width:7px; height:7px; border-radius:50%; background:var(--pass); flex:none;
+  box-shadow:0 0 0 0 color-mix(in srgb, var(--pass) 55%, transparent);
+  animation:chatpulse 2.2s ease-out infinite}
+@keyframes chatpulse{
+  0%{box-shadow:0 0 0 0 color-mix(in srgb, var(--pass) 45%, transparent)}
+  70%{box-shadow:0 0 0 6px color-mix(in srgb, var(--pass) 0%, transparent)}
+  100%{box-shadow:0 0 0 0 color-mix(in srgb, var(--pass) 0%, transparent)}}
+.chatdock-head-actions{display:flex; align-items:center; gap:2px}
+.chatdock-size,.chatdock-close{background:none; border:none; color:var(--muted); cursor:pointer;
+  border-radius:7px; display:flex; align-items:center; justify-content:center; transition:.15s}
+.chatdock-size{width:28px; height:28px}
+.chatdock-size svg{width:13px; height:13px}
+.chatdock-close{width:28px; height:28px; font-size:18px; line-height:1}
+.chatdock-size:hover,.chatdock-close:hover{background:var(--panel-2); color:var(--ink)}
+
+.chat-log{flex:1; min-height:0; overflow-y:auto; padding:20px 16px; display:flex;
+  flex-direction:column; gap:15px}
+.msg-row{display:flex; gap:9px; align-items:flex-end; max-width:88%; animation:msgIn .28s cubic-bezier(.2,.8,.2,1)}
+@keyframes msgIn{from{opacity:0; transform:translateY(6px)} to{opacity:1; transform:none}}
+.msg-row.bot{align-self:flex-start}
+.msg-row.user{align-self:flex-end; flex-direction:row-reverse}
+.avatar{flex:none; width:25px; height:25px; border-radius:50%; display:flex; align-items:center;
+  justify-content:center; font-family:var(--mono); font-size:9.5px; font-weight:700; text-transform:uppercase}
+.avatar.bot{background:linear-gradient(155deg,var(--blue),var(--blue-deep)); color:#fff;
+  box-shadow:0 2px 7px rgba(0,121,193,.35)}
+.avatar.user{background:var(--panel-2); color:var(--muted); border:1px solid var(--line)}
+.bubble{padding:10px 14px; border-radius:14px; font-size:13.5px; line-height:1.56; box-shadow:var(--shadow)}
+.bubble.bot{background:var(--panel-2); border:1px solid var(--line); border-bottom-left-radius:4px; color:var(--ink)}
+.bubble.user{background:linear-gradient(155deg,var(--blue),var(--blue-deep)); color:#fff; border-bottom-right-radius:4px}
+.bubble b{font-weight:600}
+
+.chat-btn{display:inline-flex; align-items:center; gap:6px; margin-top:9px; background:var(--blue);
+  color:#fff; font-size:12px; font-weight:600; padding:7px 13px; border-radius:999px; text-decoration:none;
+  box-shadow:0 2px 8px rgba(0,121,193,.28)}
+.chat-btn:hover{background:var(--blue-deep); transform:translateY(-1px)}
+.chat-btn:active{transform:none}
+.chat-btn:disabled{opacity:.6; cursor:default; transform:none}
+.chat-btn.dl{background:var(--panel); color:var(--navy); border:1px solid var(--line); box-shadow:none}
+.chat-btn.dl:hover{border-color:var(--blue); color:var(--blue)}
+
+.bubble.typing-bubble{padding:13px 15px}
+.typing{display:inline-flex; gap:4px}
+.typing i{width:6px; height:6px; border-radius:50%; background:var(--sky); display:inline-block;
+  animation:bounce 1.1s infinite ease-in-out}
+.typing i:nth-child(2){animation-delay:.15s} .typing i:nth-child(3){animation-delay:.3s}
+@keyframes bounce{0%,60%,100%{transform:translateY(0); opacity:.45} 30%{transform:translateY(-4px); opacity:1}}
+
+.chatdock .composer{flex:none; padding:12px 14px 16px}
+.chatdock .composer-row{display:flex; align-items:center; gap:6px; background:var(--panel-2);
+  border:1px solid var(--line); border-radius:999px; padding:5px 5px 5px 6px; transition:.15s;
+  box-shadow:var(--shadow)}
+.chatdock .composer-row:focus-within{border-color:var(--blue); box-shadow:0 0 0 3px color-mix(in srgb, var(--blue) 14%, transparent)}
+.attach-icon{flex:none; display:flex; align-items:center; justify-content:center; width:30px; height:30px;
+  border-radius:50%; color:var(--muted); cursor:pointer; transition:.15s}
+.attach-icon:hover{background:var(--panel); color:var(--blue)}
+.attach-icon svg{width:15px; height:15px}
+.text-input{flex:1; min-width:0; border:none; background:transparent; color:var(--ink);
+  font-family:var(--sans); font-size:13px; padding:7px 2px}
+.text-input:focus{outline:none}
+.text-input::placeholder{color:var(--faint)}
+.send-btn{flex:none; width:30px; height:30px; border-radius:50%; background:var(--blue); color:#fff;
+  display:flex; align-items:center; justify-content:center; transition:.15s}
+.send-btn:hover{background:var(--blue-deep); transform:scale(1.06)}
+.send-btn svg{width:13px; height:13px}
+.send-btn:disabled{opacity:.5; cursor:default; transform:none}
+
+/* ---------------- chat focus mode ----------------
+   the assistant "pops out" the Schema or Data Model tab for the user to
+   edit: the rest of the chrome visibly steps back (dimmed, inert) and the
+   active pane gets an accent glow, so it reads as the surface to work in
+   right now -- not a modal, the tab's own content is unchanged, just
+   promoted above everything else */
+body.chat-focus .toolbar,
+body.chat-focus .left,
+body.chat-focus .chatdock{opacity:.35; filter:saturate(.5); pointer-events:none; transition:opacity .2s ease, filter .2s ease}
+body.chat-focus .right{position:relative; z-index:30}
+body.chat-focus .pane.active{box-shadow:0 0 0 3px var(--blue), var(--shadow-lg); border-radius:12px; animation:focusglow .9s ease}
+@keyframes focusglow{0%{box-shadow:0 0 0 3px color-mix(in srgb, var(--blue) 40%, transparent), var(--shadow-lg)}
+  50%{box-shadow:0 0 0 5px var(--blue), var(--shadow-lg)} 100%{box-shadow:0 0 0 3px var(--blue), var(--shadow-lg)}}
+
+.chat-savebar{display:none; position:fixed; left:50%; bottom:28px; transform:translateX(-50%);
+  z-index:40; background:var(--panel); border:1px solid var(--blue); border-radius:999px;
+  box-shadow:var(--shadow-lg); padding:10px 10px 10px 20px; align-items:center; gap:14px;
+  font-size:12.5px; color:var(--muted)}
+.chat-savebar.show{display:flex; animation:fade .18s ease}
+.chat-savebar #chat-savebar-save{margin:0}
+.chat-savebar #chat-savebar-cancel{color:var(--muted); font-size:12px}
+
+/* ---------------- config panel modal ----------------
+   the assistant's general open_config_panel tool: whichever left-sidebar
+   panel is relevant gets moved (the real element, not a clone, see
+   openConfigPanel() in chat.js) into the middle of the screen with an
+   accent glow, same "this is what to work on right now" language as
+   chat-focus, but as an actual centered/dimmed modal since a sidebar
+   panel has nowhere sensible to "pop out" to in place */
+.config-modal{box-shadow:0 0 0 3px var(--blue), var(--shadow-lg); max-width:640px; animation:focusglow .9s ease}
+.config-modal #config-modal-body .panel{margin-bottom:0}
+.config-modal #config-modal-body .panel.collapsed > :not(.panel-h){display:block !important}
+.config-modal #config-modal-body > .panel + .panel{margin-top:22px; padding-top:22px; border-top:1px dashed var(--line-soft)}
+.config-modal-foot{margin-top:20px; padding-top:16px; border-top:1px solid var(--line-soft);
+  display:flex; justify-content:flex-end}
+.config-modal-foot #config-modal-done{margin:0}

@@ -362,12 +362,43 @@ def privacy_report(
             # the sensitive field is inferable from the real data's own structure
             # (correlations, imbalance), even real rows "leak" it — an absolute
             # bar would fail every synthesizer for a property of the table.
+            #
+            # Judged on TWO lenses, taking whichever is more forgiving for PASS
+            # and requiring BOTH to agree for FAIL:
+            #   absolute gap    -- the original, baseline-agnostic bar. A tiny
+            #                      gap (e.g. 0.03) is fine no matter what.
+            #   relative loss   -- gap / headroom (headroom = 1 - base), i.e.
+            #                      what fraction of the real-data ceiling's
+            #                      remaining room the synthesizer gave up;
+            #                      equivalently "the attack succeeds X% more
+            #                      often than it already does against real
+            #                      data". Needed because a flat absolute gap
+            #                      means very different things at a 0.55
+            #                      baseline (attacker success barely moves) vs
+            #                      a 0.95 baseline (same gap, much bigger bite
+            #                      out of a much smaller remaining margin).
+            # Relative-only would flag a harmless 0.03 gap at a 0.95 baseline
+            # (tiny headroom inflates the percentage) -- the absolute lens
+            # gives that the benefit of the doubt; conversely absolute-only
+            # would miss a real, large relative jump at a high baseline that
+            # still has a "moderate-looking" raw gap. PASS needs only one
+            # lens to look fine; FAIL needs both to look bad.
             gap = base - cap
+            headroom = 1 - base
+            rel_loss = (gap / headroom) if headroom > 1e-6 else (float("inf") if gap > 1e-6 else 0.0)
+            passes = gap <= 0.05 or rel_loss <= 0.25
+            fails = gap > 0.20 and rel_loss > 1.0
+            status = "PASS" if passes else "FAIL" if fails else "WARN"
+            if status == "PASS":
+                detail = "matches the real-data ceiling"
+            elif rel_loss == float("inf"):
+                detail = "the real-data baseline leaks nothing here, but the synthetic data does"
+            else:
+                detail = f"{gap:.2f} below it (the attack succeeds {rel_loss * 100:.0f}% more often than it already does against real data)"
             verdicts["categorical_cap"] = (
-                "PASS" if gap <= 0.05 else "WARN" if gap <= 0.20 else "FAIL",
+                status,
                 f"CategoricalCAP={cap:.3f} vs {base:.3f} for a real holdout under the "
-                f"same attack{sens} — "
-                + ("matches the real-data ceiling" if gap <= 0.05 else f"{gap:.2f} below it")
+                f"same attack{sens} — " + detail
                 + ("" if base >= 0.5 else
                    " (low ceiling: the sensitive field is largely guessable from the real "
                    "data itself — population statistics, not individual disclosure)")

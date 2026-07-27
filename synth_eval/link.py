@@ -1,10 +1,12 @@
+
 """synth_eval.link — post-hoc foreign-key linking for single-table synthesizers.
 
 HMA fits parent and child tables jointly, so referential integrity holds by
-construction. A single-table synthesizer (CTGAN/TVAE/CopulaGAN) has no idea
-the other tables exist: it fits each one independently, so a child table's
-foreign-key column just comes out as whatever values that column's own model
-reproduced, almost never a real parent key.
+construction. A single-table synthesizer (GaussianCopula, CTGAN, TVAE,
+CopulaGAN) has no idea the other tables exist: it fits each one
+independently, so a child table's foreign-key column just comes out as
+whatever values that column's own model reproduced, almost never a real
+parent key.
 
 This module fixes that up after the fact: it reassigns each child table's
 foreign-key column to values drawn from the *synthetic* parent's primary key,

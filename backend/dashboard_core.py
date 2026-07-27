@@ -1,22 +1,12 @@
-"""FastAPI backend for the Synthetic Data Studio dashboard (web/index.html).
-
-Endpoints (single local user; state kept in memory):
-    GET  /                      -> the dashboard SPA
-    POST /api/upload            -> multipart CSVs; returns preview + detected metadata
-    POST /api/sample            -> load bundled sdg/seed/*.csv instead of uploading
-    POST /api/synthesize        -> start synthesis + evaluation in a worker thread
-    GET  /api/progress          -> live progress log for the running job
-    GET  /api/results           -> full evaluation report (JSON + base64 figures)
-    GET  /api/download/{s}/{t}  -> synthetic CSV for synthesizer s, table t
-
-Run with:
-    uvicorn server:app --port 8000        (then open http://localhost:8000)
+"""Framework-agnostic core of the Synthetic Data Studio dashboard: in-memory
+per-tab session state, upload/detection helpers, and the synthesis+evaluation
+worker (_run_job / _start_job) driven by both the manual /api/synthesize
+route (server.py) and the chat assistant's run_synthesis tool
+(chat_assistant.py). No FastAPI app/routes live here.
 """
 
 from __future__ import annotations
 
-import glob
-import io
 import os
 import re
 import sys
@@ -24,7 +14,6 @@ import threading
 import time
 import traceback
 import warnings
-
 
 class _TqdmTee:
     """Wrap a stderr stream: intercept SDV/tqdm phase-progress lines and forward
@@ -94,26 +83,21 @@ plt.rcParams.update({
 
 import numpy as np
 import pandas as pd
-from fastapi import FastAPI, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
-from fastapi.staticfiles import StaticFiles
+from fastapi import Request   # only for _sid's type hint below
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import synth_eval as se
-import profiler
-
-app = FastAPI(title="Synthetic Data Studio")
+from . import profiler
 
 REPORTS_DIR = "reports"
-WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
-app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 
-#: single-table synthesizers that get their foreign keys relinked post-fit
-#: (see synth_eval.link) so declared relationships hold by construction, the
-#: same way HMA's do natively.  GaussianCopula is left as the pure single-table
-#: baseline on purpose, for comparison.
-LINKABLE_SYNTHS = {"CTGAN", "TVAE", "COPULAGAN"}
-
+#: every synthesizer except HMA: each fits tables independently, then (when a
+#: relationship is declared) gets its foreign keys relinked post-fit so
+#: referential integrity holds by construction, the same guarantee HMA gets
+#: natively by fitting tables jointly (see synth_eval.link). If a
+#: relationship was declared, every synthesizer should honor it -- there's
+#: no reason to let one ignore it on purpose.
+LINKABLE_SYNTHS = {"GAUSSIANCOPULA", "CTGAN", "TVAE", "COPULAGAN"}
 
 class _Cancelled(Exception):
     """Raised inside a job when the user cancels, to unwind and stop all work."""
@@ -128,8 +112,8 @@ _MAX_SESSIONS = 32
 
 def _new_state() -> dict:
     return {"tables": None, "meta_detected": None, "job": None,
-            "results": None, "suite": None, "_ts": time.time()}
-
+            "results": None, "suite": None, "_ts": time.time(),
+            "chat_messages": [], "chat_plan": None}
 
 def _session_for(sid: str) -> dict:
     """Return (creating if needed) the state dict for a tab session id.  Touches
@@ -149,11 +133,9 @@ def _session_for(sid: str) -> dict:
         st["_ts"] = time.time()
         return st
 
-
 def _sid(request: Request) -> str:
     """The tab's session id, from the X-Session-Id header (fetch) or ?sid= (links)."""
     return request.headers.get("X-Session-Id") or request.query_params.get("sid") or "default"
-
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -367,6 +349,51 @@ def _referential_integrity(rels, real_tables, suite):
     return rows
 
 
+def _validate_relationships(tables: dict, cfg: dict) -> list[dict]:
+    """Structurally validate a candidate data model against the *real* data:
+    for each declared relationship check the parent key is unique and measure
+    how many child FK values point at a real parent key; for the entity-key hub
+    confirm the key is present in the chosen tables.  Read-only, no synthesis.
+    Shared by the /api/validate_model route and the chat assistant's tools,
+    so a link checked by clicking and one checked by the bot get the same answer."""
+    results = []
+    for r in cfg.get("relationships") or []:
+        pt, pk = r.get("parent_table_name"), r.get("parent_primary_key")
+        ct, fk = r.get("child_table_name"), r.get("child_foreign_key")
+        label = f"{ct}.{fk} → {pt}.{pk}"
+        if pt not in tables or ct not in tables or pk not in tables.get(pt, {}).columns or fk not in tables.get(ct, {}).columns:
+            results.append({"label": label, "status": "FAIL", "detail": "table or column not found"})
+            continue
+        parent_keys = tables[pt][pk]
+        child = tables[ct][fk].dropna()
+        if parent_keys.duplicated().any():
+            results.append({"label": label, "status": "FAIL",
+                            "detail": f"parent key {pt}.{pk} is not unique — not a valid primary key"})
+        elif not len(child):
+            results.append({"label": label, "status": "WARN", "detail": "child foreign key is entirely null"})
+        else:
+            cov = float(child.isin(set(parent_keys.dropna())).mean())
+            status = "PASS" if cov >= 0.99 else "WARN" if cov >= 0.90 else "FAIL"
+            results.append({"label": label, "status": status,
+                            "detail": f"{cov*100:.1f}% of child rows match a parent key"})
+    entity_key = (cfg.get("entity_key") or "").strip()
+    if entity_key:
+        avail = se.entity_key_tables(tables, entity_key)
+        requested = cfg.get("entity_children") or []
+        chosen = [t for t in requested if t in avail] if requested else avail
+        if not chosen:
+            results.append({"label": f"hub {entity_key}", "status": "FAIL",
+                            "detail": f"'{entity_key}' is not present in any selected table"})
+        else:
+            ids = set()
+            for t in chosen:
+                ids |= set(tables[t][entity_key].dropna().unique())
+            results.append({"label": f"hub {entity_key} → {', '.join(chosen)}", "status": "PASS",
+                            "detail": f"{len(ids)} distinct entities · select HMA to have referential "
+                                      f"integrity on {entity_key} preserved by construction"})
+    return results
+
+
 def _run_job(cfg: dict, st: dict):
     job = st["job"]
     log = job["log"]
@@ -564,10 +591,10 @@ def _run_job(cfg: dict, st: dict):
             raise RuntimeError("every synthesizer failed — check the schema edits")
         say(f"Synthesis done: {', '.join(suite)}")
 
-        # Single-table synthesizers (CTGAN/TVAE/CopulaGAN) fit each table on
-        # its own, so a child's foreign-key column is unrelated to the
-        # synthetic parent's keys: relink it now (HMA and the entity-key hub
-        # path above don't need this, they already model the link directly).
+        # Every synthesizer except HMA fits each table on its own, so a
+        # child's foreign-key column is unrelated to the synthetic parent's
+        # keys: relink it now (HMA and the entity-key hub path above don't
+        # need this, they already model the link directly).
         linked_synths: list[str] = []
         if not parent_name and rels and rels_ok:
             linkable = [s for s in suite if s.upper() in LINKABLE_SYNTHS]
@@ -840,135 +867,16 @@ def _run_job(cfg: dict, st: dict):
         stop_beat.set()   # stop the heartbeat thread
 
 
-# ---------------------------------------------------------------------------
-# routes
-# ---------------------------------------------------------------------------
-
-@app.get("/")
-def index():
-    return FileResponse(os.path.join(WEB_DIR, "index.html"))
-
-
-@app.post("/api/upload")
-async def upload(files: list[UploadFile], request: Request):
-    st = _session_for(_sid(request))
-    tables = {}
-    for f in files:
-        name = os.path.splitext(os.path.basename(f.filename))[0].upper()
-        tables[name] = pd.read_csv(io.BytesIO(await f.read()), low_memory=False)
-    st.update(tables=tables, meta_detected=_detect(tables), results=None, job=None, suite=None)
-    return _tables_payload(st)
-
-
-@app.post("/api/sample")
-def sample(request: Request):
-    st = _session_for(_sid(request))
-    paths = sorted(glob.glob("sdg/seed/*.csv"))
-    if not paths:
-        return JSONResponse({"error": "no sample data found in sdg/seed/"}, status_code=404)
-    tables = {os.path.splitext(os.path.basename(p))[0].upper(): pd.read_csv(p, low_memory=False)
-              for p in paths}
-    st.update(tables=tables, meta_detected=_detect(tables), results=None, job=None, suite=None)
-    return _tables_payload(st)
-
-
-@app.post("/api/validate_model")
-def validate_model(cfg: dict, request: Request):
-    """Structurally validate the user's data model against the *real* data:
-    for each declared relationship check the parent key is unique and measure
-    how many child FK values point at a real parent key; for the entity-key hub
-    confirm the key is present in the chosen tables.  Read-only, no synthesis."""
-    tables = _session_for(_sid(request))["tables"]
-    if tables is None:
-        return JSONResponse({"error": "upload data first"}, status_code=400)
-    results = []
-    for r in cfg.get("relationships") or []:
-        pt, pk = r.get("parent_table_name"), r.get("parent_primary_key")
-        ct, fk = r.get("child_table_name"), r.get("child_foreign_key")
-        label = f"{ct}.{fk} → {pt}.{pk}"
-        if pt not in tables or ct not in tables or pk not in tables.get(pt, {}).columns or fk not in tables.get(ct, {}).columns:
-            results.append({"label": label, "status": "FAIL", "detail": "table or column not found"})
-            continue
-        parent_keys = tables[pt][pk]
-        child = tables[ct][fk].dropna()
-        if parent_keys.duplicated().any():
-            results.append({"label": label, "status": "FAIL",
-                            "detail": f"parent key {pt}.{pk} is not unique — not a valid primary key"})
-        elif not len(child):
-            results.append({"label": label, "status": "WARN", "detail": "child foreign key is entirely null"})
-        else:
-            cov = float(child.isin(set(parent_keys.dropna())).mean())
-            status = "PASS" if cov >= 0.99 else "WARN" if cov >= 0.90 else "FAIL"
-            results.append({"label": label, "status": status,
-                            "detail": f"{cov*100:.1f}% of child rows match a parent key"})
-    entity_key = (cfg.get("entity_key") or "").strip()
-    if entity_key:
-        avail = se.entity_key_tables(tables, entity_key)
-        requested = cfg.get("entity_children") or []
-        chosen = [t for t in requested if t in avail] if requested else avail
-        if not chosen:
-            results.append({"label": f"hub {entity_key}", "status": "FAIL",
-                            "detail": f"'{entity_key}' is not present in any selected table"})
-        else:
-            ids = set()
-            for t in chosen:
-                ids |= set(tables[t][entity_key].dropna().unique())
-            results.append({"label": f"hub {entity_key} → {', '.join(chosen)}", "status": "PASS",
-                            "detail": f"{len(ids)} distinct entities · select HMA to have referential "
-                                      f"integrity on {entity_key} preserved by construction"})
-    return {"results": results}
-
-
-@app.post("/api/synthesize")
-async def synthesize(cfg: dict, request: Request):
-    st = _session_for(_sid(request))
+def _start_job(cfg: dict, st: dict) -> dict:
+    """Kick off a synthesis job on this session. Shared by the manual
+    /api/synthesize route and the chat assistant's run_synthesis tool, so a
+    run started by clicking and one started by telling the bot behave
+    identically (same job/progress/results machinery, same report after)."""
     if st["tables"] is None:
-        return JSONResponse({"error": "upload data first"}, status_code=400)
+        return {"error": "upload data first"}
     if st["job"] and st["job"]["status"] == "running":
-        return JSONResponse({"error": "a job is already running in this tab"}, status_code=409)
+        return {"error": "a job is already running in this tab"}
     st["job"] = {"status": "running", "log": [], "error": None, "pct": 0.0}
     st["results"] = None
     threading.Thread(target=_run_job, args=(cfg, st), daemon=True).start()
     return {"status": "running"}
-
-
-@app.post("/api/cancel")
-def cancel(request: Request):
-    """Cancel this tab's running job. Flags it cancelled immediately (so the UI
-    frees up and a new run is allowed); the worker thread unwinds all remaining
-    synthesis/evaluation work at its next checkpoint and produces no report."""
-    job = _session_for(_sid(request)).get("job")
-    if not job or job.get("status") != "running":
-        return {"status": (job or {}).get("status", "idle")}
-    job["cancel"] = True
-    job["status"] = "cancelled"
-    return {"status": "cancelled"}
-
-
-@app.get("/api/progress")
-def progress(request: Request):
-    job = _session_for(_sid(request))["job"]
-    if not job:
-        return {"status": "idle", "log": []}
-    return {"status": job["status"], "log": job["log"], "error": job.get("error"),
-            "pct": round(float(job.get("pct", 0.0)), 1)}
-
-
-@app.get("/api/results")
-def results(request: Request):
-    res = _session_for(_sid(request))["results"]
-    if res is None:
-        return JSONResponse({"error": "no results yet"}, status_code=404)
-    return res
-
-
-@app.get("/api/download/{synth}/{table}")
-def download(synth: str, table: str, request: Request):
-    suite = _session_for(_sid(request)).get("suite") or {}
-    if synth not in suite or table not in suite[synth]:
-        return JSONResponse({"error": "not found"}, status_code=404)
-    buf = io.StringIO()
-    suite[synth][table].to_csv(buf, index=False)
-    return StreamingResponse(
-        iter([buf.getvalue()]), media_type="text/csv",
-        headers={"Content-Disposition": f"attachment; filename=synthetic_{synth}_{table}.csv"})
