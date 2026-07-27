@@ -28,11 +28,11 @@ useful for downstream work, before you trust it.
   a separate app: it drives the exact same upload/synthesize/report
   machinery the manual controls do, in the same process, so a run started
   by chatting shows up in the same progress bar and the same report. Works
-  with either DeepSeek or your own Azure AI Foundry / Azure OpenAI
-  deployment, picked automatically from whichever `.env` vars are set (see
-  `.env.example`). Optional and fully decoupled: without either configured,
-  the rest of the dashboard works exactly as before, the chat panel just
-  says so.
+  with your own Azure AI Foundry / Azure OpenAI deployment, a direct OpenAI
+  API key, or DeepSeek, picked automatically from whichever `.env` vars are
+  set (see `.env.example`). Optional and fully decoupled: without one
+  configured, the rest of the dashboard works exactly as before, the chat
+  panel just says so.
 
 ## Synthesizers
 
@@ -60,6 +60,7 @@ uv pip install -r requirements.txt --python .venv/bin/python
 Then open http://localhost:8000. Load the sample data or upload your own CSVs.
 
 To enable the chat assistant too, copy `.env.example` to `.env` and fill in
-one provider: either `DEEPSEEK_API_KEY` (from platform.deepseek.com), or the
-`AZURE_OPENAI_*` variables for your own Azure AI Foundry deployment (Azure
-wins if both are set), then restart the server.
+one provider: `DEEPSEEK_API_KEY` (from platform.deepseek.com), `OPENAI_API_KEY`
+(a direct key from platform.openai.com), or the `AZURE_OPENAI_*` variables for
+your own Azure AI Foundry deployment (if more than one is set, priority is
+Azure, then OpenAI, then DeepSeek), then restart the server.

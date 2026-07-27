@@ -4,9 +4,10 @@ and fully decoupled: without an LLM provider configured, the endpoints below
 just report they can't reach a language model, the rest of the dashboard is
 unaffected.
 
-Two providers are supported, auto-selected from whichever env vars are set
-(see .env.example): your own Azure AI Foundry / Azure OpenAI deployment, or
-DeepSeek. Azure wins if both are configured. Both speak the same OpenAI
+Three providers are supported, auto-selected from whichever env vars are set
+(see .env.example): your own Azure AI Foundry / Azure OpenAI deployment, a
+direct OpenAI platform key, or DeepSeek. Priority if more than one is set:
+Azure, then OpenAI, then DeepSeek. All three speak the same OpenAI
 chat-completions + tool-calling shape, so nothing below this block needs to
 know or care which one is actually in use.
 
@@ -35,6 +36,9 @@ AZURE_OPENAI_ENDPOINT = os.environ.get("AZURE_OPENAI_ENDPOINT")          # e.g. 
 AZURE_OPENAI_DEPLOYMENT = os.environ.get("AZURE_OPENAI_DEPLOYMENT")      # the deployment name you chose in Foundry, e.g. "gpt-4.1"
 AZURE_OPENAI_API_VERSION = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-10-21")
 
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")               # a direct platform.openai.com key (sk-... / sk-proj-...)
+OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4.1")
+
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
 DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
 
@@ -42,6 +46,11 @@ if AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_DEPLOYMENT:
     llm_client = AzureOpenAI(api_key=AZURE_OPENAI_API_KEY, azure_endpoint=AZURE_OPENAI_ENDPOINT,
                              api_version=AZURE_OPENAI_API_VERSION)
     LLM_MODEL = AZURE_OPENAI_DEPLOYMENT   # Azure's `model=` argument is the deployment name, not "gpt-4.1" itself
+elif OPENAI_API_KEY:
+    # no azure_endpoint/api_version here -- those are Azure REST-layer concepts,
+    # the direct OpenAI client doesn't take either
+    llm_client = OpenAI(api_key=OPENAI_API_KEY)
+    LLM_MODEL = OPENAI_MODEL
 elif DEEPSEEK_API_KEY:
     llm_client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com")
     LLM_MODEL = DEEPSEEK_MODEL
@@ -84,7 +93,12 @@ just don't duplicate the detailed write-up.
 
 After a file upload, you'll be given a structural analysis (table names, row counts, columns per \
 table, whether a reliable link between tables was found, candidate shared columns if any were \
-spotted structurally, a suggested synthesizer, and any columns that look like personal info). That \
+spotted structurally, a suggested synthesizer, and any columns that look like personal info). \
+EVERYTHING in that analysis, including "relationships found" and "candidate shared columns", is an \
+auto-detector's guess, not something the user did. Never describe it as something they "set up" or \
+"configured" -- say "spotted" or "detected" instead, and only ever call it confirmed/set up after \
+set_relationship, set_entity_key, or confirm_relationships has actually been called in THIS \
+conversation. That \
 suggested synthesizer is for your own reasoning only, never say it, hint at it, or say anything like \
 "my recommendation is" or "I'd suggest" out loud yet, you're missing two things you need to ask about \
 first, in order, and naming a synthesizer before then undercuts the whole point of asking. \
@@ -97,12 +111,15 @@ STEP 1 - schema. Summarize the tables in plain language (names, row counts, ment
 any personal info found), then call ask_question with something like "Want to review the auto-detected \
 column types before we go further?" and options like ["Looks good", "Let me edit it", "I'll describe changes"].
 - "Looks good" / equivalent -> call confirm_schema(modified=false).
-- "Let me edit it" / equivalent -> call open_schema_editor(), tell them it's open and to save when \
-done. Once they say they're done (their save button sends a short confirmation automatically) call \
-confirm_schema(modified=true).
+- "Let me edit it" / equivalent -> call open_schema_editor() and ONLY that, then just say it's open \
+and to save when done. Do NOT also call ask_question or confirm_schema in that same turn, they \
+haven't touched the editor yet -- wait for their own follow-up message (their save button sends a \
+short confirmation automatically) before calling confirm_schema(modified=true).
 - They describe specific column changes in words instead -> call set_column_types with what they \
-described, confirm what you changed, ask if there's more, and once they're satisfied call \
-confirm_schema(modified=true).
+described, then call ask_question asking whether there's anything else to change (options like \
+["That's everything", "One more change"]). Do NOT also call confirm_schema in that same turn, the \
+edit they just described might not be the only one -- only call confirm_schema(modified=true) on a \
+LATER turn, once they've actually confirmed there's nothing more.
 Do not move to step 2 before confirm_schema has been called.
 
 STEP 2 - relationships. Only after schema is confirmed, and ALWAYS ask this via ask_question first, \
@@ -115,9 +132,10 @@ set_entity_key, set_relationship, or confirm_relationships based on your own gue
 shared columns, only the user gets to decide there's a real relationship, and only after you've \
 actually asked via ask_question and they've replied in THIS conversation.
 - "No" / equivalent -> call confirm_relationships(has_relationships=false).
-- "Let me set it up" / equivalent -> call open_data_model(), tell them it's open (drag-and-drop canvas \
-or an entity-key hub builder) and to save when done. Once they confirm, call \
-confirm_relationships(has_relationships=true).
+- "Let me set it up" / equivalent -> call open_data_model() and ONLY that, then just say it's open \
+(drag-and-drop canvas or an entity-key hub builder) and to save when done. Do NOT also call \
+ask_question or confirm_relationships in that same turn -- wait for their own follow-up message \
+before calling confirm_relationships(has_relationships=true).
 - They describe it in words instead -> there are two kinds: an entity key (one column name present in \
 several tables tying rows to the same real-world entity, rows don't need to be 1:1, call \
 set_entity_key) or a formal relationship (one table's column is a unique parent key, another table's \
@@ -596,6 +614,20 @@ def _extract_leaked_options(text: str) -> tuple[str, list[str]]:
     return text[:m.start()].rstrip(), re.findall(r'"([^"]+)"', m.group(0))[:4]
 
 
+#: observed (gpt-5.1, ~1 in 6 calls in eval runs): the model makes a real,
+#: correctly-structured tool call AND separately echoes a raw pseudo
+#: function-call JSON blob -- {"recipient_name": "functions.ask_question",
+#: "parameters": {...}} -- into its own msg.content. If used as-is that
+#: JSON would get shown to the user as the reply text instead of the real
+#: tool call's actual effect. Recognize the shape and refuse to use it as
+#: display text rather than trying to parse/salvage it -- the real tool
+#: call already fired and did the right thing, we just need to not show
+#: this leaked-echo text instead of a proper reply.
+def _looks_like_tool_call_json(text: str) -> bool:
+    text = text.strip()
+    return text.startswith("{") and '"recipient_name"' in text and '"parameters"' in text
+
+
 def _recent_history(messages: list[dict], limit: int = 24) -> list[dict]:
     """Last `limit` messages, but never starting mid-tool-exchange: a plain
     suffix slice can land on a 'tool' result whose owning assistant
@@ -609,11 +641,22 @@ def _recent_history(messages: list[dict], limit: int = 24) -> list[dict]:
     return window[i:]
 
 
-def _chat_turn(st: dict, force_tool: bool = True, tools: list[dict] | None = None):
+def _chat_turn(st: dict, force_tool: bool = True, tools: list[dict] | None = None,
+               editor_open: bool = False, data_model_open: bool = False):
     """One assistant turn: call the LLM with the current history (offering
     only the tools _tools_for(plan) currently allows, the hard gate on
     run_synthesis lives there), execute any tool call it makes, and return
     (text, options, focus) for the route to hand to the frontend.
+
+    editor_open/data_model_open: True once open_schema_editor/open_data_model
+    has fired ANYWHERE in this exchange's recursive chain (set by an earlier,
+    outer call and threaded down through every recursive one below it, same
+    idea as `tools`). Needed because "confirm_schema right after opening the
+    editor" doesn't only happen within one API response's tool_calls -- it's
+    just as often the model reacting to open_schema_editor's OWN tool result
+    one recursion level down and deciding THERE to also confirm (observed in
+    testing). A same-response-only check misses that; this catches it at
+    every level of the chain instead.
 
     force_tool: True on the first call reacting to fresh user/system input;
     False on the recursive call one level down (after a tool result has
@@ -639,8 +682,8 @@ def _chat_turn(st: dict, force_tool: bool = True, tools: list[dict] | None = Non
     plan = st.get("chat_plan") or {}
     if llm_client is None:
         return ("I can't reach my language model right now (no LLM provider is configured on the "
-                "server -- set DEEPSEEK_API_KEY, or the AZURE_OPENAI_* variables for your own "
-                "deployment). Ask whoever's running this to set it and restart."), [], None
+                "server -- set DEEPSEEK_API_KEY, OPENAI_API_KEY, or the AZURE_OPENAI_* variables for "
+                "your own deployment). Ask whoever's running this to set it and restart."), [], None
     if tools is None:
         tools = _tools_for(plan)
     try:
@@ -681,6 +724,23 @@ def _chat_turn(st: dict, force_tool: bool = True, tools: list[dict] | None = Non
     # before it ever reaches a handler -- dispatching by name match alone,
     # as this used to, would silently honor a call the gate meant to block.
     allowed_names = {t["function"]["name"] for t in tools}
+    # observed (gpt-5.1, live testing): the model sometimes calls
+    # open_schema_editor/open_data_model AND confirm_schema/ask_question in
+    # the same exchange -- presenting an "are you done?" question, or even
+    # confirming the schema, before the user has touched the editor at all.
+    # The prompt already says not to, but that alone isn't reliable enough
+    # (reproduced this ~1/3 of the time), so refuse the premature confirm
+    # structurally and strip any same-exchange ask_question buttons below --
+    # the real "done editing" signal has to come from the user's own next
+    # message, never from anywhere in the exchange that just opened the
+    # editor (either the API response's OWN tool_calls, or -- just as
+    # commonly, observed in testing -- one recursion level down, the model
+    # reacting to open_schema_editor's own tool result and deciding THERE
+    # to also confirm; editor_open/data_model_open carries that forward
+    # from an outer call so this catches both).
+    call_names_this_turn = {c.function.name for c in calls}
+    editor_just_opened = editor_open or "open_schema_editor" in call_names_this_turn
+    data_model_just_opened = data_model_open or "open_data_model" in call_names_this_turn
     options, focus, question_like, asked_question = [], None, False, ""
     for c in calls:
         try:
@@ -701,9 +761,19 @@ def _chat_turn(st: dict, force_tool: bool = True, tools: list[dict] | None = Non
         elif name == "set_column_types":
             result = _chat_set_column_types(st, args.get("changes") or [])
         elif name == "confirm_schema":
-            result = _chat_confirm_schema(st, bool(args.get("modified")))
+            if editor_just_opened:
+                result = {"error": "the schema editor was just opened THIS SAME turn -- the user "
+                                   "hasn't touched it yet, wait for their own follow-up message "
+                                   "(after they've actually saved) before confirming"}
+            else:
+                result = _chat_confirm_schema(st, bool(args.get("modified")))
         elif name == "confirm_relationships":
-            result = _chat_confirm_relationships(st, bool(args.get("has_relationships")))
+            if data_model_just_opened:
+                result = {"error": "the data model editor was just opened THIS SAME turn -- the user "
+                                   "hasn't touched it yet, wait for their own follow-up message "
+                                   "before confirming"}
+            else:
+                result = _chat_confirm_relationships(st, bool(args.get("has_relationships")))
         elif name == "ask_question":
             options = [str(o) for o in (args.get("options") or [])][:4]
             asked_question = str(args.get("question") or "").strip()
@@ -737,6 +807,13 @@ def _chat_turn(st: dict, force_tool: bool = True, tools: list[dict] | None = Non
             result = {"error": "unknown tool"}
         st["chat_messages"].append({"role": "tool", "tool_call_id": c.id, "content": json.dumps(result)})
 
+    if editor_just_opened or data_model_just_opened:
+        # strip any buttons a same-turn ask_question tried to add too --
+        # even with the confirm_* refusal above, a same-turn "are you done
+        # editing yet?" question is premature on its own, the editor was
+        # only just opened, nothing to answer about it yet
+        options, asked_question = [], ""
+
     # let the model react to the tool result(s), NOT forced this time (it
     # just acted, it may need to just narrate and wait for the user's
     # actual reply rather than being pushed into another tool call in the
@@ -747,7 +824,9 @@ def _chat_turn(st: dict, force_tool: bool = True, tools: list[dict] | None = Non
     # confirm_schema unlocks step 2, it may on its own initiative
     # immediately ask the relationships question), that's the more current
     # signal, prefer it over this level's
-    text, inner_options, inner_focus = _chat_turn(st, force_tool=False, tools=tools)
+    text, inner_options, inner_focus = _chat_turn(st, force_tool=False, tools=tools,
+                                                  editor_open=editor_just_opened,
+                                                  data_model_open=data_model_just_opened)
     if question_like:
         # ask_question/open_*_editor calls are asked ALONGSIDE their own
         # rich lead-in text (the table summary, why we're asking, etc.) --
@@ -755,7 +834,7 @@ def _chat_turn(st: dict, force_tool: bool = True, tools: list[dict] | None = Non
         # so its own reply tends to be a thin "go ahead and choose" filler.
         # Prefer this level's own content when the model actually wrote one.
         own_text = (msg.content or "").strip()
-        if own_text:
+        if own_text and not _looks_like_tool_call_json(own_text):
             text = re.sub(r"\s+,", ",", own_text.replace("—", ","))
     # own_text (question_like) or the recursive call's own text can carry a
     # leaked bracket list the same way the no-tool-call branch can -- catch
