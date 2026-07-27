@@ -578,6 +578,23 @@ _STEP_FALLBACK_QUESTIONS = {
     "relationships": "Are these tables related to each other?",
 }
 
+#: some providers (observed: Azure/GPT-4.1) copy the system prompt's own
+#: example phrasing -- 'options like ["A", "B"]' -- verbatim into the chat
+#: reply's own text instead of actually calling ask_question, leaving a raw
+#: bracketed list visible in the bubble with no real buttons behind it
+#: (DeepSeek doesn't do this, it reliably calls the tool instead). Recover
+#: structurally: if the tail of the text has exactly that shape, treat the
+#: quoted strings as the options the model meant to offer, strip the
+#: literal list out of what's displayed, and use them as real buttons.
+_LEAKED_OPTIONS_RE = re.compile(r'\[\s*"[^"\]]{1,60}"(?:\s*,\s*"[^"\]]{1,60}"){1,3}\s*\]\s*\.?\s*$')
+
+
+def _extract_leaked_options(text: str) -> tuple[str, list[str]]:
+    m = _LEAKED_OPTIONS_RE.search(text)
+    if not m:
+        return text, []
+    return text[:m.start()].rstrip(), re.findall(r'"([^"]+)"', m.group(0))[:4]
+
 
 def _recent_history(messages: list[dict], limit: int = 24) -> list[dict]:
     """Last `limit` messages, but never starting mid-tool-exchange: a plain
@@ -644,8 +661,8 @@ def _chat_turn(st: dict, force_tool: bool = True, tools: list[dict] | None = Non
         # the system prompt asks for no em dashes, but LLM style compliance
         # isn't guaranteed, so enforce it deterministically too
         text = re.sub(r"\s+,", ",", (msg.content or "…").replace("—", ","))
-        options = []
-        if force_tool:
+        text, options = _extract_leaked_options(text)
+        if force_tool and not options:
             step = "schema" if not plan.get("schema_confirmed") \
                 else "relationships" if not plan.get("relationships_confirmed") else None
             if step:
@@ -740,6 +757,13 @@ def _chat_turn(st: dict, force_tool: bool = True, tools: list[dict] | None = Non
         own_text = (msg.content or "").strip()
         if own_text:
             text = re.sub(r"\s+,", ",", own_text.replace("—", ","))
+    # own_text (question_like) or the recursive call's own text can carry a
+    # leaked bracket list the same way the no-tool-call branch can -- catch
+    # it here too, and use it to fill in options if the tool call itself
+    # didn't provide any (e.g. the model wrote ask_question-shaped text
+    # without actually calling the tool this turn).
+    text, leaked = _extract_leaked_options(text)
+    if question_like:
         # the model's own text (own_text or the fallback above) frequently
         # summarizes WITHOUT ever actually asking anything -- the options
         # it chose for ask_question's buttons never get shown as a
@@ -752,7 +776,7 @@ def _chat_turn(st: dict, force_tool: bool = True, tools: list[dict] | None = Non
             if text and not text.endswith((".", "!", "?")):
                 text += "."
             text = (text + " " + asked_question).strip() if text else asked_question
-    return text, (inner_options or options), (inner_focus or focus)
+    return text, (inner_options or options or leaked), (inner_focus or focus)
 
 
 @router.post("/api/chat/plan")
