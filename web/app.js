@@ -155,8 +155,9 @@ function renderSchemaBlocks(){
   const host=$("#schema-blocks"); host.innerHTML="";
   for(const [t,info] of Object.entries(DATA.tables)){
     detected[t]={}; info.columns.forEach(c=>detected[t][c.name]=c.sdtype);
+    const pii=info.pii||{};
     const rows=info.columns.map(c=>`
-      <tr><td class="mono">${c.name}</td>
+      <tr><td class="mono">${c.name}${pii[c.name]?`<span class="pii-flag" title="Detected PII: ${esc(pii[c.name])} — this column will be faked in the synthetic output">PII</span>`:""}</td>
         <td><select data-table="${t}" data-col="${c.name}" class="sdtype-sel">
           ${SDTYPES.map(s=>`<option ${s===c.sdtype?"selected":""}>${s}</option>`).join("")}</select></td>
         <td class="num">${c.distinct.toLocaleString()}</td><td class="num">${c.missing_pct}%</td>
@@ -169,7 +170,8 @@ function renderSchemaBlocks(){
     el.innerHTML=`<div class="blk-head"><h3>${t}</h3>
         <span class="dim">${info.rows.toLocaleString()} rows · ${info.columns.length} columns</span></div>
       <p class="note">Auto-detected sdtypes — fix any wrong call with the dropdown
-        (<span style="color:var(--red)">red</span> = your override). id / datetime / unknown are excluded from privacy &amp; ML metrics.</p>
+        (<span style="color:var(--red)">red</span> = your override). id / datetime / unknown are excluded from privacy &amp; ML metrics.
+        <span class="pii-flag" style="margin-left:4px">PII</span> = auto-flagged as personal info, will be faked in the synthetic output.</p>
       <table class="grid"><thead><tr><th>column</th><th>sdtype</th><th>distinct</th><th>missing</th><th>example</th></tr></thead>
       <tbody>${rows}</tbody></table>
       <div class="pk-row">PRIMARY KEY <select id="pk-${t}"><option value="">(none)</option>

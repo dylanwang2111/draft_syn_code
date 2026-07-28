@@ -219,6 +219,12 @@ select:hover{border-color:var(--sky)} select:focus{outline:none; border-color:va
   color:var(--blue); background:var(--tint); border:1px solid var(--line-soft); border-radius:999px;
   padding:2px 0; text-align:center}
 .pii-pol.leaky{border-color:var(--warn); color:var(--warn)}
+/* Schema tab: inline red flag on a column auto-detected as PII (same signal
+   as the PII panel's kind badge, just surfaced where types get edited too) */
+.pii-flag{display:inline-flex; align-items:center; margin-left:6px; font-family:var(--mono);
+  font-size:8.5px; letter-spacing:.06em; text-transform:uppercase; color:var(--fail);
+  background:rgba(227,24,55,.1); border:1px solid rgba(227,24,55,.4); border-radius:999px;
+  padding:1px 6px; vertical-align:middle; cursor:help}
 .tgt-row span{font-family:var(--mono); font-size:11px; color:var(--muted); overflow:hidden; text-overflow:ellipsis}
 
 /* ---------------- right: tabs + panes ---------------- */
