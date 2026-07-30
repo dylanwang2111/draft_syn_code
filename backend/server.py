@@ -28,12 +28,13 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-import pandas as pd
 from fastapi import FastAPI, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from .dashboard_core import _detect, _session_for, _sid, _start_job, _tables_payload, _validate_relationships
+from .dashboard_core import (
+    _detect, _read_csv_robust, _session_for, _sid, _start_job, _tables_payload, _validate_relationships,
+)
 from . import chat_assistant
 
 app = FastAPI(title="Synthetic Data Studio")
@@ -59,7 +60,7 @@ async def upload(files: list[UploadFile], request: Request):
     tables = {}
     for f in files:
         name = os.path.splitext(os.path.basename(f.filename))[0].upper()
-        tables[name] = pd.read_csv(io.BytesIO(await f.read()), low_memory=False)
+        tables[name] = _read_csv_robust(io.BytesIO(await f.read()), low_memory=False)
     st.update(tables=tables, meta_detected=_detect(tables), results=None, job=None, suite=None)
     return _tables_payload(st)
 
@@ -70,7 +71,7 @@ def sample(request: Request):
     paths = sorted(glob.glob("sdg/seed/*.csv"))
     if not paths:
         return JSONResponse({"error": "no sample data found in sdg/seed/"}, status_code=404)
-    tables = {os.path.splitext(os.path.basename(p))[0].upper(): pd.read_csv(p, low_memory=False)
+    tables = {os.path.splitext(os.path.basename(p))[0].upper(): _read_csv_robust(p, low_memory=False)
               for p in paths}
     st.update(tables=tables, meta_detected=_detect(tables), results=None, job=None, suite=None)
     return _tables_payload(st)

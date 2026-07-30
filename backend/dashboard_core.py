@@ -160,6 +160,33 @@ def _clean(o):
     return o
 
 
+def _read_csv_robust(src, **kwargs) -> pd.DataFrame:
+    """pd.read_csv with an encoding fallback.
+
+    Real-world CSVs -- especially Excel-exported ones, which this schema's own
+    data already is (see the scientific-notation-ID / mangled-date caveat in
+    docs/DATA_HANDLING.md) -- are frequently Windows-1252, not UTF-8. A hard
+    UnicodeDecodeError on upload (e.g. byte 0xE8 mid-file, a smart quote or
+    accented character) is a bad first experience for something otherwise
+    fully readable. Try utf-8 first (the common case, and stricter, so a
+    genuinely UTF-8 file is never silently misread as cp1252), then cp1252,
+    then latin-1 as a last resort -- latin-1 maps every byte 0x00-0xFF to a
+    character, so it never raises, but also isn't necessarily "correct" if
+    the true encoding was something else entirely, it is a deliberate never-
+    crash floor, not a best guess.
+    """
+    for encoding in ("utf-8", "cp1252"):
+        try:
+            if hasattr(src, "seek"):
+                src.seek(0)
+            return pd.read_csv(src, encoding=encoding, **kwargs)
+        except UnicodeDecodeError:
+            continue
+    if hasattr(src, "seek"):
+        src.seek(0)
+    return pd.read_csv(src, encoding="latin-1", **kwargs)
+
+
 def _detect(tables: dict[str, pd.DataFrame]) -> dict:
     from sdv.metadata import Metadata
 
