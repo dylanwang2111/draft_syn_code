@@ -61,6 +61,47 @@ per-column real-vs-synthetic distribution plots; correlation heatmaps; SDV
 > helpers (`dcr_distributions`, `exact_match_rate`) remain in
 > `synth_eval.privacy` for ad-hoc use but are not reported.
 
+> **Known gap — CategoricalCAP is a single, comparatively weak attacker.**
+> [Golob, Pentyala & De Cock, "SoK: Reconstruction Attacks on Synthetic Tabular
+> Data" (arXiv:2606.08372)](https://arxiv.org/abs/2606.08372) systematizes
+> attribute-inference attacks into two families: **per-feature-in-isolation**
+> (KNN, Naive Bayes, Logistic Regression, SVM, Random Forest, LightGBM, MLP,
+> TabPFN) and **feature-correlated** attacks that exploit dependencies between
+> multiple hidden fields at once (autoregressive; row-wise belief propagation —
+> their strongest, `CoBP-RA`; conditional generative models). `CategoricalCAP`
+> is a CAP-style frequency/rank heuristic on a *single* auto-picked column —
+> it sits at the weak end of even the per-feature-isolation family, well below
+> a trained classifier attacker, and never attempts a correlated-feature
+> attack. Net effect: our attribute-inference verdict is likely **optimistic**
+> relative to what a real attacker with SoK-grade tooling could achieve.
+> Cheapest fix, not yet built: add a trained-classifier attacker (RandomForest,
+> reusing the same key/sensitive split and holdout-baseline framing
+> `CategoricalCAP` already has) as a second, stronger attacker on the same
+> column, rather than relying on the CAP heuristic alone. Deliberately not
+> attempting the feature-correlated attacks (autoregressive / belief
+> propagation) this cycle — real, but a materially bigger lift, scoped as a
+> later gap alongside the two below.
+
+> **Other known gaps, deliberately not built this cycle.** (1) **Aggregate-
+> statistics attribute inference**: [Annamalai, Gadotti & Rocher, "A Linear
+> Reconstruction Approach for Attribute Inference Attacks against Synthetic
+> Data" (USENIX Security 2024, arXiv:2301.10053)](https://arxiv.org/abs/2301.10053)
+> solves a linear system from released aggregate statistics to recover a
+> target's secret attribute (up to 94.8% success vs. a 50% baseline, on *every*
+> record, not just outliers) — a structurally different mechanism from
+> anything tested here. Their finding that releasing more synthetic rows makes
+> the attack more effective is an independent confirmation of the same
+> `scale`-parameter caution the reject-and-resample filter already acts on for
+> DCR-style leakage. (2) **Topology/manifold preservation** (fidelity, not
+> privacy): [Arifeen & Petrovski, "Topology for Preserving Feature Correlation
+> in Tabular Synthetic Data" (IEEE 2022)](https://ieeexplore.ieee.org/document/9970505/)
+> uses persistent homology (Vietoris-Rips complex → H0/H1 persistence diagrams
+> → Wasserstein distance) to catch relationships whose correlation
+> *coefficient* matches real data while the relationship's actual *shape*
+> doesn't — something Column Pair Trends can't see. Parked: needs a new TDA
+> dependency, non-trivial per-pair compute, and an invented threshold
+> convention for a technique its own source paper calls preliminary.
+
 Visuals: 3-panel dashboard — NewRowSynthesis (ideal 1), MIA attacker AUC (ideal
 0.5, safe band), CategoricalCAP (ideal 1) — plus a dedicated nearest-record panel
 (per synthesizer / table) showing the closest synthetic row next to its real match
