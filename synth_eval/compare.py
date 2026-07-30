@@ -544,8 +544,14 @@ def compute_summary(
       similarity, see :func:`structure_scores`) at half their weight ->
       (2*columns + ri) / 3.  With no relationships defined, fidelity is the
       column score alone.
-    * privacy  = mean of three 0-1 protection scores
-      (1-2|MIA AUC-0.5|, NewRowSynthesis, CategoricalCAP).
+    * privacy  = mean of four 0-1 protection scores
+      (1-2|MIA AUC-0.5|, NewRowSynthesis, CategoricalCAP,
+      nearest-record: clip(closest synthetic-to-real distance / the real-
+      holdout bootstrap ceiling, 0, 1) -- same ratio the nearest_record
+      PASS/WARN/FAIL verdict already uses, so a score of 1 means the
+      closest synthetic row is at or beyond the ceiling (no worse than real
+      unseen data gets from pure chance) and a score near 0 means it's
+      landing right on top of a real row).
     * utility  = mean over table x metric of clip(synth score / real score, 0, 1)
       (TSTR / TRTR).
     """
@@ -558,8 +564,8 @@ def compute_summary(
         st_score = st["score"] if st else float("nan")
         fidelity = columns if (st is None or np.isnan(st_score)) else (2.0 * columns + st_score) / 3.0
 
-        # ---- privacy: three protection scores, higher = safer ----
-        mia, new_rows, nrs_base, cap, cap_base = [], [], [], [], []
+        # ---- privacy: four protection scores, higher = safer ----
+        mia, new_rows, nrs_base, cap, cap_base, nearest = [], [], [], [], [], []
         for rep in (privacy_all.get(s) or {}).values():
             auc = rep.get("membership_inference", {}).get("auc")
             if auc is not None and not (isinstance(auc, float) and np.isnan(auc)):
@@ -573,9 +579,14 @@ def compute_summary(
                 cap.append(float(np.clip(sdm["CategoricalCAP"], 0.0, 1.0)))
             if sdm.get("CategoricalCAP_baseline") is not None:
                 cap_base.append(float(np.clip(sdm["CategoricalCAP_baseline"], 0.0, 1.0)))
+            nr = rep.get("nearest_record_examples") or {}
+            ceiling, min_dist = nr.get("holdout_bootstrap_min_p05"), nr.get("min_distance")
+            if ceiling is not None and min_dist is not None and ceiling > 0:
+                nearest.append(float(np.clip(min_dist / ceiling, 0.0, 1.0)))
         mia_auc = _mean(mia)
         mia_prot = float("nan") if np.isnan(mia_auc) else max(0.0, 1.0 - 2.0 * abs(mia_auc - 0.5))
-        privacy = _mean([mia_prot, _mean(new_rows), _mean(cap)])
+        nearest_prot = _mean(nearest)
+        privacy = _mean([mia_prot, _mean(new_rows), _mean(cap), nearest_prot])
 
         # ---- utility: TSTR vs the real-trained baseline on the same holdout ----
         # NB the score is the mean of the *per-panel ratios*, not the ratio of the
@@ -635,7 +646,8 @@ def compute_summary(
             "privacy": {"score": privacy, "mia_auc": mia_auc, "mia_protection": mia_prot,
                         "new_row_synthesis": _mean(new_rows),
                         "new_row_baseline": _mean(nrs_base), "categorical_cap": _mean(cap),
-                        "categorical_cap_baseline": _mean(cap_base)},
+                        "categorical_cap_baseline": _mean(cap_base),
+                        "nearest_record_protection": nearest_prot},
             "utility": {"score": utility, "synth": u_synth, "real": u_real,
                         "gap": (float("nan") if np.isnan(u_synth) or np.isnan(u_real)
                                 else u_real - u_synth),

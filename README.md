@@ -18,10 +18,13 @@ useful for downstream work, before you trust it.
   versioned/SCD data, and recommends a synthesis strategy without ever
   looking at cell values.
 - **`synth_eval/`** — the evaluation suite: fidelity, privacy (membership
-  inference, copy-check, attribute inference), and ML-efficacy metrics, plus
+  inference, copy-check, attribute inference, nearest-record reconstruction),
+  a reject-and-resample privacy filter, and ML-efficacy metrics, plus
   referential-integrity scoring and the foreign-key relinking described
-  below. See `METRICS.md` for the full metric-by-metric writeup. Shared by
-  the dashboard and the standalone notebook (`notebook/synthetic_evaluation.ipynb`).
+  below. See `docs/METRICS.md` for the full metric-by-metric writeup and
+  `docs/DATA_HANDLING.md` for how columns are classified and PII is detected
+  and faked. Shared by the dashboard and the standalone notebook
+  (`notebook/synthetic_evaluation.ipynb`).
 - **Chat assistant** (`web/chat.js`, `backend/chat_assistant.py`) — an
   LLM-driven conversational layer docked alongside the dashboard, a
   proof-of-concept for embedding this capability into a chatbot. It's not

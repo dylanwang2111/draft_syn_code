@@ -136,6 +136,394 @@ def dcr_distributions(
     return info
 
 
+def nearest_real_examples(
+    real: pd.DataFrame,
+    synth: pd.DataFrame,
+    roles: ColumnRoles,
+    n: int = 5,
+    scan_cap: int = 2000,
+    random_state: int = 0,
+    holdout: Optional[pd.DataFrame] = None,
+) -> Dict[str, object]:
+    """The concrete "can this be reverse-engineered back to a real record?"
+    check: find the CLOSEST synthetic rows to any real (training) row -- worst
+    case, not a random sample -- and return the pair side by side with the
+    distance.
+
+    The minimum distance over many scanned rows is an extreme-value statistic:
+    scan enough rows and *some* minimum will look small even with zero
+    leakage, purely from chance -- comparing it to a "typical" real-to-real
+    distance is comparing a minimum to a median, not apples to apples. So the
+    synthetic minimum is instead graded against a bootstrap ceiling: what
+    minimum distance would a same-size sample of REAL holdout rows achieve
+    against the same training rows, by chance alone? That is the same
+    real-holdout-ceiling philosophy NewRowSynthesis/CategoricalCAP use above,
+    adapted for a minimum instead of a mean/rate.
+    """
+    from sklearn.neighbors import NearestNeighbors
+
+    cols = roles.modelable
+    out: Dict[str, object] = {"examples": [], "note": ""}
+    if not cols or len(synth) < 1 or len(real) < 3:
+        out["note"] = "insufficient data for nearest-record lookup"
+        return out
+
+    try:
+        enc, use_cols = _fit_mixed_encoder(real, roles)
+    except ValueError as e:
+        out["note"] = str(e)
+        return out
+
+    rng = np.random.default_rng(random_state)
+    scan = synth.sample(min(scan_cap, len(synth)), random_state=random_state) \
+        if len(synth) > scan_cap else synth
+
+    Rall = np.nan_to_num(_encode(enc, real, use_cols))
+    Sscan = np.nan_to_num(_encode(enc, scan, use_cols))
+
+    nn_real = NearestNeighbors(n_neighbors=1).fit(Rall)
+    d, idx = nn_real.kneighbors(Sscan)
+    d, idx = d.ravel(), idx.ravel()
+
+    # real -> real "typical spacing" -- only used to phrase distance in
+    # interpretable terms on each example, never to grade PASS/FAIL
+    base_sample = Rall[: min(len(Rall), 1000)]
+    nn_rr = NearestNeighbors(n_neighbors=2).fit(Rall)
+    d_rr, _ = nn_rr.kneighbors(base_sample)
+    typical_baseline = d_rr[:, 1]
+
+    order = np.argsort(d)[: min(n, len(d))]   # closest matches = worst case
+    display_cols = [c for c in cols if c in real.columns and c in synth.columns][:8]
+    scan_disp = scan[display_cols].astype(str)
+    real_disp = real[display_cols].astype(str)
+
+    examples = []
+    for pos in order:
+        dist = float(d[pos])
+        pct = float((typical_baseline < dist).mean() * 100)
+        examples.append({
+            "synthetic_row": scan_disp.iloc[int(pos)].to_dict(),
+            "nearest_real_row": real_disp.iloc[int(idx[pos])].to_dict(),
+            "distance": round(dist, 4),
+            "percentile_vs_real_baseline": round(pct, 1),
+        })
+
+    out["examples"] = examples
+    out["min_distance"] = float(d.min())
+    out["baseline_median"] = float(np.median(typical_baseline))
+
+    if holdout is not None and len(holdout) >= 5:
+        Hall = np.nan_to_num(_encode(enc, holdout, use_cols))
+        dh, _ = nn_real.kneighbors(Hall)
+        dh = dh.ravel()
+        n_draw = len(Sscan)
+        # bootstrap with replacement -- holdout is usually far smaller than
+        # the synthetic scan, so this matches the SAMPLE SIZE of the "take N,
+        # keep the smallest" procedure rather than the raw row count
+        boot_mins = np.array([rng.choice(dh, size=n_draw, replace=True).min()
+                               for _ in range(200)])
+        ceiling = float(np.percentile(boot_mins, 5))
+        out["holdout_bootstrap_min_p05"] = ceiling
+        out["holdout_bootstrap_min_median"] = float(np.median(boot_mins))
+        out["note"] = (
+            f"closest synthetic-to-real pair (worst case, not a random sample), distance "
+            f"{out['min_distance']:.4f}. Graded against a real-holdout ceiling: scanning "
+            f"{n_draw} real (unseen) rows and taking their own closest match to the "
+            f"training data lands at {ceiling:.4f} or below only 5% of the time by chance "
+            f"alone -- a synthetic minimum AT OR ABOVE that is no worse than real, unseen "
+            f"data gets from pure multiple-comparisons luck; below it is the actual signal."
+        )
+    else:
+        out["note"] = (
+            "closest synthetic-to-real pairs found (worst case, not a random sample); no "
+            "holdout ceiling available (need >=5 holdout rows), so this is descriptive only "
+            "and not gated as PASS/FAIL."
+        )
+
+    return out
+
+
+def filter_close_records(
+    real: pd.DataFrame,
+    synth: pd.DataFrame,
+    roles: ColumnRoles,
+    resample_fn=None,
+    percentile: float = 5.0,
+    max_attempts: int = 5,
+    random_state: int = 0,
+) -> Dict[str, object]:
+    """Reject-and-resample privacy filter: the active counterpart to
+    nearest_real_examples -- that MEASURES how close synthetic rows sit to
+    real ones, this ACTS on it.
+
+    Any synthetic row sitting closer to its nearest real (training) row than
+    real rows ever sit to EACH OTHER, below the ``percentile``-th percentile
+    of real-to-real nearest-neighbor distances (5 by default, matching the
+    same convention nearest_real_examples' bootstrap ceiling uses), is
+    dropped. If ``resample_fn`` is given (draw N more rows from the already-
+    fitted synthesizer), the quota is refilled from fresh draws, themselves
+    checked the same way, for up to ``max_attempts`` rounds; if the model
+    keeps producing close rows even after that, the output is short by that
+    many rows rather than keeping the risky ones just to hit a row count.
+
+    Unlike nearest_real_examples (which grades a MINIMUM over many scanned
+    rows against a same-size-sample bootstrap ceiling, to correct for the
+    "closest of N draws is smaller than typical" effect when judging a whole
+    dataset's worst case), this filters EACH row independently against the
+    real data's own nearest-neighbor spacing -- the right reference point
+    when the question is "is this one row too close," not "is the dataset's
+    worst case suspicious."
+    """
+    cols = roles.modelable
+    report = {"n_input": len(synth), "n_rejected": 0, "n_resampled": 0,
+              "n_output": len(synth), "threshold": None, "note": ""}
+    if not cols or len(synth) < 1 or len(real) < 3:
+        report["note"] = "insufficient data for close-record filtering"
+        return {"data": synth, "report": report}
+
+    from sklearn.neighbors import NearestNeighbors
+
+    try:
+        enc, use_cols = _fit_mixed_encoder(real, roles)
+    except ValueError as e:
+        report["note"] = str(e)
+        return {"data": synth, "report": report}
+
+    Rall = np.nan_to_num(_encode(enc, real, use_cols))
+    nn_real = NearestNeighbors(n_neighbors=1).fit(Rall)
+
+    nn_rr = NearestNeighbors(n_neighbors=2).fit(Rall)
+    d_rr, _ = nn_rr.kneighbors(Rall)
+    threshold = float(np.percentile(d_rr[:, 1], percentile))
+    report["threshold"] = threshold
+
+    def _reject_mask(df: pd.DataFrame) -> np.ndarray:
+        X = np.nan_to_num(_encode(enc, df, use_cols))
+        d, _ = nn_real.kneighbors(X)
+        return d.ravel() < threshold
+
+    current = synth.reset_index(drop=True)
+    bad = _reject_mask(current)
+    report["n_rejected"] = int(bad.sum())
+    kept = current[~bad]
+
+    attempts = 0
+    while len(kept) < len(current) and resample_fn is not None and attempts < max_attempts:
+        need = len(current) - len(kept)
+        attempts += 1
+        try:
+            extra = resample_fn(max(need * 2, 10))
+        except Exception:
+            break
+        if extra is None or len(extra) == 0:
+            break
+        extra = extra.reset_index(drop=True)
+        good_extra = extra[~_reject_mask(extra)].head(need)
+        report["n_resampled"] += len(good_extra)
+        kept = pd.concat([kept, good_extra], ignore_index=True)
+
+    report["n_output"] = len(kept)
+    if len(kept) < len(current):
+        report["note"] = (f"could not fully refill after {attempts} resample attempt(s) -- "
+                           f"output is {len(current) - len(kept)} row(s) short of the request "
+                           f"rather than keeping rows that failed the check")
+    return {"data": kept.reset_index(drop=True), "report": report}
+
+
+def _cascade_select(tables: Dict[str, pd.DataFrame], children_of: Dict[str, list],
+                     pk_of: Dict[str, str], root: str, root_keys: set) -> Dict[str, "np.ndarray"]:
+    """BFS the parent->child relationship graph from ``root``/``root_keys``,
+    returning a boolean row-mask per reachable table marking rows linked
+    (directly or transitively, through however many hops) to one of
+    ``root_keys``. One walk, two uses by the caller: pass the BAD root keys to
+    get a drop-mask, or the GOOD root keys against a freshly sampled batch to
+    get a keep-mask -- the graph walk is identical either way.
+    """
+    masks: Dict[str, "np.ndarray"] = {}
+    root_df = tables.get(root)
+    if root_df is None or pk_of.get(root) not in root_df.columns:
+        return masks
+    masks[root] = root_df[pk_of[root]].isin(root_keys).to_numpy()
+    frontier = [(root, root_keys)]
+    while frontier:
+        parent, keys = frontier.pop()
+        for ct, fk, _ in children_of.get(parent, []):
+            cdf = tables.get(ct)
+            if cdf is None or fk not in cdf.columns:
+                continue
+            mask = cdf[fk].isin(keys).to_numpy()
+            masks[ct] = mask | masks.get(ct, np.zeros(len(cdf), dtype=bool))
+            child_pk = pk_of.get(ct)
+            if child_pk and child_pk in cdf.columns and mask.any():
+                frontier.append((ct, set(cdf.loc[mask, child_pk])))
+    return masks
+
+
+def filter_close_records_multitable(
+    real_tables: Dict[str, pd.DataFrame],
+    synth_tables: Dict[str, pd.DataFrame],
+    roles: Dict[str, ColumnRoles],
+    relationships: List[dict],
+    resample_fn=None,
+    percentile: float = 5.0,
+    max_attempts: int = 3,
+) -> Dict[str, object]:
+    """Multi-table counterpart to filter_close_records, for HMA.
+
+    HMA links rows across tables by shared keys, so a risky row can't just be
+    dropped in isolation in general: removing a row from a table that HAS
+    declared children has to cascade to every descendant row that references
+    it, and refilling means pulling whole fresh LINKED GROUPS from a new
+    sampled batch, not individual rows.
+
+    Every table with both a ``roles`` entry and real data is checked for
+    closeness, UNLESS one of its ancestors (per ``relationships``) is ALSO
+    such a table -- that ancestor's cascade already covers it, checking it
+    again separately would double up. This one rule handles three shapes
+    without special-casing them:
+
+      * No relationships at all: every table has no ancestor, so every table
+        is its own independent check (same idea as the single-table filter,
+        just sharing one fresh full-batch resample per retry round across
+        every table that still needs refilling, instead of resampling per
+        table).
+      * A genuine declared parent/child pair between two REAL tables: only
+        the parent is checked, and a rejection cascades down to the child
+        (and further descendants, if any) via their foreign keys.
+      * Entity-key/hub mode: the derived hub table has no ``roles`` entry
+        (it isn't a real table), so its real children fall straight through
+        the "ancestor also checked" test and are each treated as their own
+        independent check -- this is the case that silently fell through
+        earlier (an empty ``roots`` list from requiring the STRUCTURAL root
+        to itself be a real table), leaving every child unfiltered even
+        though each one individually has no further children to cascade to
+        and doesn't need one.
+
+    A row being close in a leaf/child table alone, without its parent also
+    being close, is not covered by this pass -- a deliberately scoped v1, not
+    an oversight.
+
+    ``resample_fn``, if given, draws a fresh FULL multi-table batch (e.g.
+    ``lambda: hma.sample(scale=scale)``) -- HMA has no "give me N more root
+    rows only" API, so each retry resamples everything and keeps just what's
+    needed, discarding the rest. ``max_attempts`` defaults lower than the
+    single-table filter's because of that extra cost per retry.
+    """
+    from sklearn.neighbors import NearestNeighbors
+
+    report: Dict[str, object] = {"tables": {}, "note": ""}
+    current = dict(synth_tables)
+
+    children_of: Dict[str, list] = {}
+    pk_of: Dict[str, str] = {}
+    parent_of: Dict[str, str] = {}
+    for r in relationships:
+        children_of.setdefault(r["parent_table_name"], []).append(
+            (r["child_table_name"], r["child_foreign_key"], r["parent_primary_key"]))
+        pk_of[r["parent_table_name"]] = r["parent_primary_key"]
+        parent_of[r["child_table_name"]] = r["parent_table_name"]
+
+    def _has_ancestor_with_roles(t: str) -> bool:
+        seen, cur = set(), parent_of.get(t)
+        while cur and cur not in seen:
+            seen.add(cur)
+            if cur in roles and cur in real_tables:
+                return True
+            cur = parent_of.get(cur)
+        return False
+
+    effective_roots = [t for t in synth_tables
+                        if t in roles and t in real_tables and not _has_ancestor_with_roles(t)]
+    if not effective_roots:
+        report["note"] = "no table with both roles and real data found to check"
+        return {"data": synth_tables, "report": report}
+
+    for root in effective_roots:
+        root_roles = roles[root]
+        real_root, synth_root = real_tables[root], current[root]
+        try:
+            enc, use_cols = _fit_mixed_encoder(real_root, root_roles)
+        except ValueError as e:
+            report["tables"][root] = {"note": str(e)}
+            continue
+
+        Rall = np.nan_to_num(_encode(enc, real_root, use_cols))
+        nn_real = NearestNeighbors(n_neighbors=1).fit(Rall)
+        nn_rr = NearestNeighbors(n_neighbors=2).fit(Rall)
+        d_rr, _ = nn_rr.kneighbors(Rall)
+        threshold = float(np.percentile(d_rr[:, 1], percentile))
+
+        def _mask(df: pd.DataFrame, _enc=enc, _cols=use_cols, _nn=nn_real, _th=threshold):
+            X = np.nan_to_num(_encode(_enc, df, _cols))
+            d, _ = _nn.kneighbors(X)
+            return d.ravel() < _th
+
+        n_input = len(synth_root)
+        bad_mask = _mask(synth_root)
+        n_bad = int(bad_mask.sum())
+
+        # only cascade if this root actually HAS declared children with a
+        # usable primary key -- e.g. an entity-hub child with no children of
+        # its own needs none of that, a plain boolean mask is enough
+        pk_col = pk_of.get(root)
+        has_children = bool(children_of.get(root)) and pk_col and pk_col in synth_root.columns
+        cascaded_removed: Dict[str, int] = {}
+
+        if has_children:
+            bad_keys = set(synth_root.loc[bad_mask, pk_col])
+            drop_masks = _cascade_select(current, children_of, pk_of, root, bad_keys)
+            for t, mask in drop_masks.items():
+                if mask.any():
+                    cascaded_removed[t] = int(mask.sum())
+                    current[t] = current[t][~mask].reset_index(drop=True)
+        else:
+            current[root] = current[root][~bad_mask].reset_index(drop=True)
+
+        n_resampled = 0
+        attempts = 0
+        while len(current[root]) < n_input and resample_fn is not None and attempts < max_attempts:
+            attempts += 1
+            try:
+                fresh = resample_fn()
+            except Exception:
+                break
+            if root not in fresh or len(fresh[root]) == 0:
+                break
+            need = n_input - len(current[root])
+            fresh_root = fresh[root]
+            fresh_bad = _mask(fresh_root)
+
+            if has_children:
+                good_keys = set(fresh_root.loc[~fresh_bad, pk_col])
+                good_keys = set(list(good_keys)[:need])
+                if not good_keys:
+                    continue
+                keep_masks = _cascade_select(fresh, children_of, pk_of, root, good_keys)
+                for t, mask in keep_masks.items():
+                    if not mask.any():
+                        continue
+                    piece = fresh[t][mask]
+                    current[t] = pd.concat([current.get(t, piece.iloc[0:0]), piece], ignore_index=True)
+                    if t == root:
+                        n_resampled += len(piece)
+            else:
+                good = fresh_root[~fresh_bad].head(need)
+                if len(good):
+                    n_resampled += len(good)
+                    current[root] = pd.concat([current[root], good], ignore_index=True)
+
+        report["tables"][root] = {
+            "n_input": n_input, "n_rejected": n_bad, "n_resampled": n_resampled,
+            "n_output": len(current[root]), "cascaded_removed": cascaded_removed,
+            "threshold": threshold,
+            "note": "" if len(current[root]) >= n_input else
+                    f"could not fully refill after {attempts} resample attempt(s) -- "
+                    f"output is {n_input - len(current[root])} row(s) short",
+        }
+
+    return {"data": current, "report": report}
+
+
 def exact_match_rate(real: pd.DataFrame, synth: pd.DataFrame, roles: ColumnRoles) -> Dict[str, float]:
     """Fraction of synthetic rows that exactly match a real row (modelable cols)."""
     cols = [c for c in roles.modelable if c in real.columns and c in synth.columns]
@@ -308,12 +696,18 @@ def privacy_report(
       * NewRowSynthesis (sdmetrics) — are synthetic rows novel (not copies)?
       * CategoricalCAP (sdmetrics)  — can a sensitive categorical field be inferred?
 
+    Plus one concrete example-based check, nearest_record_examples: the
+    closest synthetic row to any real row, shown side by side with the
+    distance — the literal "can you reverse-engineer this back to a real
+    person" test, for demoing rather than just asserting the score above.
+
     MIA and sdmetrics' DCROverfittingProtection test the same membership-
     inference threat; we report the trained-attacker AUC framing here.
     """
     mia = membership_inference_attack(train_real, holdout_real, synth, roles)
     sdm = sdmetrics_privacy(train_real, synth, roles, metadata, table_name,
                             holdout=holdout_real, cap_sensitive=cap_sensitive)
+    nearest = nearest_real_examples(train_real, synth, roles, holdout=holdout_real)
 
     verdicts = {}
     # MIA AUC close to 0.5 == attacker cannot tell members from non-members.
@@ -423,10 +817,38 @@ def privacy_report(
             "SKIP", f"needs ≥2 categorical columns (1 key + 1 sensitive); this table "
                     f"has {len(roles.categorical)} — attack not applicable")
 
+    examples = nearest.get("examples") or []
+    ceiling = nearest.get("holdout_bootstrap_min_p05")
+    if examples and ceiling is not None:
+        min_dist = nearest["min_distance"]
+        if min_dist >= ceiling:
+            status, why = "PASS", "no closer than real, unseen data gets from pure chance"
+        else:
+            # how far below the ceiling, as a fraction of the ceiling itself
+            ratio = min_dist / (ceiling + 1e-9)
+            status = "WARN" if ratio >= 0.5 else "FAIL"
+            why = "closer to a real record than even chance alone produces from real data"
+        verdicts["nearest_record"] = (
+            status,
+            f"closest synthetic row's distance ({min_dist:.4f}) vs the real-holdout 5th-"
+            f"percentile ceiling for a same-size sample ({ceiling:.4f}) — {why}",
+        )
+    elif examples:
+        pct = examples[0]["percentile_vs_real_baseline"]
+        verdicts["nearest_record"] = (
+            "SKIP",
+            f"closest synthetic row at the {pct:.0f}th percentile of typical real-to-real "
+            f"spacing — no real-holdout ceiling available to grade this against (need "
+            f">=5 holdout rows)",
+        )
+    else:
+        verdicts["nearest_record"] = ("SKIP", nearest.get("note") or "not computable")
+
     return {
         "table": table_name,
         "membership_inference": mia,
         "sdmetrics": sdm,
+        "nearest_record_examples": nearest,
         "verdicts": {k: {"status": s, "detail": d} for k, (s, d) in verdicts.items()},
     }
 

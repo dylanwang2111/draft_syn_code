@@ -32,6 +32,10 @@ const fmt=(v,d=3)=>(v==null||Number.isNaN(v))?"—":(+v).toFixed(d);
 const pct=v=>(v==null)?"—":(100*v).toFixed(1)+"%";
 const meterColor=v=>`hsl(${Math.max(0,Math.min(1,v))*105},58%,45%)`;
 const pill=s=>`<span class="pill ${s}">${s}</span>`;
+const fmtSecs=s=>{ if(s==null||Number.isNaN(s)) return "—";
+  if(s<60) return `${s<10?s.toFixed(1):Math.round(s)}s`;
+  const m=Math.floor(s/60), r=Math.round(s%60);
+  return `${m}m${r?` ${r}s`:""}`; };
 const esc=s=>String(s).replace(/</g,"&lt;");
 const setStatus=(c,t)=>{const d=$("#status-dot");d.className="status-dot"+(c?" "+c:"");d.title=t||c||"idle";};
 
@@ -906,7 +910,7 @@ function showSection(id){
   $$(".rep-navbtn").forEach(b=>b.classList.toggle("active",b.dataset.sec===id));
   requestAnimationFrame(flushVisiblePlots);   // render any charts now visible
 }
-$("#rep-nav").addEventListener("click",e=>{ const b=e.target.closest(".rep-navbtn"); if(b) showSection(b.dataset.sec); });
+$("#rep-nav").addEventListener("click",e=>{ const b=e.target.closest(".rep-navbtn"); if(b&&b.dataset.sec) showSection(b.dataset.sec); });
 /* fold the report side-nav to a right-edge icon rail (hover expands to labels) */
 (function(){
   const nav=$("#rep-nav"), fold=$("#rep-fold");
@@ -1290,6 +1294,164 @@ function restylePlotly(){
   }
 }
 
+/* ---------------- standalone report export ---------------- */
+function inlineStyles(){
+  let css="";
+  for(const sheet of document.styleSheets){
+    try{ for(const rule of sheet.cssRules) css+=rule.cssText+"\n"; }
+    catch(e){ /* cross-origin sheet (Google Fonts) -- skip, the <link> tags still try to load it live */ }
+  }
+  return css;
+}
+/* Build the standalone report document (all sections, charts pre-rendered as
+   static SVG so nothing needs live JS to display) as an HTML string. Shared by
+   the PDF export below; caller must have already forced every .rep-sec
+   visible + flushVisiblePlots() + waited a couple frames so charts exist. */
+function buildReportDoc(extraCss){
+  const clone=$("#pane-report .rep-body").cloneNode(true);
+  clone.querySelectorAll("select").forEach(s=>s.disabled=true);
+  clone.querySelectorAll(".rep-sec").forEach(sec=>{
+    const label=(NAV_LABELS[VIEW]||{})[sec.id];
+    if(label){ const h=document.createElement("h2"); h.className="rep-export-h2"; h.textContent=label; sec.prepend(h); }
+  });
+  const now=new Date();
+  const stamp=now.toISOString().slice(0,16).replace("T"," ")+" UTC";
+  const theme=document.documentElement.getAttribute("data-theme")||"";
+  const fontLinks=[...document.querySelectorAll('link[href*="fonts.g"]')].map(l=>l.outerHTML).join("\n");
+  const html=`<!doctype html><html${theme?` data-theme="${esc(theme)}"`:""}><head><meta charset="utf-8">
+<title>Synth/Lab report — ${esc(stamp)}</title>
+${fontLinks}
+<style>${inlineStyles()}
+/* the live app is a fixed-viewport SPA -- html,body{height:100%;overflow:hidden}
+   from the inlined stylesheet is load-bearing THERE (an inner container does
+   the actual scrolling), but this export has no such inner container, so
+   without this override the whole exported page is stuck unscrollable */
+html,body{height:auto !important;overflow:visible !important}
+.rep-sec{display:block !important}
+body{max-width:1100px;margin:0 auto;padding:28px}
+.rep-export-h2{font-family:var(--disp);font-size:20px;margin:34px 0 14px;padding-top:18px;border-top:1px solid var(--line)}
+.rep-export-h2:first-of-type{border-top:none;margin-top:0;padding-top:0}
+/* browsers drop background colors and mute text on print by default ("optimize
+   for ink") -- this is what keeps the pills/meters/heatmaps in color in the PDF */
+*{ -webkit-print-color-adjust:exact !important; print-color-adjust:exact !important; color-adjust:exact !important; }
+${extraCss||""}
+</style></head>
+<body><p class="dim" style="font-size:12px;margin-bottom:18px">Synth/Lab report, generated ${esc(stamp)} · ${esc(VIEW)} view · synthesizers: ${esc((LAST_RES.synths||[]).join(", "))} · tables: ${esc((LAST_RES.tables||[]).join(", "))}</p>
+${clone.innerHTML}
+</body></html>`;
+  return {html, now};
+}
+/* print-only CSS shared by the PDF export: a normal Letter page, content
+   flows continuously (forcing a page break before every section made the
+   PDF choppier and harder to read, not easier -- reverted). Headings stay
+   attached to what follows them, and tables/cards/charts are told not to
+   split across a page boundary where the content allows it -- the browser
+   still overrides that for anything too tall to fit one page regardless. */
+const PDF_PAGE_CSS=`@media print{
+  @page{ size:letter; margin:0.6in }
+  .rep-export-h2{ break-after:avoid; page-break-after:avoid }
+  table, .hm-wrap, .exec, .lb-card{ break-inside:avoid; page-break-inside:avoid }
+}`;
+/* Downloads the report as a standalone, self-contained HTML file -- charts
+   already rendered to static SVG, styles inlined, opens and reads fine with
+   no server and no network. */
+async function downloadReportHtml(){
+  if(!LAST_RES) return;
+  const btn=$("#btn-download-html"), txt=btn&&btn.querySelector(".txt");
+  const orig=txt&&txt.textContent;
+  if(btn){ btn.disabled=true; if(txt) txt.textContent="Preparing…"; }
+  const wasActive=[...document.querySelectorAll(".rep-sec.active")].map(s=>s.id);
+  try{
+    $$(".rep-sec").forEach(s=>s.classList.add("active"));
+    flushVisiblePlots();
+    await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
+
+    const {html, now}=buildReportDoc();
+    const blob=new Blob([html],{type:"text/html"});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");
+    a.href=url; a.download=`synthlab-report-${now.toISOString().slice(0,10)}.html`;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  } catch(e){
+    alert("Could not prepare the HTML report: "+e);
+  } finally {
+    $$(".rep-sec").forEach(s=>s.classList.toggle("active",wasActive.includes(s.id)));
+    if(btn){ btn.disabled=false; if(txt) txt.textContent=orig; }
+  }
+}
+/* Downloads the report as a PDF via the browser's native print-to-PDF,
+   rendered into a detached iframe (so only the report prints, not the app
+   chrome around it), page-separated per metric section (see PDF_PAGE_CSS). */
+async function downloadReportPdf(){
+  if(!LAST_RES) return;
+  const btn=$("#btn-download-pdf"), txt=btn&&btn.querySelector(".txt");
+  const orig=txt&&txt.textContent;
+  if(btn){ btn.disabled=true; if(txt) txt.textContent="Preparing…"; }
+  const wasActive=[...document.querySelectorAll(".rep-sec.active")].map(s=>s.id);
+  let frame;
+  try{
+    // show every section so its charts are genuinely visible (offsetParent
+    // truthy) when flushVisiblePlots draws them -- Plotly renders lazily on
+    // visibility, so a still-hidden tab would otherwise export with blank charts
+    $$(".rep-sec").forEach(s=>s.classList.add("active"));
+    flushVisiblePlots();
+    await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
+
+    const {html}=buildReportDoc(PDF_PAGE_CSS);
+    frame=document.createElement("iframe");
+    frame.style.cssText="position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden";
+    document.body.appendChild(frame);
+    const doc=frame.contentDocument;
+    doc.open(); doc.write(html); doc.close();
+
+    await new Promise(r=>setTimeout(r,400));   // let fonts/layout settle in the iframe
+    frame.contentWindow.addEventListener("afterprint",()=>frame.remove());
+    frame.contentWindow.focus();
+    frame.contentWindow.print();
+  } catch(e){
+    if(frame) frame.remove();
+    alert("Could not prepare the PDF: "+e);
+  } finally {
+    $$(".rep-sec").forEach(s=>s.classList.toggle("active",wasActive.includes(s.id)));
+    if(btn){ btn.disabled=false; if(txt) txt.textContent=orig; }
+  }
+}
+/* single "Export" button in the sidebar reveals a small flyout with PDF/HTML
+   on hover. The flyout is appended to <body>, not nested under the button,
+   so .rep-nav's own overflow:hidden (needed for its collapse-to-rail
+   animation) can't clip it -- position:fixed + coords computed from the
+   button's own rect anchor it in place. */
+(function setupExportMenu(){
+  const btn=$("#btn-export");
+  if(!btn) return;
+  const menu=document.createElement("div");
+  menu.className="rep-export-menu";
+  menu.innerHTML=`
+    <button type="button" class="rep-export-opt" id="btn-download-pdf">
+      <svg class="ic" viewBox="0 0 24 24"><rect x="4" y="2.5" width="16" height="19" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>PDF</button>
+    <button type="button" class="rep-export-opt" id="btn-download-html">
+      <svg class="ic" viewBox="0 0 24 24"><polyline points="8 6 3 12 8 18"/><polyline points="16 6 21 12 16 18"/></svg>HTML</button>`;
+  document.body.appendChild(menu);
+  let hideT=null;
+  const show=()=>{
+    clearTimeout(hideT);
+    menu.style.display="flex";
+    const r=btn.getBoundingClientRect();
+    menu.style.right=(window.innerWidth-r.left+6)+"px";
+    const menuH=menu.offsetHeight||76;
+    menu.style.top=Math.min(Math.max(8,r.top),window.innerHeight-menuH-8)+"px";
+  };
+  const scheduleHide=()=>{ hideT=setTimeout(()=>{ menu.style.display="none"; },150); };
+  btn.addEventListener("mouseenter",show);
+  btn.addEventListener("focus",show);
+  btn.addEventListener("mouseleave",scheduleHide);
+  menu.addEventListener("mouseenter",()=>clearTimeout(hideT));
+  menu.addEventListener("mouseleave",scheduleHide);
+  menu.querySelector("#btn-download-pdf").addEventListener("click",()=>{ menu.style.display="none"; downloadReportPdf(); });
+  menu.querySelector("#btn-download-html").addEventListener("click",()=>{ menu.style.display="none"; downloadReportHtml(); });
+})();
+
 /* ============================ business view ============================
    The report speaks two languages: a plain-language "business" view (default)
    and the full "technical" view.  VIEW drives both; LAST_RES lets the toggle
@@ -1437,6 +1599,35 @@ function renderReport(res){
 
   applyNavLabels();
 
+  /* --- Time breakdown: prep / generate / privacy filter / postprocess / report --- */
+  function phaseBreakdownHtml(res){
+    const ph=res.phase_seconds||{};
+    if(!ph.total) return "";
+    const order=[["prep","setup","--faint"],["generate","train + synthesize","--blue"],
+      ["resample","privacy filter","--navy"],["postprocess","PII + refill","--sky"],
+      ["report","score + report","--blue-deep"]];
+    const total=ph.total||order.reduce((s,[k])=>s+(ph[k]||0),0);
+    const segs=order.filter(([k])=>(ph[k]||0)>0);
+    const bar=segs.map(([k,label,color])=>{
+      const pct=Math.max(0,(ph[k]||0)/total*100);
+      return `<div style="flex:${pct||0.0001} 0 0;background:var(${color})" title="${esc(label)}: ${fmtSecs(ph[k])} (${pct.toFixed(0)}%)"></div>`;
+    }).join("");
+    const legend=segs.map(([k,label,color])=>
+      `<span style="display:inline-flex;align-items:center;gap:5px;margin-right:14px;font-size:11px;color:var(--muted)">
+        <span style="width:8px;height:8px;border-radius:2px;background:var(${color});display:inline-block"></span>
+        ${esc(label)}: ${fmtSecs(ph[k])}</span>`).join("");
+    return `<div class="panel" style="margin-top:18px">
+      <div class="blk-head"><h3 style="font-size:15px">Time breakdown${ihelp(
+        "prep = split/schema setup before any fitting. train + synthesize = fit + sample, per "
+        + "synthesizer, summed. privacy filter = the reject-and-resample check on top of that. "
+        + "PII + refill = faking sensitive columns and resampling id/date/audit columns. "
+        + "score + report = every quality/privacy/utility metric plus the comparison figures.")}</h3>
+        <span class="dim" style="margin-left:auto;font-family:var(--mono);font-size:12px">total ${fmtSecs(ph.total)}</span></div>
+      <div style="display:flex;height:10px;border-radius:5px;overflow:hidden;background:var(--panel-2);margin-bottom:10px">${bar}</div>
+      <div>${legend}</div>
+    </div>`;
+  }
+
   /* --- Leaderboard (overview) --- */
   const lb=[...res.leaderboard].sort((a,b)=>(b.overall??0)-(a.overall??0));
   if(VIEW==="business"){
@@ -1454,11 +1645,13 @@ function renderReport(res){
       bh+=`<p class="biz-note">Every generator we tried, ranked by overall trust:</p>
         <div class="podium">${lb.map((r,i)=>{
           const ds=bizDims(res,r.synthesizer), ov=worstVerdict(ds.map(d=>d.verdict));
+          const secs=(res.gen_seconds||{})[r.synthesizer];
           return `<div class="lb-card ${i===0?"first":""}"><div class="rank">${i+1}</div>
             <div class="lb-name"><span class="dot" style="background:${P(r.synthesizer)}"></span>${esc(r.synthesizer)}</div>
             <div style="margin:9px 0 10px">${verdictBadge(ov,true)}</div>
             <p class="lb-why">${esc(bizWhy(res,r.synthesizer,lb))}</p>
-            <div class="bizdims mini">${ds.map(bizDimMini).join("")}</div></div>`;
+            <div class="bizdims mini">${ds.map(bizDimMini).join("")}</div>
+            <p class="dim" style="font-size:11px;margin-top:8px" title="wall-clock time to fit and generate">⏱ ${fmtSecs(secs)} to generate</p></div>`;
         }).join("")}</div>`;
     }
     $("#sec-overview").innerHTML=bh;
@@ -1468,14 +1661,16 @@ function renderReport(res){
     <div class="lb-card ${i===0?"first":""}"><div class="rank">${i+1}</div>
       <div class="lb-name"><span class="dot" style="background:${P(r.synthesizer)}"></span>${r.synthesizer}</div>
       <div class="big-score">${fmt(r.overall)}<small> /1 overall</small></div>
-      ${meter("fidelity",r.fidelity)}${meter("privacy",r.privacy)}${meter("utility · TSTR",r.utility_tstr)}</div>`).join("")}</div>
+      ${meter("fidelity",r.fidelity)}${meter("privacy",r.privacy)}${meter("utility · TSTR",r.utility_tstr)}
+      <p class="dim" style="font-size:11px;margin-top:8px" title="wall-clock time to fit and generate">⏱ ${fmtSecs((res.gen_seconds||{})[r.synthesizer])} to generate</p></div>`).join("")}</div>
     <p class="note"><b>overall</b> = mean of the three dimensions${ihelp(
       "fidelity = the column statistics (sdmetrics QualityReport)"
       + (hasStruct ? ", two parts to one part referential integrity (cardinality shape similarity)" : "")
-      + ". privacy = the mean of MIA protection, NewRowSynthesis and CategoricalCAP. "
-      + "utility = the TSTR/TRTR ratio. Each dimension is broken down on its own tab; see METRICS.md.")}</p>`;
+      + ". privacy = the mean of MIA protection, NewRowSynthesis, CategoricalCAP and nearest-record protection. "
+      + "utility = the TSTR/TRTR ratio. Each dimension is broken down on its own tab; see docs/METRICS.md.")}</p>`;
   flushMeters("#sec-overview");
   }
+  $("#sec-overview").insertAdjacentHTML("beforeend", phaseBreakdownHtml(res));
 
   /* --- Fidelity (score strip + summary table + combined Overall/Shapes/Pairs figure) --- */
   const shapesData=res.figures.shapes_data||{}, pairsData=res.figures.pairs_data||{};
@@ -1758,8 +1953,8 @@ function renderReport(res){
   /* --- Privacy --- */
   let pv=scoreStrip(res,P,v=>{
     const p=v.privacy;
-    const terms=[["MIA",p.mia_protection],["new-row",p.new_row_synthesis],["CAP",p.categorical_cap]]
-      .filter(([,x])=>num(x)!=null);
+    const terms=[["MIA",p.mia_protection],["new-row",p.new_row_synthesis],["CAP",p.categorical_cap],
+      ["nearest-rec",p.nearest_record_protection]].filter(([,x])=>num(x)!=null);
     return {score:p.score,
       formula: terms.length
         ? `mean( ${terms.map(([lb,x])=>`<b>${fmt(x)}</b> ${lb}`).join(" , ")} ) = <b>${fmt(p.score)}</b>`
@@ -1773,12 +1968,15 @@ function renderReport(res){
         ["CategoricalCAP", p.categorical_cap, {tip:"protection against attribute inference — judged against the real-holdout ceiling below, not an absolute bar"}],
         ["real-holdout ceiling", p.categorical_cap_baseline, {sub:true, raw:true,
           tip:"what a REAL holdout scores under the same attack — the achievable ceiling. When the sensitive field is guessable from the real data's own distribution (imbalance, correlations), even real rows score low; a synthetic score near this ceiling means the generator adds no leakage beyond population statistics."}],
+        ["Nearest-record protection", p.nearest_record_protection, {tip:"clip(closest synthetic-to-real distance ÷ the real-holdout bootstrap ceiling, 0, 1) — 1 means the closest synthetic row is at or beyond that ceiling, no worse than real unseen data gets from pure chance; near 0 means it's landing on top of a real row"}],
       ]};
-    }, {unit:"/1 privacy", note:`Mean of the three protection scores${ihelp(
+    }, {unit:"/1 privacy", note:`Mean of the four protection scores${ihelp(
       "The MIA term is 1 − 2|AUC − 0.5|, not the AUC itself: the raw attacker AUC is shown indented beneath "
       + "it because its ideal is 0.5 (a coin flip), so both a strong attacker (AUC 1.0) and an inverted one "
       + "(AUC 0.0) are penalised. NewRowSynthesis = synthetic rows that are not copies of a real row. "
-      + "CategoricalCAP = protection against attribute inference.")}`})
+      + "CategoricalCAP = protection against attribute inference. Nearest-record protection = the closest "
+      + "synthetic-to-real distance found, graded against how close real records get to each other by pure "
+      + "chance — see the Nearest-record check panel below for the actual matched row pair.")}`})
     +fig(res.figures.privacy,"NewRowSynthesis (ideal 1) · Membership-Inference attacker AUC (ideal 0.5) · CategoricalCAP (ideal 1)");
   // flatten, then sort synthesizer → table → check so each synth reads as one block
   const pvRows=[];
@@ -1799,7 +1997,59 @@ function renderReport(res){
       <td class="mono">${dot(r.s)}${esc(r.s)}</td><td class="mono dim">${esc(r.t)}</td><td class="mono">${esc(r.chk)}</td>
       <td>${pill(r.status)}</td><td class="dim" style="font-size:11.5px">${esc(r.detail)}</td></tr>`;
   pv+=`</tbody></table>`;
+
+  // Nearest-record check: pick the first synth/table combo that has an example,
+  // so the panel isn't empty by default -- "nearest_record" above already
+  // covers this as a scored/filterable row; this is the visual drill-down.
+  let nrDefault=null;
+  outer: for(const s of res.synths) for(const t of res.tables){
+    const ex=((((res.privacy||{})[s]||{})[t]||{}).nearest_record_examples||{}).examples||[];
+    if(ex.length){ nrDefault=[s,t]; break outer; }
+  }
+  const renderNearestPair=(s,t)=>{
+    const rep=((res.privacy||{})[s]||{})[t];
+    const nr=rep&&rep.nearest_record_examples, ex=nr&&nr.examples&&nr.examples[0];
+    const cf=((res.close_filter||{})[s]||{})[t];
+    const filterNote=cf&&cf.n_rejected
+      ? `<p class="dim" style="font-size:11.5px;margin:0 0 10px">🛡 reject-and-resample filter: ${cf.n_rejected}
+          of ${cf.n_input} generated rows sat closer to a real record than real records ever sit to each
+          other, dropped and ${cf.n_resampled>=cf.n_rejected?"fully":cf.n_resampled+"/"+cf.n_rejected}
+          refilled from fresh draws${cf.note?` (${esc(cf.note)})`:""}. Rows shown below already reflect this.</p>`
+      : (cf ? `<p class="dim" style="font-size:11.5px;margin:0 0 10px">🛡 reject-and-resample filter: none of
+          ${cf.n_input} generated rows were close enough to a real record to need dropping.</p>` : "");
+    if(!ex) return filterNote+`<p class="dim" style="font-size:12px">no example available for ${esc(s)} · ${esc(t)}</p>`;
+    const cols=Object.keys(ex.synthetic_row), pct=ex.percentile_vs_real_baseline;
+    const pctColor=pct>=50?"var(--pass)":pct>=20?"var(--warn)":"var(--fail)";
+    return filterNote+`<p class="dim" style="font-size:12px;margin:0 0 8px">
+        closest synthetic row found (worst case, not a random sample) — distance ${fmt(ex.distance)}
+        vs a real-to-real baseline of ${fmt(nr.baseline_median)}, sitting at the
+        <b style="color:${pctColor}">${pct}th percentile</b> of how far real records normally sit from
+        each other (50 = typical spacing between two real records, well under 20 = worth a look).</p>
+      <table class="rep"><thead><tr><th></th>${cols.map(c=>`<th>${esc(c)}</th>`).join("")}</tr></thead><tbody>
+        ${[["synthetic",ex.synthetic_row],["nearest real",ex.nearest_real_row]].map(([label,row])=>
+          `<tr><td class="mono dim">${esc(label)}</td>${cols.map(c=>{
+            const match=String(ex.synthetic_row[c])===String(ex.nearest_real_row[c]);
+            return `<td class="mono"${match?` style="color:var(--fail)" title="identical between the two rows"`:""}>${esc(row[c])}</td>`;
+          }).join("")}</tr>`).join("")}
+      </tbody></table>`;
+  };
+  pv+=`<div class="panel" id="nearest-panel" style="margin-top:16px">
+      <div class="blk-head"><h3 style="font-size:15px">Nearest-record check — can a synthetic row be traced back to a real one?</h3></div>
+      <div style="display:flex;gap:10px;margin-bottom:10px">
+        <select id="nr-synth">${res.synths.map(s=>`<option value="${esc(s)}">${esc(s)}</option>`).join("")}</select>
+        <select id="nr-table">${res.tables.map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join("")}</select>
+      </div>
+      <div id="nr-body"></div>
+    </div>`;
   $("#sec-privacy").innerHTML=pv;
+  const nrPanel=$("#sec-privacy").querySelector("#nearest-panel");
+  if(nrPanel){
+    const selS=nrPanel.querySelector("#nr-synth"), selT=nrPanel.querySelector("#nr-table"), body=nrPanel.querySelector("#nr-body");
+    if(nrDefault){ selS.value=nrDefault[0]; selT.value=nrDefault[1]; }
+    const render=()=>{ body.innerHTML=renderNearestPair(selS.value,selT.value); };
+    selS.addEventListener("change",render); selT.addEventListener("change",render);
+    render();
+  }
   // wire the header filters: a row must match every active dropdown to stay visible
   const pvTable=$("#sec-privacy").querySelector("#priv-checks");
   if(pvTable){

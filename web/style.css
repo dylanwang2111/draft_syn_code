@@ -369,6 +369,18 @@ select:hover{border-color:var(--sky)} select:focus{outline:none; border-color:va
 .rep-nav.collapsed:hover .rep-fold{align-self:flex-end; transform:none}
 .rep-nav.collapsed:hover .rep-nav-view{display:flex}
 .rep-nav.collapsed:hover .rep-navbtn{justify-content:flex-start; padding-left:11px}
+/* export flyout: appended to <body> (not .rep-nav) so it isn't clipped by
+   .rep-nav's own overflow:hidden (needed for the collapse-to-rail animation
+   above); position:fixed + JS-computed coords anchor it to the button */
+.rep-export-menu{position:fixed; display:none; flex-direction:column; background:var(--panel);
+  border:1px solid var(--line); border-radius:9px; box-shadow:var(--shadow-lg); padding:5px;
+  min-width:130px; z-index:50}
+.rep-export-opt{display:flex; align-items:center; gap:9px; width:100%; text-align:left; background:none;
+  border:none; border-radius:6px; font-family:var(--sans); font-size:12.5px; color:var(--muted);
+  padding:8px 10px; cursor:pointer}
+.rep-export-opt:hover{background:var(--panel-2); color:var(--ink)}
+.rep-export-opt .ic{width:14px; height:14px; flex:none; fill:none; stroke:currentColor; stroke-width:1.7;
+  stroke-linecap:round; stroke-linejoin:round}
 .rep-nav.collapsed:hover .rep-navbtn.child{padding-left:22px}
 .rep-nav.collapsed:hover .rep-navbtn .txt{display:inline}
 

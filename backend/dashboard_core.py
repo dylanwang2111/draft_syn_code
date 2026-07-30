@@ -8,6 +8,7 @@ route (server.py) and the chat assistant's run_synthesis tool
 from __future__ import annotations
 
 import os
+import random
 import re
 import sys
 import threading
@@ -397,6 +398,8 @@ def _validate_relationships(tables: dict, cfg: dict) -> list[dict]:
 def _run_job(cfg: dict, st: dict):
     job = st["job"]
     log = job["log"]
+    t_job_start = time.perf_counter()
+    phase_seconds: dict = {}   # {"prep","generate","resample","postprocess","report"} wall-clock
 
     def set_pct(p):
         """Monotonically advance the job's percent-complete (capped < 100)."""
@@ -462,6 +465,23 @@ def _run_job(cfg: dict, st: dict):
     threading.Thread(target=_heartbeat, daemon=True).start()
 
     try:
+        t_prep_start = time.perf_counter()
+        # Seed every global RNG this pipeline touches, once, up front: numpy
+        # (train/holdout split, sklearn estimators with random_state=None
+        # like sdmetrics' DecisionTreeClassifier efficacy scorer, which reads
+        # the global numpy state since it takes no seed parameter of its
+        # own), stdlib random (Faker-backed PII faking), and torch if CTGAN/
+        # TVAE/CopulaGAN are in play. SDV's own synthesizers keep a
+        # model-local RNG instead of using the global one, see
+        # synth_eval.suite for the matching per-synthesizer seeding.
+        run_seed = cfg.get("seed", 42)
+        np.random.seed(run_seed)
+        random.seed(run_seed)
+        try:
+            import torch
+            torch.manual_seed(run_seed)
+        except ImportError:
+            pass
         tables = st["tables"]
         tables_meta = _metadata_from_request(cfg.get("schema", {}), cfg.get("relationships", []), st)
         rels = cfg.get("relationships", [])
@@ -548,12 +568,17 @@ def _run_job(cfg: dict, st: dict):
             fit_tables = reduced_train
             fit_metadata = _build_metadata(_reduce_meta(tables_meta, keep), rels if rels_ok else [])
 
+        phase_seconds["prep"] = time.perf_counter() - t_prep_start
+
         # epochs only apply to the neural synthesizers; HMA / GaussianCopula have none
         _uses_epochs = any(s.upper() in ("CTGAN", "TVAE", "COPULAGAN") for s in fit_synths)
         say(f"Fitting: {', '.join(fit_synths)} (scale={cfg['scale']}"
             + (f", epochs={cfg['epochs']}" if _uses_epochs else "") + ")")
         _real_err = sys.stderr
         sys.stderr = _TqdmTee(_real_err, progress)     # forward fit progress to the console
+        gen_timings: dict = {}   # {synth_name: fit+sample seconds} -- the time-savings metric
+        resample_timings: dict = {}  # {synth_name: reject-and-resample filter seconds}
+        close_filter_report: dict = {}  # {synth_name: {table: report}} -- reject-and-resample filter
         try:
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always")
@@ -568,21 +593,36 @@ def _run_job(cfg: dict, st: dict):
                         suite = se.generate_synthetic_suite(
                             fit_tables, fit_metadata, synthesizers=["HMA"],
                             scale=cfg["scale"], epochs=cfg["epochs"], verbose=False,
-                            constraints=cfg.get("constraints") or [], should_cancel=cancelled)
+                            constraints=cfg.get("constraints") or [], should_cancel=cancelled,
+                            timings=gen_timings, roles=roles,
+                            close_filter_report=close_filter_report,
+                            resample_timings=resample_timings, random_state=run_seed)
                     others = [s for s in cfg["synths"] if s.upper() != "HMA"]
                     if others and not cancelled():
                         single_meta = _build_metadata(_reduce_meta(tables_meta, keep), [])
                         suite.update(se.generate_synthetic_suite(
                             reduced_train, single_meta, synthesizers=others,
                             scale=cfg["scale"], epochs=cfg["epochs"], verbose=False,
-                            constraints=cfg.get("constraints") or [], should_cancel=cancelled))
+                            constraints=cfg.get("constraints") or [], should_cancel=cancelled,
+                            timings=gen_timings, roles=roles,
+                            close_filter_report=close_filter_report,
+                            resample_timings=resample_timings, random_state=run_seed))
                 else:
                     suite = se.generate_synthetic_suite(
                         fit_tables, fit_metadata, synthesizers=fit_synths,
                         scale=cfg["scale"], epochs=cfg["epochs"], verbose=False,
-                        constraints=cfg.get("constraints") or [], should_cancel=cancelled)
+                        constraints=cfg.get("constraints") or [], should_cancel=cancelled,
+                        roles=roles, close_filter_report=close_filter_report,
+                        timings=gen_timings, resample_timings=resample_timings,
+                        random_state=run_seed)
         finally:
             sys.stderr = _real_err
+        # gen_timings/resample_timings are per-synthesizer wall-clock (see
+        # synth_eval.suite.generate_synthetic_suite); synthesizers fit
+        # sequentially in that loop, so summing them is the phase's real
+        # wall-clock, not double-counted.
+        phase_seconds["generate"] = sum(gen_timings.values())
+        phase_seconds["resample"] = sum(resample_timings.values())
         ck()   # stop here if cancelled during/after fitting
         for w in caught:
             if any(k in str(w.message) for k in ("skipped", "constraints not applied")):
@@ -590,6 +630,7 @@ def _run_job(cfg: dict, st: dict):
         if not suite:
             raise RuntimeError("every synthesizer failed — check the schema edits")
         say(f"Synthesis done: {', '.join(suite)}")
+        t_postprocess_start = time.perf_counter()
 
         # Every synthesizer except HMA fits each table on its own, so a
         # child's foreign-key column is unrelated to the synthetic parent's
@@ -724,6 +765,9 @@ def _run_job(cfg: dict, st: dict):
                 cross_table[s] = se.entity_cross_table_trends(
                     train, tabs, entity_key, roles, cur_flags, eff_cols)
 
+        phase_seconds["postprocess"] = time.perf_counter() - t_postprocess_start
+        t_report_start = time.perf_counter()
+
         meta_dict = eval_meta_dict
         from sdmetrics.reports.single_table import QualityReport
 
@@ -826,6 +870,9 @@ def _run_job(cfg: dict, st: dict):
                         recs, f"{fig_dir}/web_pairs_{s}_{t}.png", t, s)
                     figs["pairs_data"].setdefault(s, {})[t] = se.pair_trends_heatmap_data(recs)
 
+        phase_seconds["report"] = time.perf_counter() - t_report_start
+        phase_seconds["total"] = time.perf_counter() - t_job_start
+
         ck()   # last checkpoint before publishing
         if st.get("job") is not job:
             return   # a newer job in this session superseded us; don't clobber it
@@ -845,6 +892,10 @@ def _run_job(cfg: dict, st: dict):
             "cross_table": cross_table,
             "relationships_modeled": rels_ok and bool(rels),
             "linked_synths": linked_synths,
+            "gen_seconds": {s: gen_timings.get(s) for s in suite},
+            "resample_seconds": {s: resample_timings.get(s) for s in suite},
+            "close_filter": close_filter_report,
+            "phase_seconds": phase_seconds,
             "privacy": {s: {t: {k: v for k, v in rep.items() if k != "dcr_arrays"}
                             for t, rep in tabs.items()}
                         for s, tabs in privacy_all.items()},
