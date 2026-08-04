@@ -67,7 +67,7 @@ exists specifically to catch that.
 
 ### Detection (`detect_pii`)
 
-Two passes, name first:
+Three passes:
 
 1. **Column-name tokens**, checked in order, first hit wins: `EMAIL`/`E_MAIL` →
    email; `PHONE`/`TELEPHONE`/`_TEL`/`TEL_`/`FAX`/`MOBILE`/`CELL` → phone;
@@ -79,8 +79,21 @@ Two passes, name first:
    `_QTY`/`_AMT`/`_PCT` overrides everything — `PREFIX_NAME_TP_CD` is a type code,
    not a name, whatever "NAME" appears in it.
 
-2. **Value-shape regexes**, only for object-dtype columns *outside* the modelable
-   set that the name pass didn't already catch, so a low-cardinality code column
+2. **Content confirmation, `name` only** (`_confirms_person_name`). The `NAME`
+   token still matches columns that hold something else entirely — an
+   `OCCUPATION_NAME` column holding job titles ("Registered Nurse", "Financial
+   Analyst"), or a `LAST_UPDATE_USER` column holding a batch-job tag
+   (`SYS_BATCH`), not a person. A sample of the column's values is checked
+   against Faker's own first/last-name corpus (the first or last whitespace
+   token must match a known first or last name); if fewer than 15% do, the
+   `name` classification is dropped and the column falls through to the
+   value-shape pass below. Checking value *content* against a name corpus,
+   rather than hardcoding more schema-specific exceptions onto the token list,
+   is what makes this generalize to any schema's naming conventions instead of
+   just this one's.
+
+3. **Value-shape regexes**, only for object-dtype columns *outside* the modelable
+   set that passes 1–2 didn't already catch, so a low-cardinality code column
    can never be misread as a postal code just because a handful of its values
    happen to look like one. Checked against a sample of up to 60 non-null values,
    ≥60% must match: email, postal code (Canadian `A1A 1A1` or US 5/9-digit ZIP),

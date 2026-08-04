@@ -142,7 +142,49 @@ how many descendant rows were cascaded away per table.
 A condensed set — one tree model plus one linear reference, chosen by target type.
 The target column per table is auto-selected (categorical with 2–20 classes →
 classification; else the highest-variance numeric → regression) and can be overridden
-via the `TARGETS` dict in the notebook.
+via the `TARGETS` dict in the notebook, or the per-table dropdown in the dashboard.
+
+**Auto-selection skips tables that are too small or too thin to model
+meaningfully** (`synth_eval.auto_select_target`): fewer than 30 rows, or a
+candidate target column with no *other* modelable column left to predict it
+from. Without this, a dimension/lookup table (an id column plus a name/desc
+column, both already excluded by column classification, and maybe one small
+categorical left) could auto-pick that one remaining column as a target with
+nothing left to build features from, or hand TSTR/TRTR a holdout of a
+handful of rows where the score is mostly noise. Skipped tables are logged
+(`ML efficacy · <table> · skipped (...)`) rather than silently missing from
+the report. The dashboard's per-table target dropdown also has an explicit
+`(none)` option, for a dimension table a person already knows isn't worth
+modeling, no need to wait on the heuristic.
+
+**Auto-selection also requires the target to actually be predictable**
+(`synth_eval.efficacy._predictive_signal`) — enough rows and a feature column
+to predict *from* says nothing about whether that column bears any real
+relationship to the target. A shallow decision tree is fit on a real
+train/test split; the target must beat a **noise floor** by ≥0.05 (macro-F1
+lift for classification, R² for regression) or the candidate is skipped and
+the next one tried. The floor needed care: a naive **majority-class baseline
+is not a safe floor for classification** — an unconstrained tree can overfit
+pure label noise to a macro F1 well above the majority-class score (observed
+~0.25 on a synthetic all-independent-columns test, vs. a ~0.08 majority-class
+baseline), which would let unrelated columns clear the gate. The floor used
+instead is the **mean score of the same tree refit on a few label-permuted
+copies of the training target** — what this exact model/sample size can
+manufacture from labels known to carry zero information, the correct ceiling
+to beat. Regression doesn't share this failure mode (a mean-predictor's R² is
+0 by definition), so its floor is the fixed constant 0 rather than a
+permutation refit. Confirmed against the bundled seed data: `ACCE_COMP_TP_CD`
+(CONTACT) and `PREFIX_NAME_TP_CD` (PERSONNAME) were both previously
+auto-selected with essentially zero real lift over their noise floor (−0.03
+and +0.002 respectively) — their efficacy ratios were noise divided by noise,
+not a fidelity signal. Both are now skipped in favor of a target that clears
+the bar, or `None` when nothing in the table does.
+
+For a **manually-forced** target (`TARGETS` / the dashboard's per-table
+dropdown, which bypasses auto-selection entirely), the same check runs as a
+caution instead of a gate: `synth_eval.target_signal_note` logs `ML efficacy
+· <table> · note: weak real-data signal for '<col>' (...)` rather than
+silently scoring a target with no real signal to preserve.
 
 | Target type | sdmetrics metric (headline) | Score |
 |---|---|---|

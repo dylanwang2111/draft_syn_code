@@ -318,6 +318,26 @@ def _child_pk(df):
     return None
 
 
+def _normalize_entity_cfg(cfg: dict) -> dict[str, list]:
+    """{entity_key: [requested children]} regardless of which wire shape the
+    request used. Today's UI only ever builds one hub at a time and sends the
+    singular ``entity_key``/``entity_children`` (a flat table list); the API
+    also accepts a plural ``entity_keys`` list + ``entity_children`` as
+    ``{key: [tables]}`` for callers building more than one hub in one run
+    (multi-hub isn't wired into the visual model editor yet — see
+    docs/METRICS.md). An empty list of requested children means "every table
+    that carries this key", resolved later by ``se.entity_key_tables``.
+    """
+    keys_field = cfg.get("entity_keys")
+    if keys_field:
+        children_field = cfg.get("entity_children") or {}
+        return {k.strip(): (children_field.get(k) or []) for k in keys_field if k and k.strip()}
+    key = (cfg.get("entity_key") or "").strip()
+    if not key:
+        return {}
+    return {key: cfg.get("entity_children") or []}
+
+
 def _reduce_meta(tables_meta: dict, keep: dict) -> dict:
     """A copy of ``tables_meta`` restricted to the kept columns per table."""
     out = {}
@@ -377,6 +397,33 @@ def _referential_integrity(rels, real_tables, suite):
     return rows
 
 
+def _merge_cross_table(reports: list[dict]) -> dict:
+    """Combine one se.entity_cross_table_trends() dict per simultaneous hub
+    key into the single dict the report/frontend expect (the multi-hub
+    pipeline runs this once per key, but the wire shape predates multi-hub and
+    is one dict per synthesizer, not one per synthesizer-per-key)."""
+    reports = [r for r in reports if r]
+    empty = {"score": None, "score_strong": None, "n_pairs": 0, "n_strong": 0,
+             "n_entities": 0, "pairs": [], "unaligned": [], "note": None}
+    if not reports:
+        return empty
+    if len(reports) == 1:
+        return reports[0]
+    scores = [r["score"] for r in reports if r.get("score") is not None]
+    strong = [r["score_strong"] for r in reports if r.get("score_strong") is not None]
+    notes = [r["note"] for r in reports if r.get("note")]
+    return {
+        "score": float(np.mean(scores)) if scores else None,
+        "score_strong": float(np.mean(strong)) if strong else None,
+        "n_pairs": sum(r.get("n_pairs") or 0 for r in reports),
+        "n_strong": sum(r.get("n_strong") or 0 for r in reports),
+        "n_entities": sum(r.get("n_entities") or 0 for r in reports),
+        "pairs": [p for r in reports for p in (r.get("pairs") or [])],
+        "unaligned": [u for r in reports for u in (r.get("unaligned") or [])],
+        "note": " · ".join(notes) if notes else None,
+    }
+
+
 def _validate_relationships(tables: dict, cfg: dict) -> list[dict]:
     """Structurally validate a candidate data model against the *real* data:
     for each declared relationship check the parent key is unique and measure
@@ -404,10 +451,8 @@ def _validate_relationships(tables: dict, cfg: dict) -> list[dict]:
             status = "PASS" if cov >= 0.99 else "WARN" if cov >= 0.90 else "FAIL"
             results.append({"label": label, "status": status,
                             "detail": f"{cov*100:.1f}% of child rows match a parent key"})
-    entity_key = (cfg.get("entity_key") or "").strip()
-    if entity_key:
+    for entity_key, requested in _normalize_entity_cfg(cfg).items():
         avail = se.entity_key_tables(tables, entity_key)
-        requested = cfg.get("entity_children") or []
         chosen = [t for t in requested if t in avail] if requested else avail
         if not chosen:
             results.append({"label": f"hub {entity_key}", "status": "FAIL",
@@ -415,7 +460,8 @@ def _validate_relationships(tables: dict, cfg: dict) -> list[dict]:
         else:
             ids = set()
             for t in chosen:
-                ids |= set(tables[t][entity_key].dropna().unique())
+                local_col = se._resolve_key_column(tables[t], entity_key) or entity_key
+                ids |= set(tables[t][local_col].dropna().unique())
             results.append({"label": f"hub {entity_key} → {', '.join(chosen)}", "status": "PASS",
                             "detail": f"{len(ids)} distinct entities · select HMA to have referential "
                                       f"integrity on {entity_key} preserved by construction"})
@@ -509,9 +555,71 @@ def _run_job(cfg: dict, st: dict):
             torch.manual_seed(run_seed)
         except ImportError:
             pass
+        # Scale-sensitive thresholds: hardcoded Python defaults tuned against
+        # the demo-scale seed data, exposed here so real production data (a
+        # different row count, a different cardinality distribution) doesn't
+        # need a code change to get a sane result -- same defaults as before,
+        # so nothing changes unless a run explicitly sets one.
+        # * max_categorical_card: above this many distinct values, a would-be
+        #   categorical column is treated as id-like and skipped instead.
+        #   Too low on a real column set with genuinely wide categories
+        #   silently drops it out of fidelity/privacy scoring entirely.
+        # * min_target_rows: below this many rows, auto_select_target won't
+        #   pick an ML-efficacy target for a table (holdout too small to
+        #   mean anything).
+        # * close_percentile: how aggressive the reject-and-resample filter
+        #   and the nearest-record ceiling are. Nearest-neighbor distances
+        #   shrink as row count grows (denser space), so the same fixed
+        #   percentile reads as stricter on a much bigger real table than on
+        #   the seed data this was tuned against.
+        max_categorical_card = int(cfg.get("max_categorical_card") or 50)
+        min_target_rows = int(cfg.get("min_target_rows") or 30)
+        close_percentile = float(cfg.get("close_percentile") or 5.0)
         tables = st["tables"]
         tables_meta = _metadata_from_request(cfg.get("schema", {}), cfg.get("relationships", []), st)
         rels = cfg.get("relationships", [])
+
+        # Entity key detection + naming-convention normalization, done here,
+        # early, BEFORE full_metadata/roles get built below, so both are
+        # already consistent with whichever child tables get a local key
+        # variant (e.g. an X_-prefixed extension-field name) renamed to the
+        # canonical form -- computing this later meant full_metadata/roles
+        # were snapshotted against the OLD name, silently dropping that one
+        # column out of quality/privacy scoring for the affected tables
+        # (the metadata and the data no longer agreed on what it was called).
+        # Detection only needs `tables`/`cfg`, both already available here;
+        # only the entity_renames rename onto train/hold has to wait until
+        # those exist (right after the split below).
+        # entity_children_by_key: {entity_key: [chosen child tables]} -- one or
+        # more simultaneous hubs (today's UI only ever builds one at a time, but
+        # the pipeline and se.build_entity_hub support any number; see
+        # _normalize_entity_cfg).
+        entity_children_by_key: dict[str, list[str]] = {}
+        for entity_key, requested in _normalize_entity_cfg(cfg).items():
+            avail_children = se.entity_key_tables(tables, entity_key)
+            entity_children_by_key[entity_key] = (
+                [t for t in requested if t in avail_children] if requested else avail_children)
+        entity_keys = list(entity_children_by_key)
+        # every table that's a child of at least one hub -- most of the
+        # downstream logic (pruning, keep-keys, child PKs) doesn't care WHICH
+        # hub, just that the column has to survive
+        entity_children = sorted({t for children in entity_children_by_key.values() for t in children})
+        # {table: {local_col: canonical_key}} -- a table can carry more than one
+        # hub's local key variant (e.g. PERSON could have both an X_-prefixed
+        # occupation key and a contact-id key), so this is per (table, key), not
+        # just per table.
+        entity_renames: dict[str, dict[str, str]] = {}
+        for entity_key, children in entity_children_by_key.items():
+            for t in children:
+                local_col = se._resolve_key_column(tables[t], entity_key)
+                if local_col and local_col != entity_key:
+                    entity_renames.setdefault(t, {})[local_col] = entity_key
+                    cols_meta = tables_meta.get(t, {}).get("columns", {})
+                    if local_col in cols_meta:
+                        cols_meta[entity_key] = cols_meta.pop(local_col)
+                    if tables_meta.get(t, {}).get("primary_key") == local_col:
+                        tables_meta[t]["primary_key"] = entity_key
+
         # Fast, pandas-only check of whether the declared relationships actually
         # hold in the data (parent PK unique + every child FK present).  SDV's
         # own Metadata.validate() is skipped on purpose: it re-scans every faker
@@ -530,13 +638,16 @@ def _run_job(cfg: dict, st: dict):
         say("Splitting train / holdout (before any fitting)…")
         train, hold = _relational_split(tables, rels if rels_ok else [],
                                         cfg["holdout"], cfg.get("seed", 42))
-        roles = {t: se.classify_columns(df, full_metadata, t) for t, df in train.items()}
+        # apply the SAME rename to the working train/holdout copies -- never
+        # to st["tables"] itself, so the Schema/Data tabs and downloads keep
+        # showing exactly what was uploaded, only this run's internal working
+        # copies see the canonical name
+        for t, renames in entity_renames.items():
+            train[t] = train[t].rename(columns=renames)
+            hold[t] = hold[t].rename(columns=renames)
+        roles = {t: se.classify_columns(df, full_metadata, t, max_categorical_card=max_categorical_card)
+                 for t, df in train.items()}
 
-        entity_key = (cfg.get("entity_key") or "").strip()
-        # tables that actually contain the key; the client may pick a subset of them
-        avail_children = se.entity_key_tables(tables, entity_key) if entity_key else []
-        requested = cfg.get("entity_children") or []
-        entity_children = [t for t in requested if t in avail_children] if requested else avail_children
         child_pks = {t: _child_pk(train[t]) for t in entity_children} if entity_children else {}
 
         # columns that must survive pruning (keys), then model = keys + modelable
@@ -548,8 +659,10 @@ def _run_job(cfg: dict, st: dict):
         for r in (rels if rels_ok else []):
             keep_keys.setdefault(r["parent_table_name"], set()).add(r["parent_primary_key"])
             keep_keys.setdefault(r["child_table_name"], set()).add(r["child_foreign_key"])
+        for entity_key, children in entity_children_by_key.items():
+            for t in children:
+                keep_keys[t].add(entity_key)
         for t in entity_children:
-            keep_keys[t].add(entity_key)
             if child_pks.get(t):
                 keep_keys[t].add(child_pks[t])
         keep = {t: [c for c in train[t].columns
@@ -562,9 +675,12 @@ def _run_job(cfg: dict, st: dict):
                 f"{n_fill} id/date/name/audit columns are resampled after fitting "
                 f"(kept in the output, keeps fitting fast).")
 
-        # Entity-key (SCD hub) mode -> HMA on a derived parent so referential
-        # integrity on the shared key is preserved; else fit the reduced tables.
-        parent_name, hub_rels = None, []
+        # Entity-key (SCD hub) mode -> HMA on one derived parent per key so
+        # referential integrity on each shared key is preserved; else fit the
+        # reduced tables. parent_names maps {entity_key: hub table name} -- one
+        # entry per hub, empty when no entity key is set at all.
+        parent_names: dict[str, str] = {}
+        hub_rels: list = []
         fit_synths = cfg["synths"]
         # only fit HMA if it was actually selected — the hub is what lets HMA preserve
         # referential integrity, but choosing an entity key must not conscript HMA.
@@ -572,23 +688,25 @@ def _run_job(cfg: dict, st: dict):
         if entity_children:
             try:
                 fit_tables, fit_metadata, hub_rels, hub_info = se.build_entity_hub(
-                    reduced_train, entity_key, child_primary_keys=child_pks,
-                    lift_invariant=False, child_tables=entity_children)
-                parent_name = hub_info["parent"]
+                    reduced_train, entity_keys, child_primary_keys=child_pks,
+                    lift_invariant=False, child_tables=entity_children_by_key)
+                parent_names = {k: info["parent"] for k, info in hub_info.items()}
                 others_note = [s for s in cfg["synths"] if s.upper() != "HMA"]
                 _v = "is" if len(others_note) == 1 else "are"
-                say(f"Entity-key mode: built '{parent_name}' over {len(entity_children)} "
-                    f"table(s) — {hub_info['n_entities']} distinct {entity_key}."
-                    + (f" HMA models the hub so referential integrity on {entity_key} is "
-                       f"preserved." if want_hma else
-                       f" HMA was not selected, so no model learns the hub — referential "
-                       f"integrity is measured, not enforced.")
-                    + (f" {', '.join(others_note)} {_v} fit per-table independently "
-                       f"(single-table models can't preserve cross-table RI — shown for "
-                       f"quality/privacy/utility comparison only)." if others_note else ""))
+                for entity_key, info in hub_info.items():
+                    say(f"Entity-key mode: built '{info['parent']}' over {len(info['children'])} "
+                        f"table(s) — {info['n_entities']} distinct {entity_key}."
+                        + (f" HMA models the hub so referential integrity on {entity_key} is "
+                           f"preserved." if want_hma else
+                           f" HMA was not selected, so no model learns the hub — referential "
+                           f"integrity is measured, not enforced."))
+                if others_note:
+                    say(f"{', '.join(others_note)} {_v} fit per-table independently "
+                        f"(single-table models can't preserve cross-table RI — shown for "
+                        f"quality/privacy/utility comparison only).")
             except Exception as e:
                 say(f"⚠ entity-key mode failed ({e}); falling back to normal synthesis")
-                parent_name, hub_rels, fit_synths = None, [], cfg["synths"]
+                parent_names, hub_rels, fit_synths = {}, [], cfg["synths"]
                 fit_tables = reduced_train
                 fit_metadata = _build_metadata(_reduce_meta(tables_meta, keep), rels if rels_ok else [])
         else:
@@ -609,7 +727,7 @@ def _run_job(cfg: dict, st: dict):
         try:
             with warnings.catch_warnings(record=True) as caught:
                 warnings.simplefilter("always")
-                if parent_name:
+                if parent_names:
                     # HMA models the derived hub (preserves cross-table RI on the
                     # key) — but only if the user actually asked for HMA.  Any other
                     # selected synths are single-table, so fit them independently on
@@ -623,7 +741,8 @@ def _run_job(cfg: dict, st: dict):
                             constraints=cfg.get("constraints") or [], should_cancel=cancelled,
                             timings=gen_timings, roles=roles,
                             close_filter_report=close_filter_report,
-                            resample_timings=resample_timings, random_state=run_seed)
+                            resample_timings=resample_timings, random_state=run_seed,
+                            filter_close_percentile=close_percentile)
                     others = [s for s in cfg["synths"] if s.upper() != "HMA"]
                     if others and not cancelled():
                         single_meta = _build_metadata(_reduce_meta(tables_meta, keep), [])
@@ -633,13 +752,15 @@ def _run_job(cfg: dict, st: dict):
                             constraints=cfg.get("constraints") or [], should_cancel=cancelled,
                             timings=gen_timings, roles=roles,
                             close_filter_report=close_filter_report,
-                            resample_timings=resample_timings, random_state=run_seed))
+                            resample_timings=resample_timings, random_state=run_seed,
+                            filter_close_percentile=close_percentile))
                 else:
                     suite = se.generate_synthetic_suite(
                         fit_tables, fit_metadata, synthesizers=fit_synths,
                         scale=cfg["scale"], epochs=cfg["epochs"], verbose=False,
                         constraints=cfg.get("constraints") or [], should_cancel=cancelled,
                         roles=roles, close_filter_report=close_filter_report,
+                        filter_close_percentile=close_percentile,
                         timings=gen_timings, resample_timings=resample_timings,
                         random_state=run_seed)
         finally:
@@ -664,7 +785,7 @@ def _run_job(cfg: dict, st: dict):
         # keys: relink it now (HMA and the entity-key hub path above don't
         # need this, they already model the link directly).
         linked_synths: list[str] = []
-        if not parent_name and rels and rels_ok:
+        if not parent_names and rels and rels_ok:
             linkable = [s for s in suite if s.upper() in LINKABLE_SYNTHS]
             if linkable:
                 linked = se.link_relationships(rels, reduced_train, suite, linkable,
@@ -678,18 +799,21 @@ def _run_job(cfg: dict, st: dict):
         # parent is present (they need the parent table), then the parent is
         # dropped so only real tables are evaluated by the other metrics.
         cardinality = {}
-        if parent_name:
+        if parent_names:
             # HMA emits the hub itself; for the independent single-table synths,
-            # derive an equivalent hub (the distinct keys they generated across the
-            # child tables) so referential integrity + cardinality are measured and
-            # comparable for every synthesizer, not just HMA.
+            # derive an equivalent hub per key (the distinct keys they generated
+            # across that key's child tables) so referential integrity +
+            # cardinality are measured and comparable for every synthesizer, not
+            # just HMA.
             for s, tabs in suite.items():
-                if parent_name not in tabs:
+                for entity_key, pname in parent_names.items():
+                    if pname in tabs:
+                        continue
                     ids = set()
-                    for t in entity_children:
+                    for t in entity_children_by_key.get(entity_key, []):
                         if t in tabs and entity_key in tabs[t].columns:
                             ids |= set(tabs[t][entity_key].dropna().unique())
-                    tabs[parent_name] = pd.DataFrame(
+                    tabs[pname] = pd.DataFrame(
                         {entity_key: sorted(ids, key=lambda v: (str(type(v)), str(v)))})
             ri = _referential_integrity(hub_rels, fit_tables, suite)
             try:
@@ -697,7 +821,8 @@ def _run_job(cfg: dict, st: dict):
             except Exception as e:
                 say(f"⚠ cardinality metrics skipped: {e}")
             for s in list(suite):
-                suite[s].pop(parent_name, None)
+                for pname in parent_names.values():
+                    suite[s].pop(pname, None)
         elif rels and rels_ok:
             ri = _referential_integrity(rels, reduced_train, suite)
             try:
@@ -762,20 +887,23 @@ def _run_job(cfg: dict, st: dict):
         scd_eff = (cfg.get("scd_effective") or "").strip()
         scd_end = (cfg.get("scd_end") or "").strip()
         scd_cur = (cfg.get("scd_current") or "").strip() or None
-        if entity_key and scd_eff and scd_end:
+        if entity_keys and scd_eff and scd_end:
             noted = set()
             for s in suite:
                 for t in list(suite[s]):
                     df = suite[s][t]
-                    if entity_key in df.columns and scd_eff in df.columns and scd_end in df.columns:
-                        rep, note = se.repair_scd_timeline(df, entity_key, scd_eff, scd_end, scd_cur)
-                        suite[s][t] = rep
-                        key = (t, note)
-                        if note and key not in noted:
-                            say(f"⚠ SCD timeline ({t}): {note}"); noted.add(key)
-                        elif not note and t not in noted:
-                            say(f"SCD timeline repaired for {t}: non-overlapping windows per {entity_key}")
-                            noted.add(t)
+                    # a table versions against at most one hub key in practice,
+                    # but this loops every configured key so it isn't assumed
+                    for entity_key in entity_keys:
+                        if entity_key in df.columns and scd_eff in df.columns and scd_end in df.columns:
+                            df, note = se.repair_scd_timeline(df, entity_key, scd_eff, scd_end, scd_cur)
+                            key = (t, entity_key, note)
+                            if note and key not in noted:
+                                say(f"⚠ SCD timeline ({t} · {entity_key}): {note}"); noted.add(key)
+                            elif not note and (t, entity_key) not in noted:
+                                say(f"SCD timeline repaired for {t}: non-overlapping windows per {entity_key}")
+                                noted.add((t, entity_key))
+                    suite[s][t] = df
 
         # Entity-level cross-table correlation: do a customer's attributes across
         # tables (marital status in PERSON vs province in CONTACT) hang together
@@ -785,12 +913,14 @@ def _run_job(cfg: dict, st: dict):
         # model that doesn't keep the entity key consistent across tables reads
         # n/a here rather than being scored (see synth_eval.cross_table).
         cross_table = {}
-        if entity_key:
+        if entity_keys:
             cur_flags = {t: scd_cur for t in tables} if scd_cur else None
             eff_cols = {t: scd_eff for t in tables} if scd_eff else None
             for s, tabs in suite.items():
-                cross_table[s] = se.entity_cross_table_trends(
-                    train, tabs, entity_key, roles, cur_flags, eff_cols)
+                cross_table[s] = _merge_cross_table([
+                    se.entity_cross_table_trends(train, tabs, entity_key, roles, cur_flags, eff_cols)
+                    for entity_key in entity_keys
+                ])
 
         phase_seconds["postprocess"] = time.perf_counter() - t_postprocess_start
         t_report_start = time.perf_counter()
@@ -842,21 +972,47 @@ def _run_job(cfg: dict, st: dict):
                 say(f"Privacy · {s} · {t}")
                 privacy_all[s][t] = se.privacy_report(
                     train[t], hold[t], sdf, roles[t], t, REPORTS_DIR, full_metadata,
-                    cap_sensitive=(cfg.get("cap_sensitive") or {}).get(t) or None)
+                    cap_sensitive=(cfg.get("cap_sensitive") or {}).get(t) or None,
+                    close_percentile=close_percentile)
                 done_p += 1; set_pct(60 + 20 * done_p / max(1, n_st))
 
         eff_frames = []
+        efficacy_skipped = []  # [{table, target, task, reason}] -- surfaced in the report, not just the log
+
+        def skip_eff(t, reason, target=None, task=None):
+            say(f"ML efficacy · {t} · skipped ({reason})")
+            efficacy_skipped.append({"table": t, "target": target, "task": task, "reason": reason})
+
         for t in tables:
             ck()
             tgt = (cfg.get("targets") or {}).get(t) or "auto"
+            if tgt == "none":
+                skip_eff(t, "marked no-target — e.g. a dimension/lookup table")
+                continue
             if tgt == "auto":
-                sel = se.auto_select_target(train[t], roles[t])
+                sel = se.auto_select_target(train[t], roles[t], min_rows=min_target_rows)
+                if not sel:
+                    skip_eff(t, "no suitable target — table too small or too few columns "
+                                "left to predict from once id/name/date fields are excluded")
+                    continue
             else:
                 task = "classification" if tgt in roles[t].categorical else "regression"
                 sel = (tgt, task)
-            if not sel:
-                continue
             target, task = sel
+            # a reference/lookup table (few real-world entities repeated across many
+            # historical-version rows) makes any TSTR ratio on it noisy regardless of
+            # which column is the target, so this is a hard skip, not just a caution
+            density_note = se.dim_table_density_note(train[t], roles[t], target)
+            if density_note:
+                skip_eff(t, density_note, target, task)
+                continue
+            if tgt != "auto":
+                # auto-picked targets already cleared this bar inside
+                # auto_select_target; only a manually-forced target can still
+                # have no real signal to preserve, so only check that path.
+                sig_note = se.target_signal_note(train[t], target, roles[t], task)
+                if sig_note:
+                    say(f"ML efficacy · {t} · note: {sig_note}")
             say(f"ML efficacy · {t} · target={target} ({task})")
             synth_dict = {s: tabs[t] for s, tabs in suite.items() if t in tabs}
             eff_frames.append(se.sdmetrics_ml_efficacy(
@@ -871,7 +1027,7 @@ def _run_job(cfg: dict, st: dict):
         # similarity — see compare.structure_scores).  `derived_parent` says the
         # hub was built from the synthesizers' own keys, which makes forward FK
         # coverage 1.0 by construction: a diagnostic, never a score.
-        derived = bool(parent_name)
+        derived = bool(parent_names)
         summary = se.compute_summary(quality_scores, privacy_all, efficacy, ri, cardinality, derived)
         leaderboard = se.compute_leaderboard(quality_scores, privacy_all, efficacy, ri,
                                              cardinality, derived)
@@ -927,6 +1083,7 @@ def _run_job(cfg: dict, st: dict):
                             for t, rep in tabs.items()}
                         for s, tabs in privacy_all.items()},
             "efficacy": efficacy.to_dict(orient="records") if not efficacy.empty else [],
+            "efficacy_skipped": efficacy_skipped,
             "figures": figs,
             "config": {k: cfg[k] for k in ("synths", "epochs", "scale", "holdout")},
         })

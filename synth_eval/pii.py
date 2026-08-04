@@ -42,6 +42,36 @@ _RE_POSTAL = re.compile(r"^([A-Za-z]\d[A-Za-z]\s?\d[A-Za-z]\d|\d{5}(-\d{4})?)$")
 _RE_STREET = re.compile(r"^\d+\s+\S+.*\b(ST|STREET|AVE|AVENUE|RD|ROAD|DR|DRIVE|BLVD|"
                         r"CRES|CRESCENT|CT|COURT|WAY|LANE|PL|PLACE|TRAIL|CIR)\b\.?$", re.I)
 
+#: low bar -- only needs to rule out columns that are clearly NOT person names
+#: (job titles, product names, ...), not confirm every real name column.
+_NAME_CONFIRM_THRESHOLD = 0.15
+
+
+def _confirms_person_name(sample: pd.Series) -> bool:
+    """Check sampled values against Faker's own name corpus (content, not
+    column name) -- catches columns like OCCUPATION_NAME ("Registered Nurse")
+    that trip the ``NAME`` token but hold something else entirely. Generalizes
+    across schemas since it never depends on this dataset's naming
+    conventions, only the values themselves.
+    """
+    from faker.providers.person.en_US import Provider as _PersonProvider
+
+    vals = sample.dropna().astype(str).str.strip()
+    if len(vals) < 5:
+        return True  # too little data to rule anything out -- trust the token
+    first_names = {n.upper() for n in _PersonProvider.first_names}
+    last_names = {n.upper() for n in _PersonProvider.last_names}
+
+    def is_name(v: str) -> bool:
+        toks = [t.upper() for t in v.split() if t]
+        if not toks:
+            return False
+        if len(toks) == 1:
+            return toks[0] in first_names or toks[0] in last_names
+        return toks[0] in first_names or toks[-1] in last_names
+
+    return float(vals.map(is_name).mean()) >= _NAME_CONFIRM_THRESHOLD
+
 
 def _value_kind(sample: pd.Series) -> Optional[str]:
     """Classify a column by the *shape* of its values (>=60% of a sample must match)."""
@@ -79,6 +109,12 @@ def detect_pii(df: pd.DataFrame, modelable: Optional[List[str]] = None,
         kind = next((k for k, toks in _TOKENS if any(t in cu for t in toks)), None)
         if kind in _STR_ONLY and df[c].dtype != object:
             kind = None                      # numeric column can't be a name/email/street
+        if kind == "name" and df[c].dtype == object:
+            s = df[c].head(2000)
+            n_notna = s.notna().sum()
+            sample = s.sample(min(sample_n, n_notna), random_state=0) if n_notna else s
+            if not _confirms_person_name(sample):
+                kind = None                  # column-name token, but values aren't person names
         if kind is None and c not in modelable and df[c].dtype == object:
             try:
                 kind = _value_kind(df[c].head(2000).sample(

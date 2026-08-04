@@ -109,8 +109,8 @@ function init(payload){
 /* compact state chips shown in each collapsed panel header */
 function updateSummaries(){
   if(!DATA) return;
-  const ek=MODEL.hub.key, nrel=MODEL.rels.length;
-  $("#sum-structure").textContent = ek ? ("key: "+ek) : nrel ? (nrel+" link"+(nrel>1?"s":"")) : "independent";
+  const nh=MODEL.hubs.length, nrel=MODEL.rels.length;
+  $("#sum-structure").textContent = nh ? ("key: "+MODEL.hubs.map(h=>h.key).join(", ")) : nrel ? (nrel+" link"+(nrel>1?"s":"")) : "independent";
   const nc=$$(".con-row").length;
   $("#sum-constraints").textContent = nc ? (nc+" rule"+(nc>1?"s":"")) : "none";
   $("#sum-synths").textContent=[...selectedSynths].join(", ")||"none";
@@ -139,8 +139,8 @@ function removeTable(t){
   if(!Object.keys(DATA.tables).length){ location.reload(); return; }
   // prune the data model of anything referencing the removed table
   MODEL.rels=MODEL.rels.filter(r=>r.parent_table_name!==t&&r.child_table_name!==t);
-  MODEL.hub.children=MODEL.hub.children.filter(c=>c!==t);
-  if(MODEL.hub.key && !keyTables(MODEL.hub.key).length) MODEL.hub={key:"",children:[]};
+  MODEL.hubs.forEach(h=>{ h.children=h.children.filter(c=>c!==t); });
+  MODEL.hubs=MODEL.hubs.filter(h=>h.children.length && keyTables(h.key).length);
   delete MODEL.pos[t];
   renderSeedList(); renderSchemaBlocks(); renderRecipe();
   buildHubBar(); afterModelChange();
@@ -192,20 +192,35 @@ function renderSchemaBlocks(){
 }
 
 /* ===================== data model (PowerBI-style canvas) =====================
-   MODEL is the single source of truth for relationships + the entity-key hub.
-   The left "Structure & keys" panel and the run config both read from it. */
-let MODEL={pos:{}, size:{}, rels:[], hub:{key:"", children:[]}};
-const hubName=()=>MODEL.hub.key?`${MODEL.hub.key}_HUB`:"";
+   MODEL is the single source of truth for relationships + the entity-key hubs.
+   The left "Structure & keys" panel and the run config both read from it.
+   MODEL.hubs is a list of independent {key, children} hubs -- a table can be
+   a child of more than one hub at once (two different columns, no conflict),
+   matching synth_eval.entity.build_entity_hub's multi-hub support. */
+let MODEL={pos:{}, size:{}, rels:[], hubs:[]};
+const hubName=hub=>hub&&hub.key?`${hub.key}_HUB`:"";
+const hubByName=name=>MODEL.hubs.find(h=>hubName(h)===name);
 function colStat(t,col){ return (DATA.tables[t]&&DATA.tables[t].columns||[]).find(c=>c.name===col); }
 function isUnique(t,col){ const c=colStat(t,col); const n=DATA.tables[t]&&DATA.tables[t].rows;
   return !!(c&&n&&c.distinct>=n); }
+/* candidate keys are matched after normalizing a leading "X_" (this schema's
+   extension-field convention, e.g. PERSON.X_OCCUPATION_TP_CD / OCCUPATION.
+   OCCUPATION_TP_CD are the same logical key) -- same rule as the backend's
+   synth_eval.entity._normalize_key_name, so a column doesn't need the exact
+   same literal name in every table to be offered as a hub key. The value
+   used everywhere (dropdown, payloads) is always the canonical (normalized)
+   name; the backend resolves each table's own local variant from that. */
+const normKey=c=>/^x_/i.test(c)?c.slice(2):c;
 function sharedKeys(){ const s={};
-  for(const v of Object.values(DATA.tables)) for(const c of v.columns) s[c.name]=(s[c.name]||0)+1;
+  for(const v of Object.values(DATA.tables)){
+    const seen=new Set(v.columns.map(c=>normKey(c.name)));
+    for(const n of seen) s[n]=(s[n]||0)+1;
+  }
   return Object.keys(s).filter(k=>s[k]>=2).sort(); }
-function keyTables(key){ return Object.entries(DATA.tables).filter(([,v])=>v.columns.some(c=>c.name===key)).map(([t])=>t); }
+function keyTables(key){ return Object.entries(DATA.tables).filter(([,v])=>v.columns.some(c=>normKey(c.name)===key)).map(([t])=>t); }
 
 function initModel(seedRels){
-  MODEL={pos:{}, size:{}, rels:(seedRels||[]).slice(), hub:{key:"", children:[]}};
+  MODEL={pos:{}, size:{}, rels:(seedRels||[]).slice(), hubs:[]};
   layoutNodes(true);
   buildHubBar();
   renderModel();
@@ -223,7 +238,7 @@ function initModel(seedRels){
    ------------------------------------------------------------------------- */
 const DM={GRID:8, GAP:24, COLGAP:58, PAD:20, W:186, HEAD:34, ROW:23, MAXH:220};
 const snap=v=>Math.round(v/DM.GRID)*DM.GRID;
-const nodeNames=()=>[...Object.keys(DATA?DATA.tables:{}), ...(hubName()?[hubName()]:[])];
+const nodeNames=()=>[...Object.keys(DATA?DATA.tables:{}), ...MODEL.hubs.map(hubName)];
 
 /* measured box when the card is on screen, estimated (columns × row height)
    when it isn't — layout runs before the first render */
@@ -232,7 +247,7 @@ function cardBox(name){
   const el=c&&c.querySelector(`.dm-card[data-node="${cssEsc(name)}"]`);
   if(el&&el.offsetWidth) return {w:el.offsetWidth, h:el.offsetHeight};
   const sz=MODEL.size[name]||{};
-  const ncol = name===hubName() ? 1 : ((DATA&&DATA.tables[name]?DATA.tables[name].columns.length:3));
+  const ncol = hubByName(name) ? 1 : ((DATA&&DATA.tables[name]?DATA.tables[name].columns.length:3));
   return {w: sz.w||DM.W,
           h: DM.HEAD + Math.min(sz.h||DM.MAXH, Math.max(30, ncol*DM.ROW)) + 2};
 }
@@ -279,7 +294,7 @@ function tidyLayout(names){
   const edge=(p,c)=>{ (kids[p]=kids[p]||[]).push(c); (parents[c]=parents[c]||[]).push(p); };
   MODEL.rels.forEach(r=>{ if(names.includes(r.parent_table_name)&&names.includes(r.child_table_name))
     edge(r.parent_table_name,r.child_table_name); });
-  if(MODEL.hub.key) MODEL.hub.children.forEach(t=>{ if(names.includes(t)) edge(hubName(),t); });
+  MODEL.hubs.forEach(h=>{ if(names.includes(hubName(h))) h.children.forEach(t=>{ if(names.includes(t)) edge(hubName(h),t); }); });
 
   const depth={}; names.forEach(n=>depth[n]=0);
   for(let pass=0; pass<names.length; pass++){          // bounded: also breaks cycles
@@ -313,13 +328,13 @@ function tidyLayout(names){
   });
 }
 
-/* the hub feeds its children — park it to their left, centred on them, and
+/* a hub feeds its children — park it to their left, centred on them, and
    slide the rest of the canvas right if it would fall off the left edge */
-function placeHub(){
-  const h=hubName(); if(!h||!DATA) return;
+function placeHub(hub){
+  const h=hubName(hub); if(!h||!DATA) return;
   delete MODEL.pos[h];
   const b=cardBox(h);
-  const kidBoxes=MODEL.hub.children.filter(t=>MODEL.pos[t]).map(t=>boxAt(t,MODEL.pos[t]));
+  const kidBoxes=hub.children.filter(t=>MODEL.pos[t]).map(t=>boxAt(t,MODEL.pos[t]));
   if(!kidBoxes.length){ MODEL.pos[h]=freeSpot(h,takenBoxes(h)); return; }
   const left=Math.min(...kidBoxes.map(k=>k.x));
   const cy=kidBoxes.reduce((s,k)=>s+k.y+k.h/2,0)/kidBoxes.length;
@@ -336,7 +351,7 @@ function afterModelChange(){ renderModel(); syncEntity(); renderStructureMirror(
 
 function linkedSet(){ const s=new Set();
   for(const r of MODEL.rels){ s.add(r.parent_table_name+"::"+r.parent_primary_key); s.add(r.child_table_name+"::"+r.child_foreign_key); }
-  if(MODEL.hub.key){ s.add(hubName()+"::"+MODEL.hub.key); for(const t of MODEL.hub.children) s.add(t+"::"+MODEL.hub.key); }
+  for(const h of MODEL.hubs){ s.add(hubName(h)+"::"+h.key); for(const t of h.children) s.add(t+"::"+h.key); }
   return s; }
 
 function renderModel(){
@@ -346,11 +361,10 @@ function renderModel(){
   layoutNodes(false);   // place any new node in free space *before* the cards are rebuilt
   canvas.querySelectorAll(".dm-card").forEach(c=>c.remove());
   const linked=linkedSet();
-  const nodes=[...Object.keys(DATA.tables)];
-  if(hubName()) nodes.push(hubName());
+  const nodes=[...Object.keys(DATA.tables), ...MODEL.hubs.map(hubName)];
   for(const name of nodes){
-    const hub = name===hubName();
-    const cols = hub ? [MODEL.hub.key] : DATA.tables[name].columns.map(c=>c.name);
+    const hub = hubByName(name);
+    const cols = hub ? [hub.key] : DATA.tables[name].columns.map(c=>c.name);
     const el=document.createElement("div");
     el.className="dm-card"+(hub?" hubnode":""); el.dataset.node=name;
     const pos=MODEL.pos[name]||(MODEL.pos[name]=freeSpot(name,takenBoxes(name)));
@@ -360,7 +374,7 @@ function renderModel(){
     el.innerHTML=`<div class="dm-head" data-drag="${esc(name)}">${esc(name)}
         <span class="tag">${hub?"derived hub":(DATA.tables[name].rows.toLocaleString()+" rows")}</span></div>
       <div class="dm-cols"${colsStyle}>${cols.map(c=>{
-        const iskey = hub || linked.has(name+"::"+c) || (MODEL.hub.key&&c===MODEL.hub.key);
+        const iskey = !!hub || linked.has(name+"::"+c);
         return `<div class="dm-col ${iskey?"iskey linked":""}"><span>${esc(c)}</span>
           <span class="dm-port" data-port="${esc(name)}::${esc(c)}" data-t="${esc(name)}" data-col="${esc(c)}"></span></div>`;
       }).join("")}</div><div class="dm-resize" data-resize="${esc(name)}"></div>`;
@@ -411,8 +425,8 @@ function drawLinks(){
   let out="";
   MODEL.rels.forEach((r,i)=>{ const cm=relCard(r)==="1-1"?"1":"∗";
     out+=seg(r.parent_table_name,r.parent_primary_key,r.child_table_name,r.child_foreign_key,"","1",cm,i); });
-  if(MODEL.hub.key){ for(const t of MODEL.hub.children)
-    out+=seg(hubName(),MODEL.hub.key,t,MODEL.hub.key,"hub","1","∗",null); }
+  MODEL.hubs.forEach(h=>{ for(const t of h.children)
+    out+=seg(hubName(h),h.key,t,h.key,"hub","1","∗",null); });
   svg.innerHTML=out;
   svg.querySelectorAll('path[data-rel]').forEach(p=>p.addEventListener("click",e=>{
     const i=+p.dataset.rel;
@@ -627,7 +641,8 @@ async function validateModel(){
   box.innerHTML=`<div class="dm-vrow">validating…</div>`;
   try{
     const r=await apiFetch("/api/validate_model",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({relationships:MODEL.rels, entity_key:MODEL.hub.key||"", entity_children:MODEL.hub.children})});
+      body:JSON.stringify({relationships:MODEL.rels, entity_keys:MODEL.hubs.map(h=>h.key),
+        entity_children:Object.fromEntries(MODEL.hubs.map(h=>[h.key,h.children]))})});
     const j=await r.json();
     if(j.error){ box.innerHTML=`<div class="dm-vrow err">${esc(j.error)}</div>`; return; }
     if(!j.results.length){ box.innerHTML=`<div class="dm-vrow vdetail">Nothing to validate — no links or hub set.</div>`; return; }
@@ -639,50 +654,55 @@ $("#dm-validate-btn").addEventListener("click",validateModel);
 
 /* ---- entity-key hub generator ---- */
 function buildHubBar(){
-  const keys=sharedKeys();
+  const used=new Set(MODEL.hubs.map(h=>h.key));
+  const keys=sharedKeys().filter(k=>!used.has(k));
   $("#dm-hub-key").innerHTML=`<option value="">(choose a shared key…)</option>`+
-    keys.map(k=>`<option value="${esc(k)}" ${k===MODEL.hub.key?"selected":""}>${esc(k)} (in ${keyTables(k).length} tables)</option>`).join("");
+    keys.map(k=>`<option value="${esc(k)}">${esc(k)} (in ${keyTables(k).length} tables)</option>`).join("");
   renderHubChilds();
+  renderHubList();
   updateHubButtons();
 }
 function renderHubChilds(){
   const key=$("#dm-hub-key").value; const host=$("#dm-hub-childs");
   if(!key){ host.innerHTML=`<span class="dm-childchip off">choose a key first</span>`; return; }
-  const tabs=keyTables(key);
-  const chosen = MODEL.hub.key===key ? new Set(MODEL.hub.children) : new Set(tabs);
-  host.innerHTML=tabs.map(t=>`<span class="dm-childchip ${chosen.has(t)?"on":""}" data-t="${esc(t)}">${esc(t)}</span>`).join("");
+  host.innerHTML=keyTables(key).map(t=>`<span class="dm-childchip on" data-t="${esc(t)}">${esc(t)}</span>`).join("");
   host.querySelectorAll(".dm-childchip").forEach(ch=>ch.addEventListener("click",()=>{ ch.classList.toggle("on"); updateHubButtons(); }));
 }
 function chosenChilds(){ return [...$("#dm-hub-childs").querySelectorAll(".dm-childchip.on")].map(c=>c.dataset.t); }
 function updateHubButtons(){
-  const key=$("#dm-hub-key").value; const n=chosenChilds().length;
+  const key=$("#dm-hub-key").value, n=chosenChilds().length;
   $("#dm-hub-gen").disabled = !(key && n>=1);
-  $("#dm-hub-gen").textContent = MODEL.hub.key===key ? "Update hub" : "Generate hub";
-  $("#dm-hub-clear").style.display = MODEL.hub.key ? "inline-block" : "none";
+}
+function renderHubList(){
+  const host=$("#dm-hub-list");
+  host.innerHTML=MODEL.hubs.map((h,i)=>`<span class="dm-hubchip">${esc(h.key)} → ${h.children.length} table${h.children.length!==1?"s":""}
+      <button class="dm-hubchip-x" data-i="${i}" title="remove this hub">✕</button></span>`).join("");
+  host.querySelectorAll(".dm-hubchip-x").forEach(b=>b.addEventListener("click",()=>{
+    const h=MODEL.hubs[+b.dataset.i]; delete MODEL.pos[hubName(h)];
+    MODEL.hubs.splice(+b.dataset.i,1);
+    buildHubBar(); afterModelChange();
+  }));
 }
 $("#dm-hub-key").addEventListener("change",()=>{ renderHubChilds(); updateHubButtons(); });
 $("#dm-hub-gen").addEventListener("click",()=>{
   const key=$("#dm-hub-key").value, children=chosenChilds(); if(!key||!children.length) return;
-  MODEL.hub={key, children}; placeHub();
-  afterModelChange(); updateHubButtons();
-});
-$("#dm-hub-clear").addEventListener("click",()=>{
-  delete MODEL.pos[hubName()]; MODEL.hub={key:"", children:[]};
+  const hub={key, children};
+  MODEL.hubs.push(hub); placeHub(hub);
   buildHubBar(); afterModelChange();
 });
 
 /* ---- left-panel read-only mirror + entity-key sync ---- */
 function syncEntity(){ const sel=$("#in-entity");
-  if(MODEL.hub.key && ![...sel.options].some(o=>o.value===MODEL.hub.key))
-    sel.insertAdjacentHTML("beforeend",`<option value="${esc(MODEL.hub.key)}">${esc(MODEL.hub.key)}</option>`);
-  sel.value=MODEL.hub.key||""; updateScdVisibility();
+  for(const h of MODEL.hubs) if(![...sel.options].some(o=>o.value===h.key))
+    sel.insertAdjacentHTML("beforeend",`<option value="${esc(h.key)}">${esc(h.key)}</option>`);
+  sel.value=(MODEL.hubs[0]&&MODEL.hubs[0].key)||""; updateScdVisibility();
 }
 function renderStructureMirror(){
   const host=$("#structure-mirror"); if(!host) return;
   let h="";
-  if(MODEL.hub.key){
-    h+=`<div class="sm-row"><span class="sm-lbl">entity key</span><span class="sm-chip key">${esc(MODEL.hub.key)}</span>
-      <span class="sm-lbl">→ ${MODEL.hub.children.length} table${MODEL.hub.children.length!==1?"s":""}</span></div>`;
+  for(const hub of MODEL.hubs){
+    h+=`<div class="sm-row"><span class="sm-lbl">entity key</span><span class="sm-chip key">${esc(hub.key)}</span>
+      <span class="sm-lbl">→ ${hub.children.length} table${hub.children.length!==1?"s":""}</span></div>`;
   }
   if(MODEL.rels.length){
     h+=`<div class="sm-row"><span class="sm-lbl">links</span></div>`;
@@ -852,7 +872,8 @@ function renderRecipe(){
   updateEpochsVisibility();
   $("#target-fields").innerHTML=Object.entries(DATA.tables).map(([t,v])=>`
     <div class="tgt-row"><span title="${t}">${t}</span>
-      <select id="target-${t}"><option value="auto">(auto)</option>
+      <select id="target-${t}" title="(auto) picks a column to predict for ML-efficacy scoring; (none) skips this table entirely -- use it for dimension/lookup tables with nothing worth modeling">
+        <option value="auto">(auto)</option><option value="none">(none)</option>
         ${v.targets.map(c=>`<option>${c}</option>`).join("")}</select></div>`).join("");
   // CategoricalCAP sensitive column: what the attribute-inference attack tries
   // to guess. (auto) = the most balanced categorical, picked server-side.
@@ -862,12 +883,10 @@ function renderRecipe(){
         <option value="auto">(auto)</option>
         ${(v.categoricals||[]).map(c=>`<option>${c}</option>`).join("")}</select></div>`).join("");
   // hidden entity-key store — the Data Model tab (hub generator) sets its value;
-  // options list every shared candidate key so syncEntity() can select any of them
-  const shared={};
-  for(const v of Object.values(DATA.tables)) for(const c of v.columns) shared[c.name]=(shared[c.name]||0)+1;
-  const cands=Object.keys(shared).filter(c=>shared[c]>=2).sort();
+  // options list every shared candidate key (see sharedKeys()) so syncEntity()
+  // can select any of them.
   $("#in-entity").innerHTML=`<option value=""></option>`+
-    cands.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join("");
+    sharedKeys().map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join("");
   // SCD timeline columns: all column names (date-ish first), effective/end pre-selected
   const allCols=[...new Set(Object.values(DATA.tables).flatMap(v=>v.columns.map(c=>c.name)))];
   const dateish=c=>/(_dt|_date|eff|end|start|expiry|since|left)/i.test(c);
@@ -1020,10 +1039,13 @@ $("#btn-run").addEventListener("click",async()=>{
   });
   const cfg={schema, relationships:MODEL.rels.slice(), targets, cap_sensitive, constraints:collectConstraints(),
     pii:collectPii(),
-    entity_key:MODEL.hub.key||"", entity_children:MODEL.hub.children.slice(),
+    entity_keys:MODEL.hubs.map(h=>h.key), entity_children:Object.fromEntries(MODEL.hubs.map(h=>[h.key,h.children.slice()])),
     scd_effective:$("#in-scd-eff").value||"", scd_end:$("#in-scd-end").value||"", scd_current:$("#in-scd-cur").value||"",
     synths:[...selectedSynths],
-    epochs:+$("#in-epochs").value, scale:+$("#in-scale").value, holdout:HOLDOUT_FRAC};
+    epochs:+$("#in-epochs").value, scale:+$("#in-scale").value, holdout:HOLDOUT_FRAC,
+    max_categorical_card:+($("#in-max-cat-card")||{}).value||50,
+    min_target_rows:+($("#in-min-target-rows")||{}).value||30,
+    close_percentile:+($("#in-close-percentile")||{}).value||5};
   let r;
   try{ r=await apiFetch("/api/synthesize",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(cfg)}); }
   catch(e){ alert(BACKEND_HELP); return; }
@@ -1842,7 +1864,13 @@ function renderReport(res){
   $("#sec-ri").innerHTML=riH;
 
   /* --- Utility (ML efficacy · TSTR) --- */
-  if(!res.efficacy.length){ $("#sec-utility").innerHTML=`<h4 class="block-title">Utility · ML efficacy</h4><p class="note">No usable modelling target found.</p>`; }
+  const effSkipped=res.efficacy_skipped||[];
+  const effSkippedHtml=effSkipped.length
+    ? `<div class="efflog">`+effSkipped.map(s=>
+        `⚠ <b>${esc(s.table)}</b> skipped${s.target?` (target ${esc(s.target)})`:""} — ${esc(s.reason)}`
+      ).join("\n")+`</div>`
+    : "";
+  if(!res.efficacy.length){ $("#sec-utility").innerHTML=`<h4 class="block-title">Utility · ML efficacy</h4>${effSkippedHtml}<p class="note">No usable modelling target found.</p>`; }
   else{
     let ml=scoreStrip(res,P,v=>{
       const u=v.utility, pt=u.per_table||{};
@@ -1869,7 +1897,8 @@ function renderReport(res){
       +head("ML efficacy (TSTR)",
         "Train on Synthetic, Test on Real. Each model is trained on the real data (the reference) and on "
         + "every synthesizer's output, then tested on the SAME real holdout — which the synthesizers never saw.",
-        "Trained per source, tested on the same real holdout.");
+        "Trained per source, tested on the same real holdout.")
+      +effSkippedHtml;
     /* each (table × metric) row is one panel of the utility mean; the "÷ real"
        column after every synthesizer prints that panel's own term, so the
        headline can be added up by hand from the rows on screen. */

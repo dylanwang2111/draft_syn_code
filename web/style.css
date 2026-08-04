@@ -602,6 +602,14 @@ table.rep td{font-variant-numeric:tabular-nums}
   background:var(--panel); border-radius:999px; padding:3px 10px; cursor:pointer; user-select:none}
 .dm-childchip.on{border-color:var(--blue); color:var(--blue); background:var(--tint)}
 .dm-childchip.off{opacity:.5; cursor:not-allowed}
+.dm-hub-list{display:flex; align-items:center; gap:6px; flex-wrap:wrap; padding:0 18px 11px;
+  border-bottom:1px solid var(--line-soft); background:var(--panel-2); flex:none}
+.dm-hub-list:empty{display:none}
+.dm-hubchip{display:inline-flex; align-items:center; gap:6px; font-family:var(--mono); font-size:11px;
+  border:1px solid var(--blue); color:var(--blue); background:var(--tint); border-radius:999px; padding:3px 6px 3px 10px}
+.dm-hubchip-x{border:none; background:none; color:var(--blue); opacity:.6; cursor:pointer; font-size:11px;
+  line-height:1; padding:2px 4px; border-radius:50%}
+.dm-hubchip-x:hover{opacity:1; background:var(--panel)}
 .dm-canvas-wrap{position:relative; flex:1; min-height:0; overflow:hidden}
 .dm-canvas{position:absolute; inset:0; overflow:auto; background:
   radial-gradient(var(--grid) 1.2px, transparent 1.2px); background-size:22px 22px; background-color:var(--bg)}

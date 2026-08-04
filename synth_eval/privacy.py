@@ -144,6 +144,7 @@ def nearest_real_examples(
     scan_cap: int = 2000,
     random_state: int = 0,
     holdout: Optional[pd.DataFrame] = None,
+    percentile: float = 5.0,
 ) -> Dict[str, object]:
     """The concrete "can this be reverse-engineered back to a real record?"
     check: find the CLOSEST synthetic rows to any real (training) row -- worst
@@ -222,14 +223,18 @@ def nearest_real_examples(
         # keep the smallest" procedure rather than the raw row count
         boot_mins = np.array([rng.choice(dh, size=n_draw, replace=True).min()
                                for _ in range(200)])
-        ceiling = float(np.percentile(boot_mins, 5))
+        ceiling = float(np.percentile(boot_mins, percentile))
+        # key name kept as _p05 for backward compatibility with existing
+        # readers (compare.py's leaderboard term, the UI panel) even when
+        # `percentile` is overridden to something else -- the note text
+        # below always states the actual percentile used
         out["holdout_bootstrap_min_p05"] = ceiling
         out["holdout_bootstrap_min_median"] = float(np.median(boot_mins))
         out["note"] = (
             f"closest synthetic-to-real pair (worst case, not a random sample), distance "
             f"{out['min_distance']:.4f}. Graded against a real-holdout ceiling: scanning "
             f"{n_draw} real (unseen) rows and taking their own closest match to the "
-            f"training data lands at {ceiling:.4f} or below only 5% of the time by chance "
+            f"training data lands at {ceiling:.4f} or below only {percentile:g}% of the time by chance "
             f"alone -- a synthetic minimum AT OR ABOVE that is no worse than real, unseen "
             f"data gets from pure multiple-comparisons luck; below it is the actual signal."
         )
@@ -686,6 +691,7 @@ def privacy_report(
     reports_dir: str,
     metadata=None,
     cap_sensitive: Optional[str] = None,
+    close_percentile: float = 5.0,
 ) -> Dict[str, object]:
     """Compact privacy module for one table: three metrics + verdicts.
 
@@ -707,7 +713,8 @@ def privacy_report(
     mia = membership_inference_attack(train_real, holdout_real, synth, roles)
     sdm = sdmetrics_privacy(train_real, synth, roles, metadata, table_name,
                             holdout=holdout_real, cap_sensitive=cap_sensitive)
-    nearest = nearest_real_examples(train_real, synth, roles, holdout=holdout_real)
+    nearest = nearest_real_examples(train_real, synth, roles, holdout=holdout_real,
+                                    percentile=close_percentile)
 
     verdicts = {}
     # MIA AUC close to 0.5 == attacker cannot tell members from non-members.

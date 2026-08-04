@@ -9,28 +9,202 @@ import pandas as pd
 
 from .columns import ColumnRoles, _fit_mixed_encoder, _encode
 
+#: minimum macro-F1 / R^2 lift a target must clear over its noise floor
+#: before its efficacy ratio is trusted as signal rather than noise-over-noise.
+#: Deliberately low -- this only screens out targets with essentially NO real
+#: relationship to the other columns, not weak ones.
+_MIN_SIGNAL_LIFT = 0.05
+#: label-permutation repeats used to estimate the classification noise floor
+#: (see _predictive_signal) -- a flexible tree can overfit pure noise well
+#: past what a majority-class score suggests, so that alone isn't a safe
+#: baseline; a few shuffled-label refits of the SAME tree measure how much
+#: apparent score this exact model/sample-size can manufacture from nothing.
+_SHUFFLE_REPEATS = 5
 
-def auto_select_target(df: pd.DataFrame, roles: ColumnRoles) -> Optional[Tuple[str, str]]:
+
+def _predictive_signal(
+    df: pd.DataFrame, target_col: str, feature_roles: ColumnRoles, task: str,
+) -> Optional[Tuple[float, float]]:
+    """(real_score, noise_floor_score) from a quick train/test split within
+    ``df``, scored with a shallow decision tree -- or ``None`` if there isn't
+    enough data to judge either way.
+
+    This is a cheap screen, not the final TSTR metric (see
+    :func:`sdmetrics_ml_efficacy`): just enough model to tell "some other
+    column predicts this" from "nothing does", before committing a full
+    synthesizer comparison -- or showing a ratio -- to a target that's really
+    just independent noise.
+    """
+    from sklearn.metrics import f1_score, r2_score
+    from sklearn.model_selection import train_test_split
+    from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
+
+    y = df[target_col]
+    m = y.notna()
+    if m.sum() < 20:
+        return None
+    sub, y = df[m], y[m]
+    stratify = y.astype(str) if task == "classification" and y.nunique() > 1 else None
+    try:
+        tr_idx, te_idx = train_test_split(sub.index, test_size=0.3, random_state=0,
+                                          stratify=stratify)
+    except ValueError:
+        return None  # e.g. a class with a single member -- can't judge safely
+    try:
+        enc, use_cols = _fit_mixed_encoder(sub.loc[tr_idx], feature_roles)
+    except ValueError:
+        return None  # no usable feature columns
+    Xtr = np.nan_to_num(_encode(enc, sub.loc[tr_idx], use_cols))
+    Xte = np.nan_to_num(_encode(enc, sub.loc[te_idx], use_cols))
+    ytr, yte = y.loc[tr_idx], y.loc[te_idx]
+    if task == "classification":
+        if ytr.nunique() < 2:
+            return None
+        ytr_s, yte_s = ytr.astype(str), yte.astype(str)
+        clf = DecisionTreeClassifier(max_depth=6, random_state=0)
+        clf.fit(Xtr, ytr_s)
+        real = float(f1_score(yte_s, clf.predict(Xte), average="macro", zero_division=0))
+        # noise floor: same tree, labels permuted -- what a majority-class
+        # check alone would miss (see _MIN_SIGNAL_LIFT / _SHUFFLE_REPEATS)
+        floor_scores = []
+        ytr_arr = ytr_s.to_numpy()
+        for i in range(_SHUFFLE_REPEATS):
+            shuffled = ytr_arr.copy()
+            np.random.default_rng(1000 + i).shuffle(shuffled)
+            sh_clf = DecisionTreeClassifier(max_depth=6, random_state=0).fit(Xtr, shuffled)
+            floor_scores.append(f1_score(yte_s, sh_clf.predict(Xte),
+                                         average="macro", zero_division=0))
+        base = float(np.mean(floor_scores))
+    else:
+        reg = DecisionTreeRegressor(max_depth=6, random_state=0)
+        reg.fit(Xtr, ytr)
+        real = float(r2_score(yte, reg.predict(Xte)))
+        # a mean-predictor's R^2 is 0 by definition -- no fit needed, and more
+        # stable than a shuffled-label tree floor (which is erratic for R^2)
+        base = 0.0
+    return real, base
+
+
+def target_signal_note(
+    df: pd.DataFrame, target_col: str, roles: ColumnRoles, task: str,
+    min_lift: float = _MIN_SIGNAL_LIFT,
+) -> Optional[str]:
+    """Caution string when ``target_col`` doesn't clear its noise floor by
+    ``min_lift`` -- i.e. its real-data score is close to what a model with no
+    real relationship to predict would score anyway (chance-level guessing
+    for regression, or label-permuted overfitting for classification -- see
+    :func:`_predictive_signal`), so a synthetic-vs-real efficacy ratio for it
+    is mostly noise divided by noise, not a fidelity signal. Returns ``None``
+    when there's real signal (or too little data to tell either way).
+    """
+    feature_roles = ColumnRoles(
+        numeric=[c for c in roles.numeric if c != target_col],
+        categorical=[c for c in roles.categorical if c != target_col],
+    )
+    sig = _predictive_signal(df, target_col, feature_roles, task)
+    if sig is None:
+        return None
+    real, base = sig
+    if (real - base) >= min_lift:
+        return None
+    metric = "macro F1" if task == "classification" else "R²"
+    return (f"weak real-data signal for '{target_col}' ({metric} {real:.3f} real vs "
+            f"{base:.3f} noise floor) — efficacy ratios for this target may reflect "
+            f"noise more than fidelity")
+
+
+def auto_select_target(
+    df: pd.DataFrame, roles: ColumnRoles, min_rows: int = 30,
+) -> Optional[Tuple[str, str]]:
     """Pick a modelling target: (column, task) where task in {classification, regression}.
 
     Prefers a categorical column with 2-20 classes (classification); otherwise
     falls back to a numeric column with reasonable variance (regression).
+
+    Returns ``None`` for tables too small or too thin to model meaningfully.
+    A dimension/lookup table (an id column plus a name/desc column, both
+    skipped by classify_columns, and maybe one small categorical left) can
+    otherwise auto-pick that one remaining categorical as a target with
+    nothing left to predict it FROM, or hand TSTR/TRTR a holdout of a
+    handful of rows where the score is mostly noise. Guards: the table needs
+    ``min_rows`` rows (a holdout split that small isn't a meaningful
+    comparison), a candidate target needs at least one OTHER modelable column
+    left over to use as a feature, and -- since neither of those catches a
+    target that's simply *independent* of everything else in the table --
+    :func:`_predictive_signal` must clear a real lift over a naive baseline
+    (skipped, not blocked, on ties/too-little-data, so this never turns a
+    previously-picked target into "no target").
     """
+    if len(df) < min_rows:
+        return None
+
+    def _has_features(target_col: str) -> bool:
+        return any(c != target_col for c in roles.modelable)
+
+    def _feature_roles(target_col: str) -> ColumnRoles:
+        return ColumnRoles(
+            numeric=[c for c in roles.numeric if c != target_col],
+            categorical=[c for c in roles.categorical if c != target_col],
+        )
+
+    def _has_signal(target_col: str, task: str) -> bool:
+        sig = _predictive_signal(df, target_col, _feature_roles(target_col), task)
+        return sig is None or (sig[0] - sig[1]) >= _MIN_SIGNAL_LIFT
+
     for col in roles.categorical:
         nun = df[col].nunique(dropna=True)
-        if 2 <= nun <= 20:
+        if 2 <= nun <= 20 and _has_features(col) and _has_signal(col, "classification"):
             return col, "classification"
-    # regression fallback: numeric column with the most variance
-    best, best_var = None, -1.0
+    # regression fallback: numeric columns ranked by variance, highest first;
+    # first one with real signal wins (skip ones nothing predicts)
+    candidates = []
     for col in roles.numeric:
+        if not _has_features(col):
+            continue
         v = pd.to_numeric(df[col], errors="coerce")
         if v.notna().sum() < 20:
             continue
-        var = float(v.var())
-        if var > best_var:
-            best, best_var = col, var
-    if best is not None:
-        return best, "regression"
+        candidates.append((col, float(v.var())))
+    for col, _ in sorted(candidates, key=lambda x: -x[1]):
+        if _has_signal(col, "regression"):
+            return col, "regression"
+    return None
+
+
+def dim_table_density_note(
+    df: pd.DataFrame, roles: ColumnRoles, target_col: str, threshold: float = 0.90,
+) -> Optional[str]:
+    """Second, weaker dim-table signal, on top of the row/feature-count guards
+    in :func:`auto_select_target`. Those catch tables too small or too thin to
+    model; this catches ones that pass that bar but still look like
+    reference/lookup data -- e.g. an SCD-versioned dimension table where a
+    handful of real-world entities repeat across many historical rows.
+
+    The proxy: the fraction of rows that are *jointly distinct* across the
+    modelable columns. Averaging per-column distinct-ness doesn't work here --
+    a table full of legitimate low-cardinality codes (marital status, gender)
+    scores just as "dense" as a real dimension table, since the actual
+    entity-count signal lives in the id column classify_columns already
+    excludes from `modelable`. But the JOINT combination of feature columns is
+    a stand-in for "how many distinct real-world states does this table
+    describe": a fact table's rows are almost always unique across all their
+    features together, while an SCD dimension table repeats the same handful
+    of attribute combinations across many historical-version rows.
+
+    This is a proxy, not a real semantic detector (a fact table that happens
+    to have exact-duplicate rows would trip it too), so it never blocks
+    scoring -- it only returns a note for the caller to log.
+    """
+    cols = [c for c in roles.modelable if c in df.columns]
+    if not cols or len(df) == 0:
+        return None
+    ratio = df[cols].drop_duplicates().shape[0] / len(df)
+    if ratio < threshold:
+        return (
+            f"low row distinctness ({ratio:.0%} of rows jointly-unique across {len(cols)} "
+            f"modelable columns) — likely reference/lookup-style data with repeated "
+            f"historical versions; treat the efficacy score for '{target_col}' with caution"
+        )
     return None
 
 
@@ -306,6 +480,14 @@ def sdmetrics_ml_efficacy(
         train_labels = set(tr[target].dropna().astype(str).unique())
         test_src = test[test[target].astype(str).isin(train_labels)].copy()
         tr, test_src, n_aligned = _align_categories(tr, test_src)
+        if task == "classification":
+            # sdmetrics' Binary*/Multiclass*Classifier only remap labels to
+            # boolean when the target dtype is 'object' -- a numeric-coded
+            # binary target (e.g. PREF_LANG_TP_CD = 703793/703794) skips that
+            # remap and falls through to sklearn's f1_score with the default
+            # pos_label=1, which crashes since neither class IS 1.
+            tr[target] = tr[target].astype(str)
+            test_src[target] = test_src[target].astype(str)
         base_note = ""
         if len(test_src) < len(test):
             base_note = f"dropped {len(test)-len(test_src)} holdout rows with unseen target class"

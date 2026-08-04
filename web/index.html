@@ -106,6 +106,17 @@
         <input type="range" id="in-epochs" min="10" max="600" step="10" value="60"></div>
       <div class="field"><label><span class="lbl-main">What the usefulness test predicts <i class="lbl-tech">ML-efficacy target / table</i></span></label><div id="target-fields"></div></div>
       <div class="field"><label><span class="lbl-main">Sensitive field the safety test guesses <i class="lbl-tech">privacy attack column / table</i></span></label><div id="cap-fields"></div></div>
+      <details class="biz-expander field">
+        <summary>Advanced thresholds <span style="opacity:.7">(tune for a different data scale)</span></summary>
+        <div class="biz-details" style="display:flex; flex-direction:column; gap:12px">
+          <label><span class="lbl-main" style="font-size:12.5px">Max distinct values for a categorical column <i class="lbl-tech">above this, treated as id-like and skipped</i></span>
+            <input type="number" id="in-max-cat-card" min="2" step="1" value="50" style="width:100%; margin-top:4px"></label>
+          <label><span class="lbl-main" style="font-size:12.5px">Min rows to auto-pick an ML-efficacy target <i class="lbl-tech">below this, a table is skipped as too small to score meaningfully</i></span>
+            <input type="number" id="in-min-target-rows" min="1" step="1" value="30" style="width:100%; margin-top:4px"></label>
+          <label><span class="lbl-main" style="font-size:12.5px">Privacy filter strictness <i class="lbl-tech">percentile — lower is stricter, catches more rows</i></span>
+            <input type="number" id="in-close-percentile" min="0.1" max="50" step="0.1" value="5" style="width:100%; margin-top:4px"></label>
+        </div>
+      </details>
     </div>
 
     <div class="panel" id="synthetic-panel" style="display:none">
@@ -144,13 +155,13 @@
           <button class="mini-btn" id="dm-autolayout" style="margin:0">Auto-layout</button>
         </div>
         <div class="dm-hub">
-          <span class="lbl">Shared customer ID <span class="lbl-tech">entity-key hub</span></span>
+          <span class="lbl">Shared ID <span class="lbl-tech">entity-key hub</span></span>
           <select id="dm-hub-key"><option value="">(choose a shared key…)</option></select>
           <span class="lbl">children</span>
           <div class="dm-childs" id="dm-hub-childs"></div>
-          <button class="mini-btn" id="dm-hub-gen" style="margin:0" disabled>Generate hub</button>
-          <button class="mini-btn" id="dm-hub-clear" style="margin:0; display:none">Remove hub</button>
+          <button class="mini-btn" id="dm-hub-gen" style="margin:0" disabled>Add ID hub</button>
         </div>
+        <div class="dm-hub-list" id="dm-hub-list"></div>
         <div class="dm-validate" id="dm-validate"></div>
         <div class="dm-canvas-wrap">
           <div class="dm-canvas" id="dm-canvas">
