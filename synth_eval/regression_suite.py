@@ -25,6 +25,7 @@ import pandas as pd
 from .columns import ColumnRoles, classify_columns
 from .efficacy import auto_select_target, dim_table_density_note
 from .entity import _normalize_key_name, _resolve_key_column, build_entity_hub, entity_key_tables
+from .link import link_relationships
 from .privacy import filter_close_records, filter_close_records_multitable, nearest_real_examples
 
 CHECKS: list[tuple[str, "object"]] = []
@@ -240,6 +241,46 @@ def _c_multi_hub_relationships_survive():
     _assert(len(md_rels) == len(rels) == 4, "metadata relationships don't match the returned rels list")
     parents = {r["parent_table_name"] for r in md_rels}
     _assert(parents == {"CONT_ID_HUB", "OCCUPATION_TP_CD_HUB"}, f"expected both hub parents, got {parents}")
+
+
+@check("link_relationships: relinks a multi-parent child's two hub FKs independently, 100% coverage")
+def _c_link_relationships_multi_parent_hub():
+    # backend/dashboard_core.py builds a per-key union pool for single-table
+    # synths (HMA models hubs jointly and doesn't need this), then relinks
+    # every hub relationship against it -- this is what makes that pool
+    # coherent for PERSON, which sits under BOTH hubs at once, instead of each
+    # child's independently-fit FK column holding unrelated numbers that just
+    # happen to share a column name.
+    tables = _hub_fixture()
+    fit_tables, _, hub_rels, hub_info = build_entity_hub(
+        tables, ["CONT_ID", "OCCUPATION_TP_CD"], lift_invariant=False,
+        child_tables={"CONT_ID": ["CONTACT", "PERSON"], "OCCUPATION_TP_CD": ["OCCUPATION", "PERSON"]})
+    parent_names = {k: info["parent"] for k, info in hub_info.items()}
+
+    # worst case: a "synth" whose per-table models generated FK-ish columns
+    # totally disjoint from every other table's, including PERSON's own two
+    # keys -- nothing here should coincidentally already line up
+    suite = {"GaussianCopula": {
+        "CONTACT": pd.DataFrame({"CONT_ID": [101, 102, 103]}),
+        "PERSON": pd.DataFrame({"CONT_ID": [201, 202], "OCCUPATION_TP_CD": [901, 902]}),
+        "OCCUPATION": pd.DataFrame({"OCCUPATION_TP_CD": [301]}),
+    }}
+    entity_children_by_key = {"CONT_ID": ["CONTACT", "PERSON"], "OCCUPATION_TP_CD": ["OCCUPATION", "PERSON"]}
+
+    for s, tabs in suite.items():
+        for entity_key, pname in parent_names.items():
+            ids = {v for t in entity_children_by_key[entity_key] for v in tabs[t][entity_key]}
+            tabs[pname] = pd.DataFrame({entity_key: sorted(ids)})
+
+    linked = link_relationships(hub_rels, fit_tables, suite, list(suite), seed=0)
+    _assert(len(linked["GaussianCopula"]) == 4, f"expected all 4 hub relationships linked, got {linked}")
+
+    tabs = suite["GaussianCopula"]
+    for r in hub_rels:
+        pt, pk = r["parent_table_name"], r["parent_primary_key"]
+        ct, fk = r["child_table_name"], r["child_foreign_key"]
+        cov = tabs[ct][fk].isin(set(tabs[pt][pk])).mean()
+        _assert(cov == 1.0, f"{ct}.{fk} -> {pt}.{pk} coverage {cov}, expected 1.0 after relinking")
 
 
 # ---------------------------------------------------------------------------

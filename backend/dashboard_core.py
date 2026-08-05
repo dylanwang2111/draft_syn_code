@@ -815,6 +815,27 @@ def _run_job(cfg: dict, st: dict):
                             ids |= set(tabs[t][entity_key].dropna().unique())
                     tabs[pname] = pd.DataFrame(
                         {entity_key: sorted(ids, key=lambda v: (str(type(v)), str(v)))})
+            # That per-key union is only a coherent shared pool once every child
+            # is actually relinked against it: each single-table synth fit its
+            # own copy of the key column independently, so before this the same
+            # entity_key value in two children of the same hub (or, for a
+            # multi-hub child like PERSON, its two DIFFERENT keys) are
+            # unrelated numbers that happen to share a column name. Relinking
+            # (real per-parent count shape, values drawn from the pool just
+            # built above) is exactly what the plain-relationship path already
+            # does for non-hub FKs (see LINKABLE_SYNTHS above) -- same
+            # mechanism, applied to hub_rels instead of rels. HMA already
+            # models each hub jointly with its children, so it's excluded here
+            # the same way it's excluded from the "others" fit above.
+            hub_linkable = [s for s in suite if s.upper() != "HMA" and s.upper() in LINKABLE_SYNTHS]
+            if hub_linkable:
+                hub_linked = se.link_relationships(hub_rels, fit_tables, suite, hub_linkable,
+                                                    seed=cfg.get("seed", 42))
+                hub_linked_synths = [s for s in hub_linked if hub_linked[s]]
+                if hub_linked_synths:
+                    say(f"Linked hub foreign keys for {', '.join(hub_linked_synths)} so "
+                        f"referential integrity holds on the derived hub(s) too "
+                        f"(cardinality resampled from the real per-parent shape).")
             ri = _referential_integrity(hub_rels, fit_tables, suite)
             try:
                 cardinality = se.cardinality_report(fit_metadata, fit_tables, suite)
