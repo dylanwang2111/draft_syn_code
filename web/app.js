@@ -1870,7 +1870,13 @@ function renderReport(res){
         `⚠ <b>${esc(s.table)}</b> skipped${s.target?` (target ${esc(s.target)})`:""} — ${esc(s.reason)}`
       ).join("\n")+`</div>`
     : "";
-  if(!res.efficacy.length){ $("#sec-utility").innerHTML=`<h4 class="block-title">Utility · ML efficacy</h4>${effSkippedHtml}<p class="note">No usable modelling target found.</p>`; }
+  const effNotes=res.efficacy_notes||[];
+  const effNotesHtml=effNotes.length
+    ? `<div class="effnote">`+effNotes.map(s=>
+        `ⓘ <b>${esc(s.table)}</b>${s.target?` (target ${esc(s.target)})`:""} — ${esc(s.note)}`
+      ).join("\n")+`</div>`
+    : "";
+  if(!res.efficacy.length){ $("#sec-utility").innerHTML=`<h4 class="block-title">Utility · ML efficacy</h4>${effSkippedHtml}${effNotesHtml}<p class="note">No usable modelling target found.</p>`; }
   else{
     let ml=scoreStrip(res,P,v=>{
       const u=v.utility, pt=u.per_table||{};
@@ -1898,7 +1904,7 @@ function renderReport(res){
         "Train on Synthetic, Test on Real. Each model is trained on the real data (the reference) and on "
         + "every synthesizer's output, then tested on the SAME real holdout — which the synthesizers never saw.",
         "Trained per source, tested on the same real holdout.")
-      +effSkippedHtml;
+      +effSkippedHtml+effNotesHtml;
     /* each (table × metric) row is one panel of the utility mean; the "÷ real"
        column after every synthesizer prints that panel's own term, so the
        headline can be added up by hand from the rows on screen. */

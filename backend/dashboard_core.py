@@ -999,10 +999,15 @@ def _run_job(cfg: dict, st: dict):
 
         eff_frames = []
         efficacy_skipped = []  # [{table, target, task, reason}] -- surfaced in the report, not just the log
+        efficacy_notes = []    # [{table, target, task, note}] -- caution, score still computed
 
         def skip_eff(t, reason, target=None, task=None):
             say(f"ML efficacy · {t} · skipped ({reason})")
             efficacy_skipped.append({"table": t, "target": target, "task": task, "reason": reason})
+
+        def note_eff(t, note, target=None, task=None):
+            say(f"ML efficacy · {t} · note: {note}")
+            efficacy_notes.append({"table": t, "target": target, "task": task, "note": note})
 
         for t in tables:
             ck()
@@ -1021,19 +1026,23 @@ def _run_job(cfg: dict, st: dict):
                 sel = (tgt, task)
             target, task = sel
             # a reference/lookup table (few real-world entities repeated across many
-            # historical-version rows) makes any TSTR ratio on it noisy regardless of
-            # which column is the target, so this is a hard skip, not just a caution
+            # historical-version rows) makes any TSTR ratio on it noisier -- but this
+            # is a proxy, not a real semantic detector (see dim_table_density_note's
+            # own docstring: a fact table with exact-duplicate rows trips it too), so
+            # it's a caution, not a hard skip. A dataset where EVERY table is
+            # legitimately SCD-versioned (a normal MDM/history schema) would
+            # otherwise lose the whole Utility metric to this one heuristic with no
+            # way to recover it.
             density_note = se.dim_table_density_note(train[t], roles[t], target)
             if density_note:
-                skip_eff(t, density_note, target, task)
-                continue
+                note_eff(t, density_note, target, task)
             if tgt != "auto":
                 # auto-picked targets already cleared this bar inside
                 # auto_select_target; only a manually-forced target can still
                 # have no real signal to preserve, so only check that path.
                 sig_note = se.target_signal_note(train[t], target, roles[t], task)
                 if sig_note:
-                    say(f"ML efficacy · {t} · note: {sig_note}")
+                    note_eff(t, sig_note, target, task)
             say(f"ML efficacy · {t} · target={target} ({task})")
             synth_dict = {s: tabs[t] for s, tabs in suite.items() if t in tabs}
             eff_frames.append(se.sdmetrics_ml_efficacy(
@@ -1105,6 +1114,7 @@ def _run_job(cfg: dict, st: dict):
                         for s, tabs in privacy_all.items()},
             "efficacy": efficacy.to_dict(orient="records") if not efficacy.empty else [],
             "efficacy_skipped": efficacy_skipped,
+            "efficacy_notes": efficacy_notes,
             "figures": figs,
             "config": {k: cfg[k] for k in ("synths", "epochs", "scale", "holdout")},
         })

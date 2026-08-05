@@ -582,6 +582,9 @@ table.rep td{font-variant-numeric:tabular-nums}
 .efflog{font-family:var(--mono); font-size:11px; color:var(--warn); background:var(--err-bg);
   border:1px solid rgba(207,138,18,.35); border-radius:8px; padding:8px 12px; margin:2px 0 14px;
   white-space:pre-wrap; word-break:break-word}
+.effnote{font-family:var(--mono); font-size:11px; color:var(--muted); background:var(--panel);
+  border:1px solid var(--line); border-radius:8px; padding:8px 12px; margin:2px 0 14px;
+  white-space:pre-wrap; word-break:break-word}
 .score-cell.err{color:var(--fail)}
 
 /* ---------------- data-model canvas (PowerBI-style) ---------------- */
