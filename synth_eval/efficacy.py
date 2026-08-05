@@ -171,43 +171,6 @@ def auto_select_target(
     return None
 
 
-def dim_table_density_note(
-    df: pd.DataFrame, roles: ColumnRoles, target_col: str, threshold: float = 0.90,
-) -> Optional[str]:
-    """Second, weaker dim-table signal, on top of the row/feature-count guards
-    in :func:`auto_select_target`. Those catch tables too small or too thin to
-    model; this catches ones that pass that bar but still look like
-    reference/lookup data -- e.g. an SCD-versioned dimension table where a
-    handful of real-world entities repeat across many historical rows.
-
-    The proxy: the fraction of rows that are *jointly distinct* across the
-    modelable columns. Averaging per-column distinct-ness doesn't work here --
-    a table full of legitimate low-cardinality codes (marital status, gender)
-    scores just as "dense" as a real dimension table, since the actual
-    entity-count signal lives in the id column classify_columns already
-    excludes from `modelable`. But the JOINT combination of feature columns is
-    a stand-in for "how many distinct real-world states does this table
-    describe": a fact table's rows are almost always unique across all their
-    features together, while an SCD dimension table repeats the same handful
-    of attribute combinations across many historical-version rows.
-
-    This is a proxy, not a real semantic detector (a fact table that happens
-    to have exact-duplicate rows would trip it too), so it never blocks
-    scoring -- it only returns a note for the caller to log.
-    """
-    cols = [c for c in roles.modelable if c in df.columns]
-    if not cols or len(df) == 0:
-        return None
-    ratio = df[cols].drop_duplicates().shape[0] / len(df)
-    if ratio < threshold:
-        return (
-            f"low row distinctness ({ratio:.0%} of rows jointly-unique across {len(cols)} "
-            f"modelable columns) — likely reference/lookup-style data with repeated "
-            f"historical versions; treat the efficacy score for '{target_col}' with caution"
-        )
-    return None
-
-
 def _build_model(task: str, kind: str, random_state: int = 0):
     from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
     from sklearn.linear_model import LinearRegression, LogisticRegression

@@ -180,11 +180,24 @@ and +0.002 respectively) — their efficacy ratios were noise divided by noise,
 not a fidelity signal. Both are now skipped in favor of a target that clears
 the bar, or `None` when nothing in the table does.
 
-For a **manually-forced** target (`TARGETS` / the dashboard's per-table
-dropdown, which bypasses auto-selection entirely), the same check runs as a
-caution instead of a gate: `synth_eval.target_signal_note` logs `ML efficacy
-· <table> · note: weak real-data signal for '<col>' (...)` rather than
-silently scoring a target with no real signal to preserve.
+`synth_eval.target_signal_note` runs this same check again as a caution, not a
+gate, for **every** target the pipeline scores — auto-picked or
+manually-forced (`TARGETS` / the dashboard's per-table dropdown, which
+bypasses auto-selection entirely). auto_select_target's own min-lift gate only
+screens out targets with essentially no signal; a borderline pick can still
+clear it and still deserve the caution. Logged as `ML efficacy · <table> ·
+note: weak real-data signal for '<col>' (...)` and surfaced in the report
+itself (`efficacy_notes`), not just the run log, rather than silently scoring
+a target with little real signal to preserve.
+
+An earlier version additionally hard-skipped any table below a row-distinctness
+threshold (a proxy for "this looks like an SCD-versioned dimension table"),
+before this per-target signal check ever ran. That heuristic broke down on a
+schema where *every* table is legitimately SCD-versioned — a normal MDM/history
+design, not an edge case — since nothing ever cleared the threshold and the
+whole Utility metric came back empty regardless of the threshold value. It's
+been removed in favor of this direct check: whether the specific target is
+predictable, not what the table's row shape looks like.
 
 | Target type | sdmetrics metric (headline) | Score |
 |---|---|---|

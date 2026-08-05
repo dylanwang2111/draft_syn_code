@@ -4,7 +4,7 @@ Targeted at the scale-sensitivity and naming-convention work done to make the
 pipeline behave on real production-shaped data (a handful of tables, wide
 column sets, SCD-versioned dimension tables) instead of just the small demo
 seed data it was originally tuned against: key-name normalization, the
-auto_select_target guards + dim-table density note, entity-hub building
+auto_select_target guards, entity-hub building
 (single and multiple simultaneous keys), and the close-record filter /
 nearest-record ceiling's percentile sensitivity.
 
@@ -23,7 +23,7 @@ import numpy as np
 import pandas as pd
 
 from .columns import ColumnRoles, classify_columns
-from .efficacy import auto_select_target, dim_table_density_note
+from .efficacy import auto_select_target
 from .entity import _normalize_key_name, _resolve_key_column, build_entity_hub, entity_key_tables
 from .link import link_relationships
 from .privacy import filter_close_records, filter_close_records_multitable, nearest_real_examples
@@ -127,34 +127,6 @@ def _c_picks_regression():
     roles = ColumnRoles(numeric=["ID_CD", "AMOUNT"], categorical=[])
     sel = auto_select_target(df, roles, min_rows=10)
     _assert(sel is not None and sel[1] == "regression", f"expected a regression pick, got {sel}")
-
-
-@check("dim_table_density_note: flags an SCD-style table (repeated attribute combos across versions)")
-def _c_density_flags_dim_table():
-    # 5 real-world entities, ~5 SCD-history rows each, attributes constant per
-    # entity except a changing CURRENT_IND -- same shape as OCCUPATION.csv
-    rows = []
-    for code in range(5):
-        for version in range(6):
-            rows.append({"CODE_CD": code, "CATEGORY_CD": code % 2, "CURRENT_IND": "Y" if version == 5 else "N"})
-    df = pd.DataFrame(rows)
-    roles = ColumnRoles(numeric=[], categorical=["CODE_CD", "CATEGORY_CD", "CURRENT_IND"])
-    note = dim_table_density_note(df, roles, "CATEGORY_CD")
-    _assert(note is not None, "expected a low-distinctness note on SCD-repeated data")
-
-
-@check("dim_table_density_note: stays silent on a table where rows are jointly unique")
-def _c_density_silent_on_fact_table():
-    n = 200
-    rng = np.random.default_rng(0)
-    df = pd.DataFrame({
-        "AMOUNT": rng.normal(size=n),
-        "CHANNEL_CD": rng.choice(["A", "B", "C"], size=n),
-        "STATUS_CD": rng.choice(["OPEN", "CLOSED"], size=n),
-    })
-    roles = ColumnRoles(numeric=["AMOUNT"], categorical=["CHANNEL_CD", "STATUS_CD"])
-    note = dim_table_density_note(df, roles, "STATUS_CD")
-    _assert(note is None, f"expected no note on a fact-shaped table, got: {note!r}")
 
 
 # ---------------------------------------------------------------------------

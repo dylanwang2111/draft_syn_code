@@ -1025,24 +1025,17 @@ def _run_job(cfg: dict, st: dict):
                 task = "classification" if tgt in roles[t].categorical else "regression"
                 sel = (tgt, task)
             target, task = sel
-            # a reference/lookup table (few real-world entities repeated across many
-            # historical-version rows) makes any TSTR ratio on it noisier -- but this
-            # is a proxy, not a real semantic detector (see dim_table_density_note's
-            # own docstring: a fact table with exact-duplicate rows trips it too), so
-            # it's a caution, not a hard skip. A dataset where EVERY table is
-            # legitimately SCD-versioned (a normal MDM/history schema) would
-            # otherwise lose the whole Utility metric to this one heuristic with no
-            # way to recover it.
-            density_note = se.dim_table_density_note(train[t], roles[t], target)
-            if density_note:
-                note_eff(t, density_note, target, task)
-            if tgt != "auto":
-                # auto-picked targets already cleared this bar inside
-                # auto_select_target; only a manually-forced target can still
-                # have no real signal to preserve, so only check that path.
-                sig_note = se.target_signal_note(train[t], target, roles[t], task)
-                if sig_note:
-                    note_eff(t, sig_note, target, task)
+            # whether the target is actually predictable from the table's other
+            # columns -- not a row-shape proxy (a table full of legitimate
+            # low-cardinality codes looks identical to an SCD dimension table by
+            # row-distinctness alone), but the real, direct signal check: does a
+            # model beat its own noise floor on this exact target? Runs for BOTH
+            # auto-picked and manually-forced targets -- auto_select_target's own
+            # min-lift gate only skips targets with essentially NO signal, so a
+            # borderline pick can still clear it and land here as a caution.
+            sig_note = se.target_signal_note(train[t], target, roles[t], task)
+            if sig_note:
+                note_eff(t, sig_note, target, task)
             say(f"ML efficacy · {t} · target={target} ({task})")
             synth_dict = {s: tabs[t] for s, tabs in suite.items() if t in tabs}
             eff_frames.append(se.sdmetrics_ml_efficacy(
