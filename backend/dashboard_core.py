@@ -352,19 +352,34 @@ def _reduce_meta(tables_meta: dict, keep: dict) -> dict:
 
 
 def _refill(synth: pd.DataFrame, real: pd.DataFrame, fill_cols, order, seed=0) -> pd.DataFrame:
-    """Add ``fill_cols`` back to a synthetic table by resampling each from the
-    real column's values (independent bootstrap, preserving the missing-rate),
-    then reorder to the original column order.  Used for columns the synthesizer
-    did not model (ids / dates / names / audit) so the output keeps all columns."""
+    """Add ``fill_cols`` back to a synthetic table by resampling real ROWS
+    (with replacement) and taking every fill column from the SAME sampled
+    row, then reorder to the original column order.  Used for columns the
+    synthesizer did not model (ids / dates / names / audit) so the output
+    keeps all columns.
+
+    Sampling whole rows -- not each column independently -- keeps whatever
+    real correlation existed BETWEEN fill columns intact (e.g. a NAME and its
+    matching DESC, or an audit date and the user who made it): resampling
+    each column on its own, with its own draw, reshuffles that relationship
+    to near-independence (a table's own N distinct name/desc pairs verified
+    to come out >90% mismatched from each other under the old per-column
+    version). A fill column that's also flagged PII gets overwritten again
+    right after this by apply_pii_plan, so in practice this only changes the
+    output for the non-PII ones -- the PII ones were never going to keep
+    their real value regardless of how they're sampled here.
+    """
     out = synth.copy()
     n = len(out)
-    for i, c in enumerate(fill_cols):
-        if c not in real.columns:
-            continue
-        if n == 0:
+    cols = [c for c in fill_cols if c in real.columns]
+    if not cols:
+        return out[[c for c in order if c in out.columns]]
+    if n == 0:
+        for c in cols:
             out[c] = pd.Series([], dtype=real[c].dtype)
-        else:
-            out[c] = real[c].sample(n, replace=True, random_state=seed + i + 1).to_numpy()
+    else:
+        idx = real.sample(n, replace=True, random_state=seed).index
+        out[cols] = real.loc[idx, cols].to_numpy()
     return out[[c for c in order if c in out.columns]]
 
 
