@@ -41,9 +41,9 @@ Every column in every table is assigned exactly one role before fitting or scori
 `ColumnRoles.modelable` = numeric + categorical: the columns that actually feed
 distributions, correlations, the MIA/DCR/nearest-record distance encoders, and
 ML-efficacy models. Skipped columns (mostly id/date/name/audit columns) are
-excluded from every metric and are refilled independently by bootstrap sampling
-after the modelable columns are synthesized — see PII handling below for why that
-refill doesn't just leak real strings back out.
+excluded from every metric and are refilled from real rows after the modelable
+columns are synthesized (`_refill`, see below) — see PII handling further down
+for why that refill doesn't just leak real strings back out.
 
 Missing values inside the shared mixed encoder (used by MIA, DCR, nearest-record,
 and the reject-and-resample filter): numeric → median impute, categorical → mode
@@ -56,14 +56,73 @@ impute. sdmetrics' own metrics handle NaNs themselves.
 
 ---
 
+## Refilling skipped columns (`backend.dashboard_core._refill`)
+
+Skipped columns aren't modeled by the synthesizer at all (see "why not" in PII
+handling below), they're filled in afterward from real rows. Why not model them
+directly: they're free text or near-unique per row, so there's no repeating
+pattern for a synthesizer to generalize from — a neural model asked to generate
+something close to unique per row tends to memorize and regurgitate real training
+values rather than invent new ones, which would be *worse* for privacy, not
+better, and there'd be no reliable way to tell a memorized real value apart from
+a genuinely invented one afterward. Refilling from a real record we explicitly
+control (and can run through the PII plan below) is the privacy-safe path.
+
+Two layers, in order:
+
+1. **Joint row sampling.** All of a table's skipped columns for one output row
+   are drawn from the *same* sampled real row, not resampled independently
+   column-by-column. This keeps whatever real correlation exists *between*
+   skipped columns intact — e.g. a `NAME` and its matching `DESC` — which
+   independent per-column bootstrapping would otherwise reduce to near
+   coincidence (verified on real data: >90% mismatched pairs under the old
+   per-column version, <1% once sampled jointly).
+
+2. **Conditioning on a modeled column, when one is genuinely tied to it.** Joint
+   row sampling alone still can't fix a skipped column's relationship to a
+   *modeled* one — e.g. a lookup table's `NAME` against its own `OCCUPATION_TP_CD`
+   — because the modeled column's synthetic value came from the synthesizer, not
+   from whatever real row got sampled for the skipped columns; a random real row
+   has no reason to share it. So before sampling, each skipped column is checked
+   against every modeled categorical column in the same table via
+   `synth_eval.group_diversity_reduction` (how much does grouping real rows by
+   the candidate column narrow down the skipped column's values, relative to its
+   overall diversity — 0 = no association, approaching 1 = the candidate nearly
+   determines it) and `synth_eval.best_refill_group_column` (the strongest
+   candidate, provided it clears a minimum-association threshold, default 0.5).
+   This is measured directly from the real data, not assumed from column names,
+   so it generalizes to a schema that's never been seen before rather than only
+   the ones whose naming happens to hint at the relationship.
+
+   Skipped columns sharing the same best-matching modeled column are grouped and
+   sampled together: for each output row, a real row is drawn from the subset of
+   real rows that share that row's *already-synthesized* value of the modeled
+   column, instead of from the whole table. Skipped columns with no modeled
+   column clearing the threshold fall back to the plain joint whole-table sample
+   (layer 1).
+
+   **Privacy floor:** conditioning only fires if the matching real group has at
+   least `min_group_size` rows (default 10); a rarer code shared by only a
+   couple of real people would otherwise make the refilled row too easy to trace
+   back to one of them, so it falls back to the whole-table sample instead. The
+   same floor covers a synthesized code value that doesn't exist anywhere in the
+   real data at all (an empty group is, trivially, below the floor).
+
+   Intentional v1 scope boundary: a skipped column conditions on at most one
+   modeled column (the single strongest match), not a joint match on several at
+   once — joint conditioning would shrink the matching group much faster, which
+   is worse for both data availability and privacy, for a case not yet shown to
+   matter in practice.
+
+---
+
 ## PII handling (`synth_eval.pii`, `apply_pii_plan`)
 
-The skipped id/date/name/audit columns above aren't discarded — they're **refilled
-by bootstrap sampling** from the real column after the modelable columns are
-synthesized (keeps fitting fast on wide tables). Bootstrapping means the *values*
-are genuinely real, just shuffled across rows, so a name or email column refilled
-this way would put real strings into the "synthetic" output. `synth_eval.pii`
-exists specifically to catch that.
+The skipped id/date/name/audit columns above aren't discarded — they're refilled
+from real rows as described above (keeps fitting fast on wide tables too). Because
+the *values* are genuinely real, a name or email column refilled this way would
+put real strings into the "synthetic" output as-is. `synth_eval.pii` exists
+specifically to catch that.
 
 ### Detection (`detect_pii`)
 

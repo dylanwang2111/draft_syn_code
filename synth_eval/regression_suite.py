@@ -22,11 +22,17 @@ import sys
 import numpy as np
 import pandas as pd
 
-from .columns import ColumnRoles, classify_columns
+from .columns import (ColumnRoles, best_refill_group_column, classify_columns,
+                      group_diversity_reduction, suffix_sdtype_overrides)
 from .efficacy import auto_select_target
 from .entity import _normalize_key_name, _resolve_key_column, build_entity_hub, entity_key_tables
 from .link import link_relationships
 from .privacy import filter_close_records, filter_close_records_multitable, nearest_real_examples
+
+# imported from backend, not synth_eval -- _refill's conditional-grouping
+# dispatch is where the actual bug this section guards against lives (see
+# below), the synth_eval-level building blocks alone don't exercise it
+from backend.dashboard_core import _refill
 
 CHECKS: list[tuple[str, "object"]] = []
 
@@ -332,6 +338,131 @@ def _c_max_categorical_card():
     wide = classify_columns(df, {}, "T", max_categorical_card=5)
     _assert("WIDE_TP_CD" in narrow.categorical, "expected categorical under the default (50) threshold")
     _assert("WIDE_TP_CD" in wide.skipped, "expected skipped once max_categorical_card is tightened below its cardinality")
+
+
+@check("suffix_sdtype_overrides: promotes a *_TP_CD column SDV left 'numerical' back to categorical")
+def _c_suffix_sdtype_overrides_promotes():
+    df = pd.DataFrame({"OCCUPATION_TP_CD": list(range(21)) * 5, "AMOUNT": np.random.rand(105)})
+    sdtypes = {"OCCUPATION_TP_CD": "numerical", "AMOUNT": "numerical"}
+    fixed = suffix_sdtype_overrides(df, sdtypes)
+    _assert(fixed["OCCUPATION_TP_CD"] == "categorical",
+            f"expected OCCUPATION_TP_CD promoted to categorical, got {fixed['OCCUPATION_TP_CD']}")
+    _assert(fixed["AMOUNT"] == "numerical", "a plain numeric column with no code-like suffix must stay numerical")
+
+
+@check("suffix_sdtype_overrides: leaves a high-cardinality *_TP_CD column numerical (id-like, not a code)")
+def _c_suffix_sdtype_overrides_respects_cardinality():
+    df = pd.DataFrame({"COMPANY_TP_CD": list(range(83))})
+    sdtypes = {"COMPANY_TP_CD": "numerical"}
+    fixed = suffix_sdtype_overrides(df, sdtypes, max_categorical_card=50)
+    _assert(fixed["COMPANY_TP_CD"] == "numerical",
+            "83 distinct values exceeds the categorical-cardinality guard, must not be promoted")
+
+
+@check("suffix_sdtype_overrides: never touches a column SDV already got right")
+def _c_suffix_sdtype_overrides_leaves_correct_alone():
+    df = pd.DataFrame({"STATUS_CD": ["A", "B", "A", "C"]})
+    sdtypes = {"STATUS_CD": "categorical"}
+    fixed = suffix_sdtype_overrides(df, sdtypes)
+    _assert(fixed["STATUS_CD"] == "categorical", "already-categorical sdtype must be left untouched")
+
+
+# ---------------------------------------------------------------------------
+# conditional refill: a filled-in column (NAME/DESC/...) resampled from real
+# rows that share a modeled column's value, instead of from the whole table,
+# with a minimum-group-size privacy floor as the safety valve
+# ---------------------------------------------------------------------------
+
+def _refill_fixture() -> pd.DataFrame:
+    """9 well-populated codes (12 real rows each, well above any sane
+    min_group_size) each perfectly determining their own label, plus one
+    sparse code D with only 3 real rows -- deliberately below the default
+    min_group_size=10, to exercise the privacy-floor fallback.
+
+    With G distinct codes each 1:1 with their own label, the theoretical max
+    of group_diversity_reduction is 1 - 1/G (a group can narrow LABEL_DESC
+    down to one value, but LABEL_DESC still has G distinct values overall) --
+    10 groups here keeps that ceiling close to 1 (0.9) without a fixture the
+    size of the real OCCUPATION table this mirrors.
+    """
+    codes, names = [], []
+    for code, count in (("A", 12), ("B", 12), ("C", 12), ("D", 3), ("E", 12),
+                        ("F", 12), ("G", 12), ("H", 12), ("I", 12), ("J", 12)):
+        codes += [code] * count
+        names += [f"Name-{code}"] * count
+    return pd.DataFrame({
+        "CODE_CD": codes,             # modeled (categorical, by suffix)
+        "LABEL_DESC": names,          # filled-in, tied to CODE_CD
+        "AUDIT_USER": ["SYS"] * len(codes),  # filled-in, unrelated to CODE_CD
+    })
+
+
+@check("group_diversity_reduction: near its ceiling when the group column fully determines the target")
+def _c_group_diversity_reduction_high():
+    score = group_diversity_reduction(_refill_fixture(), "CODE_CD", "LABEL_DESC")
+    # ceiling is 1 - 1/10 = 0.9 for this fixture's 10 distinct codes/labels
+    _assert(score > 0.85, f"expected close to the 0.9 ceiling for a perfect 1:1 mapping, got {score}")
+
+
+@check("group_diversity_reduction: 0 when the target has no diversity for any grouping to reduce")
+def _c_group_diversity_reduction_low():
+    score = group_diversity_reduction(_refill_fixture(), "CODE_CD", "AUDIT_USER")
+    _assert(score == 0.0, f"a constant target column has nothing to reduce, expected 0.0, got {score}")
+
+
+@check("best_refill_group_column: picks the column a fill column is actually tied to, not an unrelated one")
+def _c_best_refill_group_column_picks_right_one():
+    real = _refill_fixture()
+    real["NOISE_CD"] = (["X", "Y"] * len(real))[:len(real)]  # alternates independently of CODE_CD's grouping
+    best = best_refill_group_column(real, "LABEL_DESC", ["CODE_CD", "NOISE_CD"])
+    _assert(best == "CODE_CD", f"expected CODE_CD, got {best}")
+
+
+@check("best_refill_group_column: returns None when nothing clears the association threshold")
+def _c_best_refill_group_column_none():
+    best = best_refill_group_column(_refill_fixture(), "AUDIT_USER", ["CODE_CD"])
+    _assert(best is None, f"expected None (no real relationship worth conditioning on), got {best}")
+
+
+@check("_refill: conditions a fill column on its matching modeled column once the real group is large enough")
+def _c_refill_conditions_on_matching_group():
+    real = _refill_fixture()
+    synth = pd.DataFrame({"CODE_CD": ["A"] * 30})
+    out = _refill(synth, real, ["LABEL_DESC", "AUDIT_USER"], ["CODE_CD", "LABEL_DESC", "AUDIT_USER"],
+                  seed=0, group_candidates=["CODE_CD"], min_group_size=10)
+    _assert((out["LABEL_DESC"] == "Name-A").all(),
+            "every synthetic row with CODE_CD=A should get A's real label once conditioning is on")
+
+
+@check("_refill: privacy floor falls back to the whole table when the matching real group is too small")
+def _c_refill_privacy_floor_blocks_small_group():
+    real = _refill_fixture()  # code D has only 3 real rows
+    synth = pd.DataFrame({"CODE_CD": ["D"] * 30})
+    out = _refill(synth, real, ["LABEL_DESC", "AUDIT_USER"], ["CODE_CD", "LABEL_DESC", "AUDIT_USER"],
+                  seed=0, group_candidates=["CODE_CD"], min_group_size=10)
+    distinct = set(out["LABEL_DESC"])
+    _assert(len(distinct) > 1,
+            f"D's real group (3 rows) is below min_group_size=10, expected a whole-table fallback mix, "
+            f"got only {distinct} -- the privacy floor isn't blocking a too-small group")
+
+
+@check("_refill: conditioning kicks in once min_group_size is lowered to match the real group size")
+def _c_refill_conditions_once_floor_lowered():
+    real = _refill_fixture()
+    synth = pd.DataFrame({"CODE_CD": ["D"] * 30})
+    out = _refill(synth, real, ["LABEL_DESC", "AUDIT_USER"], ["CODE_CD", "LABEL_DESC", "AUDIT_USER"],
+                  seed=0, group_candidates=["CODE_CD"], min_group_size=3)
+    _assert((out["LABEL_DESC"] == "Name-D").all(),
+            "with min_group_size lowered to D's actual real count (3), every row should condition correctly")
+
+
+@check("_refill: an unseen synthetic code value falls back to the whole table instead of crashing")
+def _c_refill_unseen_code_falls_back():
+    real = _refill_fixture()
+    synth = pd.DataFrame({"CODE_CD": ["ZZZ"] * 10})
+    out = _refill(synth, real, ["LABEL_DESC", "AUDIT_USER"], ["CODE_CD", "LABEL_DESC", "AUDIT_USER"],
+                  seed=0, group_candidates=["CODE_CD"], min_group_size=10)
+    _assert(out["LABEL_DESC"].notna().all(), "an unseen code must still get a real fallback value, not NaN")
 
 
 # ---------------------------------------------------------------------------

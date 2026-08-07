@@ -170,6 +170,94 @@ def classify_columns(
     return roles
 
 
+def group_diversity_reduction(df: pd.DataFrame, group_col: str, target_col: str) -> float:
+    """How much grouping by ``group_col`` narrows down ``target_col``'s values,
+    relative to ``target_col``'s own diversity across the whole table.
+
+    0 = no association (each group is just as diverse as the whole table,
+    knowing group_col tells you nothing about target_col). 1 = perfect
+    association (every group has exactly one target_col value). This is a
+    within-one-table dependency measure -- deliberately not the sdmetrics
+    Column Pair Trends metric, which instead compares a column pair's joint
+    distribution ACROSS two datasets (real vs synthetic); here there is only
+    one dataset, and the question is "does column A determine column B",
+    not "was A-B's relationship preserved by synthesis".
+
+    Used by ``best_refill_group_column`` to decide, from the real data alone,
+    whether a filled-in column (a name, description, ...) should be resampled
+    from real rows sharing a synthesizer-modeled column's value instead of
+    from the whole table -- measured directly rather than assumed from column
+    names, so it generalizes to a schema that's never been seen before.
+    """
+    sub = df[[group_col, target_col]].dropna()
+    if sub.empty:
+        return 0.0
+    overall_card = sub[target_col].nunique()
+    if overall_card <= 1:
+        return 0.0
+    grp = sub.groupby(group_col)[target_col]
+    sizes = grp.size()
+    weighted_avg_card = float((grp.nunique() * sizes).sum()) / float(sizes.sum())
+    return max(0.0, 1.0 - weighted_avg_card / overall_card)
+
+
+def best_refill_group_column(
+    real: pd.DataFrame,
+    fill_col: str,
+    candidate_cols: Sequence[str],
+    min_association: float = 0.5,
+) -> Optional[str]:
+    """Pick which modeled column (if any) a filled-in column should be
+    conditioned on when resampling it: whichever candidate has the strongest
+    real-data association (``group_diversity_reduction``) with ``fill_col``,
+    provided it clears ``min_association``. Returns None if nothing clears
+    the bar -- there's no genuine relationship to preserve, so the caller
+    should fall back to unconditional sampling rather than group on noise.
+    """
+    if fill_col not in real.columns:
+        return None
+    best_col, best_score = None, min_association
+    for m in candidate_cols:
+        if m == fill_col or m not in real.columns:
+            continue
+        score = group_diversity_reduction(real, m, fill_col)
+        if score > best_score:
+            best_col, best_score = m, score
+    return best_col
+
+
+def suffix_sdtype_overrides(
+    df: pd.DataFrame,
+    sdtypes: Dict[str, str],
+    max_categorical_card: int = 50,
+) -> Dict[str, str]:
+    """Promote ``*_TP_CD``/``*_CD``/``*_CODE``/``*_IND`` columns SDV's own
+    ``detect_from_dataframes`` left as 'numerical' back to 'categorical'.
+
+    SDV's detector guesses purely from pandas dtype + cardinality, so it has
+    no idea this schema's ``_TP_CD`` suffix means "type code, not a real
+    number" -- a code column gets 'categorical' only if it happens to have
+    few enough distinct values, and falls through to 'numerical' once
+    cardinality grows past whatever internal threshold SDV uses (e.g. an
+    occupation code with 21 distinct values). Left uncorrected, the
+    synthesizer fits a continuous distribution to a discrete code and rounds
+    samples back, which can invent code values that never existed in the
+    real data and destroys the column's categorical semantics -- this is
+    the same suffix convention ``classify_columns`` already trusts above,
+    just applied to the sdtype SDV actually trains on, not just the
+    ML-efficacy feature roles. Only touches columns currently 'numerical';
+    anything SDV already got right (or that isn't in ``df``) is untouched.
+    """
+    out = dict(sdtypes)
+    for col, sdtype in sdtypes.items():
+        if sdtype != "numerical" or col not in df.columns:
+            continue
+        cl = str(col).lower()
+        if cl.endswith(SUFFIX_CATEGORICAL) and df[col].nunique(dropna=True) <= max_categorical_card:
+            out[col] = "categorical"
+    return out
+
+
 # ---------------------------------------------------------------------------
 # 1. Mixed-type encoding used by privacy distance metrics & ML models
 # ---------------------------------------------------------------------------

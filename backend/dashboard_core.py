@@ -190,7 +190,20 @@ def _read_csv_robust(src, **kwargs) -> pd.DataFrame:
 def _detect(tables: dict[str, pd.DataFrame]) -> dict:
     from sdv.metadata import Metadata
 
-    return Metadata.detect_from_dataframes(tables).to_dict()
+    meta = Metadata.detect_from_dataframes(tables).to_dict()
+    # SDV's raw detector doesn't know this schema's *_TP_CD/*_CD/*_CODE/*_IND
+    # naming convention -- it guesses from dtype + cardinality alone, so a
+    # type-code column with enough distinct values (e.g. an occupation code)
+    # falls through to 'numerical'. Promote those back to 'categorical' before
+    # this ever reaches the schema editor or the synthesizer's own metadata.
+    for t, df in tables.items():
+        cols = meta["tables"].get(t, {}).get("columns", {})
+        sdtypes = {c: spec.get("sdtype") for c, spec in cols.items()}
+        fixed = se.suffix_sdtype_overrides(df, sdtypes)
+        for c, sdtype in fixed.items():
+            if sdtype != sdtypes[c]:
+                cols[c] = {**cols[c], "sdtype": sdtype}
+    return meta
 
 
 def _tables_payload(st: dict):
@@ -351,7 +364,43 @@ def _reduce_meta(tables_meta: dict, keep: dict) -> dict:
     return out
 
 
-def _refill(synth: pd.DataFrame, real: pd.DataFrame, fill_cols, order, seed=0) -> pd.DataFrame:
+def _sample_conditional_row_indices(synth_group: pd.Series, real: pd.DataFrame, group_col: str,
+                                     min_group_size: int, seed: int) -> np.ndarray:
+    """For each row's ALREADY-SYNTHESIZED value of ``group_col`` (the
+    modeled column a fill-column cluster is being conditioned on), pick a
+    real row index sharing that same value -- but only from a group with at
+    least ``min_group_size`` real members; a rarer/unseen value falls back to
+    a real row sampled from the whole table instead. That floor is the
+    privacy guard: a code shared by only a couple of real people would
+    otherwise make the refilled row easy to trace back to one of them, the
+    same concern ``filter_close_records``/nearest-record checks elsewhere in
+    this pipeline exist to catch.
+
+    Vectorized per DISTINCT eligible group value (bounded by group_col's
+    cardinality, small by construction -- it's a modeled categorical column),
+    not per output row, so this stays cheap at production row counts.
+    """
+    rng = np.random.RandomState(seed)
+    real_groups = real.groupby(group_col).groups
+    eligible = {v: idx.to_numpy() for v, idx in real_groups.items() if len(idx) >= min_group_size}
+    whole = real.index.to_numpy()
+    vals = synth_group.to_numpy()
+    out = np.empty(len(vals), dtype=object)
+    remaining = np.ones(len(vals), dtype=bool)
+    for v, idx in eligible.items():
+        mask = vals == v
+        k = int(mask.sum())
+        if k:
+            out[mask] = rng.choice(idx, size=k, replace=True)
+            remaining &= ~mask
+    if remaining.any():
+        k = int(remaining.sum())
+        out[remaining] = rng.choice(whole, size=k, replace=True)
+    return out
+
+
+def _refill(synth: pd.DataFrame, real: pd.DataFrame, fill_cols, order, seed=0,
+            group_candidates=None, min_association: float = 0.5, min_group_size: int = 10) -> pd.DataFrame:
     """Add ``fill_cols`` back to a synthetic table by resampling real ROWS
     (with replacement) and taking every fill column from the SAME sampled
     row, then reorder to the original column order.  Used for columns the
@@ -364,10 +413,26 @@ def _refill(synth: pd.DataFrame, real: pd.DataFrame, fill_cols, order, seed=0) -
     each column on its own, with its own draw, reshuffles that relationship
     to near-independence (a table's own N distinct name/desc pairs verified
     to come out >90% mismatched from each other under the old per-column
-    version). A fill column that's also flagged PII gets overwritten again
-    right after this by apply_pii_plan, so in practice this only changes the
-    output for the non-PII ones -- the PII ones were never going to keep
-    their real value regardless of how they're sampled here.
+    version).
+
+    That fix alone doesn't cover a fill column's relationship to a MODELED
+    column (e.g. a lookup table's NAME vs its own type code, OCCUPATION_TP_CD)
+    -- the modeled column's value is synthesizer-generated, not something an
+    unconditional real-row sample has any reason to match. If
+    ``group_candidates`` (the table's modeled categorical columns) is given,
+    each fill column is checked against them via
+    ``se.best_refill_group_column`` -- measured from the real data itself, not
+    assumed from column names, so this generalizes to a schema that's never
+    been seen before -- and fill columns sharing the same best-matching
+    modeled column are resampled together, conditioned on that column's
+    ALREADY-SYNTHESIZED value for each row (with the ``min_group_size``
+    privacy floor above). Fill columns with no qualifying modeled column fall
+    back to the unconditional whole-row sample, same as before.
+
+    A fill column that's also flagged PII gets overwritten again right after
+    this by apply_pii_plan, so in practice this only changes the output for
+    the non-PII ones -- the PII ones were never going to keep their real
+    value regardless of how they're sampled here.
     """
     out = synth.copy()
     n = len(out)
@@ -377,9 +442,20 @@ def _refill(synth: pd.DataFrame, real: pd.DataFrame, fill_cols, order, seed=0) -
     if n == 0:
         for c in cols:
             out[c] = pd.Series([], dtype=real[c].dtype)
-    else:
-        idx = real.sample(n, replace=True, random_state=seed).index
-        out[cols] = real.loc[idx, cols].to_numpy()
+        return out[[c for c in order if c in out.columns]]
+
+    candidates = [g for g in (group_candidates or []) if g in real.columns and g in synth.columns]
+    clusters: dict = {}
+    for c in cols:
+        gcol = se.best_refill_group_column(real, c, candidates, min_association) if candidates else None
+        clusters.setdefault(gcol, []).append(c)
+
+    for i, (gcol, group_cols) in enumerate(clusters.items()):
+        if gcol is None:
+            idx = real.sample(n, replace=True, random_state=seed + i).index.to_numpy()
+        else:
+            idx = _sample_conditional_row_indices(synth[gcol], real, gcol, min_group_size, seed + i)
+        out[group_cols] = real.loc[idx, group_cols].to_numpy()
     return out[[c for c in order if c in out.columns]]
 
 
@@ -869,13 +945,19 @@ def _run_job(cfg: dict, st: dict):
             ri = _referential_integrity(rels, reduced_train, suite) if rels else []
 
         # refill the non-modelled columns from real marginals -> every synthetic
-        # table has all original columns, in the original order.
+        # table has all original columns, in the original order. Fill columns
+        # get conditioned on whichever of the table's own modeled categorical
+        # columns they're actually tied to in the real data (roles[t].categorical
+        # -- e.g. a lookup table's NAME resampled from real rows sharing the
+        # SAME type code the synthesizer just generated for that row), not just
+        # sampled independently of what the synthesizer produced.
         seed0 = cfg.get("seed", 42)
         for s in suite:
             for t in list(suite[s]):
                 if fill.get(t):
                     suite[s][t] = _refill(suite[s][t], train[t], fill[t],
-                                          list(train[t].columns), seed0)
+                                          list(train[t].columns), seed0,
+                                          group_candidates=roles[t].categorical)
 
         # PII policies: the bootstrap refill above re-deals REAL values, so name/
         # email/phone-like columns would carry real strings into the "synthetic"

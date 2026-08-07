@@ -92,8 +92,9 @@ reinvent it in the chat bubble. Still say a quick sentence yourself too so the c
 just don't duplicate the detailed write-up.
 
 After a file upload, you'll be given a structural analysis (table names, row counts, columns per \
-table, whether a reliable link between tables was found, candidate shared columns if any were \
-spotted structurally, a suggested synthesizer, and any columns that look like personal info). \
+table, each column's auto-detected type/distinct-value count/a sample value, whether a reliable link \
+between tables was found, candidate shared columns if any were spotted structurally, a suggested \
+synthesizer, and any columns that look like personal info). \
 EVERYTHING in that analysis, including "relationships found" and "candidate shared columns", is an \
 auto-detector's guess, not something the user did. Never describe it as something they "set up" or \
 "configured" -- say "spotted" or "detected" instead, and only ever call it confirmed/set up after \
@@ -107,9 +108,21 @@ call, not just phrase a question as plain text, plain text does not render as cl
 leaves the user guessing what answers are even valid. This is true every single time you need a \
 decision anywhere in the conversation, not just here.
 
-STEP 1 - schema. Summarize the tables in plain language (names, row counts, mention you'll auto-fake \
-any personal info found), then call ask_question with something like "Want to review the auto-detected \
-column types before we go further?" and options like ["Looks good", "Let me edit it", "I'll describe changes"].
+STEP 1 - schema. Before summarizing anything, look through column_types in the structural analysis \
+yourself (each column's auto-detected type, distinct-value count, and a sample value) and catch \
+clear auto-detection mistakes: a code/status/type/flag-looking column (a name like *_CD, *_CODE, \
+*_TYPE, *_IND, *_FLAG, *_STATUS, or a handful of repeating sample values) sometimes lands as \
+"numerical" when it's really a small set of category codes, not a real quantity; and a "categorical" \
+column with a very large distinct count, or whose sample value looks like free text or an identifier, \
+is often mistyped the other way. If you spot one you're genuinely confident about, call \
+set_column_types to fix it yourself, in this same turn, before asking anything, the same way a \
+competent human reviewer would just fix an obvious mislabel rather than making the user notice and \
+report it. Don't relabel anything you're not sure about, a border-line or ambiguous column is exactly \
+what the human review question below is for. Then summarize the tables in plain language (names, row \
+counts, mention you'll auto-fake any personal info found), and if you fixed anything, say so in one \
+plain sentence (e.g. "I noticed a couple of code columns detected as plain numbers and fixed those to \
+categories"). Then call ask_question with something like "Want to review the column types before we \
+go further?" and options like ["Looks good", "Let me edit it", "I'll describe changes"].
 - "Looks good" / equivalent -> call confirm_schema(modified=false).
 - "Let me edit it" / equivalent -> call open_schema_editor() and ONLY that, then just say it's open \
 and to save when done. Do NOT also call ask_question or confirm_schema in that same turn, they \
@@ -440,6 +453,14 @@ def _chat_plan_from_profile(tables: dict, profile: dict) -> dict:
     pii_cols = [f"{t}.{col}" for t, info in tables.items() for col in (info.get("pii") or {})]
     primary_keys = {t: info.get("primary_key") for t, info in tables.items() if info.get("primary_key")}
     table_cols = {t: [c["name"] for c in info.get("columns", [])] for t, info in tables.items()}
+    # per-column auto-detected type + a sample value, so the model can
+    # actually review the schema (not just list column names) -- this is
+    # what set_column_types-based self-review reasons from in STEP 1
+    column_types = {
+        t: [{"name": c["name"], "sdtype": c["sdtype"], "distinct": c["distinct"], "example": c["example"]}
+            for c in info.get("columns", [])]
+        for t, info in tables.items()
+    }
 
     col_counts: dict[str, int] = {}
     for cols in table_cols.values():
@@ -454,6 +475,7 @@ def _chat_plan_from_profile(tables: dict, profile: dict) -> dict:
         "candidate_shared_columns": candidate_shared,
         "suggested_synthesizer": synth,
         "pii_columns_detected": pii_cols,
+        "column_types": column_types,
         "synth": synth, "relationships": rels, "primary_keys": primary_keys,
         "entity_key": "", "entity_children": [],
         "selected_synths": [], "epochs": 100,
@@ -742,6 +764,7 @@ def _chat_turn(st: dict, force_tool: bool = True, tools: list[dict] | None = Non
     editor_just_opened = editor_open or "open_schema_editor" in call_names_this_turn
     data_model_just_opened = data_model_open or "open_data_model" in call_names_this_turn
     options, focus, question_like, asked_question = [], None, False, ""
+    applied_changes: list[str] = []
     for c in calls:
         try:
             args = json.loads(c.function.arguments or "{}")
@@ -760,6 +783,8 @@ def _chat_turn(st: dict, force_tool: bool = True, tools: list[dict] | None = Non
                                             args.get("child_table", ""), args.get("child_key", ""))
         elif name == "set_column_types":
             result = _chat_set_column_types(st, args.get("changes") or [])
+            if result.get("status") == "applied":
+                applied_changes.extend(result.get("changes") or [])
         elif name == "confirm_schema":
             if editor_just_opened:
                 result = {"error": "the schema editor was just opened THIS SAME turn -- the user "
@@ -842,6 +867,19 @@ def _chat_turn(st: dict, force_tool: bool = True, tools: list[dict] | None = Non
     # didn't provide any (e.g. the model wrote ask_question-shaped text
     # without actually calling the tool this turn).
     text, leaked = _extract_leaked_options(text)
+    if applied_changes:
+        # the model's own prose is asked (system prompt) to mention any
+        # self-initiated column-type fix in plain language, but that's not
+        # guaranteed any more than the ask_question call itself is (same
+        # instruction-following gap as everywhere else in this function) --
+        # if none of the changed column names actually show up in the reply,
+        # the user would otherwise see the confirm question with no idea
+        # anything was touched first. Force a plain, literal list in ahead
+        # of whatever text/question follows rather than trust the model said it.
+        changed_cols = {chg.split(" -> ", 1)[0].split(".")[-1] for chg in applied_changes}
+        if not all(col in text for col in changed_cols):
+            notice = "I adjusted these column types: " + "; ".join(applied_changes) + "."
+            text = (notice + " " + text).strip() if text else notice
     if question_like:
         # the model's own text (own_text or the fallback above) frequently
         # summarizes WITHOUT ever actually asking anything -- the options
@@ -876,6 +914,7 @@ def chat_plan(request: Request):
         "candidate_shared_columns": plan["candidate_shared_columns"],
         "suggested_synthesizer": plan["suggested_synthesizer"],
         "pii_columns_detected": plan["pii_columns_detected"],
+        "column_types": plan["column_types"],
     }
     st["chat_messages"].append({"role": "user", "content": f"I uploaded: {', '.join(tables)}"})
     st["chat_messages"].append({"role": "system",
