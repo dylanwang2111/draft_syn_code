@@ -806,8 +806,14 @@ def privacy_report(
                 + note,
             )
         else:
+            # no real-holdout baseline to judge against here (see the branch
+            # above) -- absolute-threshold fallback. PASS lowered from 0.5 to
+            # 0.4: 1.0 is a hard ceiling few real-world categorical fields hit
+            # even on real data (a mildly imbalanced sensitive field alone can
+            # sit in the 0.4-0.5 band), so 0.5 was flagging WARN on results
+            # that weren't evidence of the synthesizer leaking anything.
             verdicts["categorical_cap"] = (
-                "PASS" if cap >= 0.5 else "WARN" if cap >= 0.3 else "FAIL",
+                "PASS" if cap >= 0.4 else "WARN" if cap >= 0.3 else "FAIL",
                 f"CategoricalCAP={cap:.3f} (1.0 => a sensitive field cannot be "
                 f"inferred from the key fields){sens}{note}",
             )
