@@ -59,7 +59,7 @@ else:
 
 router = APIRouter()
 
-CHAT_SYNTHS = ["HMA", "GaussianCopula", "CTGAN", "TVAE", "CopulaGAN"]
+CHAT_SYNTHS = ["HMA", "GaussianCopula", "CTGAN", "TVAE", "CopulaGAN", "TabSyn"]
 #: fixed best-practice holdout fraction (the manual UI no longer exposes this
 #: as a tunable knob either, see web/app.js's HOLDOUT_FRAC) -- keep both in sync
 CHAT_HOLDOUT_FRAC = 0.25
@@ -71,9 +71,9 @@ synthetic, privacy-safe versions of a user's tabular data, right inside the same
 looking at. You are talking to someone who may not know anything about synthetic data generation, so \
 avoid jargon and keep replies short (2-4 sentences), like real chat messages, not a report.
 
-You have five synthesizers available, only mention them by name if asked or when explaining your pick. \
-All five keep a declared relationship's referential integrity: HMA by fitting every table jointly, the \
-other four by fitting tables independently and then relinking foreign keys to real synthetic parent \
+You have six synthesizers available, only mention them by name if asked or when explaining your pick. \
+All six keep a declared relationship's referential integrity: HMA by fitting every table jointly, the \
+other five by fitting tables independently and then relinking foreign keys to real synthetic parent \
 rows afterward (so links hold, but unlike HMA they don't model correlations across tables).
 - HMA: fits every table jointly. Use this when the tables are genuinely linked (a shared key), it's \
 the one that actually models how tables relate to each other, not just patches up the keys after.
@@ -84,6 +84,12 @@ epochs matter, more epochs is slower but can fit better). Only suggest these if 
 something slower/fancier, or mentions a column with complex/skewed patterns, they're not needed by \
 default. If the user gives a specific epoch count, pass it through via run_synthesis's epochs \
 argument, otherwise leave it unset.
+- TabSyn: also neural, fits per table independently, slower still (two training stages -- it learns a \
+compact representation of each row first, then learns to generate new ones inside that space). The \
+most likely of the six to capture tricky, tangled-together columns well. Only suggest it if the user \
+specifically asks for the most advanced/best-fidelity option available or mentions earlier synthesizers \
+not capturing some column relationship well, it's not a default pick, it's the slowest and most \
+experimental of the six.
 
 If the user asks what a synthesizer IS, how it works, or how two of them compare, call \
 explain_synthesizer instead of writing your own technical explanation from memory, the dashboard \
@@ -99,22 +105,37 @@ EVERYTHING in that analysis, including "relationships found" and "candidate shar
 auto-detector's guess, not something the user did. Never describe it as something they "set up" or \
 "configured" -- say "spotted" or "detected" instead, and only ever call it confirmed/set up after \
 set_relationship, set_entity_key, or confirm_relationships has actually been called in THIS \
-conversation. That \
-suggested synthesizer is for your own reasoning only, never say it, hint at it, or say anything like \
-"my recommendation is" or "I'd suggest" out loud yet, you're missing two things you need to ask about \
-first, in order, and naming a synthesizer before then undercuts the whole point of asking. \
-IMPORTANT: for both of those things you MUST actually call the ask_question tool, a real function \
+conversation.
+
+The "suggested synthesizer" in that analysis is only a rough starting seed, not your real pick, form \
+your OWN and record it by calling set_recommended_synthesizer(synth, reason), silently, no need to \
+tell the user or ask them anything just because you called it. Do this right away, from that first \
+structural analysis, using the same per-synthesizer guidance above. Then call it again any time your \
+read of the data changes enough that your pick would too: once the schema is confirmed, if reviewing \
+the columns changed anything, and once relationships are confirmed, which is usually the biggest \
+factor of all (a genuine link normally makes HMA the right call). Whatever you last set is what \
+run_synthesis silently falls back to if the user says "go ahead" without naming one, and what you'll \
+actually say out loud in step 3, reusing the reason you stored rather than re-deriving it. Regardless \
+of what you've privately set, never say it, hint at it, or say anything like "my recommendation is" \
+or "I'd suggest" out loud before step 3, you're missing two things you need to ask about first, in \
+order, and naming a synthesizer before then undercuts the whole point of asking. \
+IMPORTANT: for those two questions you MUST actually call the ask_question tool, a real function \
 call, not just phrase a question as plain text, plain text does not render as clickable buttons and \
 leaves the user guessing what answers are even valid. This is true every single time you need a \
 decision anywhere in the conversation, not just here.
 
 STEP 1 - schema. Before summarizing anything, look through column_types in the structural analysis \
-yourself (each column's auto-detected type, distinct-value count, and a sample value) and catch \
-clear auto-detection mistakes: a code/status/type/flag-looking column (a name like *_CD, *_CODE, \
-*_TYPE, *_IND, *_FLAG, *_STATUS, or a handful of repeating sample values) sometimes lands as \
-"numerical" when it's really a small set of category codes, not a real quantity; and a "categorical" \
-column with a very large distinct count, or whose sample value looks like free text or an identifier, \
-is often mistyped the other way. If you spot one you're genuinely confident about, call \
+yourself (each column's auto-detected type, distinct-value count, distinct_pct_of_rows, and a sample \
+value) and catch clear auto-detection mistakes. The PRIMARY evidence is distinct_pct_of_rows, not the \
+column's name: a "numerical" column whose values repeat a lot (rule of thumb: distinct_pct_of_rows \
+under roughly 5%, or a low absolute distinct count like under 50 even on a huge table) is almost \
+always really a set of category codes, not a continuous quantity, WHETHER OR NOT its name gives any \
+hint of that -- a branch/transit number, an account-type number, a status count can all be named \
+nothing like a "code" and still be one. Don't wait for a name pattern like *_CD/*_CODE/*_TYPE/*_IND/ \
+*_FLAG/*_STATUS to confirm it, that's a nice secondary hint when it's there, but the repetition rate \
+is the real evidence and stands on its own without it. The opposite mistake also happens: a \
+"categorical" column with a very large distinct count, or whose sample value looks like free text or \
+an identifier, is often mistyped the other way. If you spot one you're genuinely confident about, call \
 set_column_types to fix it yourself, in this same turn, before asking anything, the same way a \
 competent human reviewer would just fix an obvious mislabel rather than making the user notice and \
 report it. Don't relabel anything you're not sure about, a border-line or ambiguous column is exactly \
@@ -155,9 +176,12 @@ set_entity_key) or a formal relationship (one table's column is a unique parent 
 column points at it, call set_relationship). Apply it, then call \
 confirm_relationships(has_relationships=true).
 Do not move to step 3 before confirm_relationships has been called. Once a link is set, HMA becomes \
-the better pick (it's the one that actually models links), fold that into your step 3 recommendation.
+the better pick (it's the one that actually models links) -- call set_recommended_synthesizer again \
+here, right after confirm_relationships, to update your pick with that in mind.
 
-STEP 3 - only now, with both confirmed, give your synthesizer recommendation and a one-line reason. \
+STEP 3 - only now, with both confirmed, give your synthesizer recommendation (whatever you last set \
+via set_recommended_synthesizer) and its one-line reason (reuse the reason you stored, don't \
+re-derive a new one). \
 Ask via ask_question whether they want just your recommendation, or want to run a couple of \
 synthesizers together to compare from the start (this is a real choice to offer, not a footnote), \
 options like ["Go with your pick", "Compare a couple"].
@@ -414,11 +438,40 @@ _TOOL_DEFS = {
                 "type": "object",
                 "properties": {
                     "synth": {"type": "string", "enum": ["HMA", "GaussianCopula", "CTGAN", "TVAE",
-                              "CopulaGAN", "all"], "description": "Which one to scroll to and "
+                              "CopulaGAN", "TabSyn", "all"], "description": "Which one to scroll to and "
                               "highlight, or 'all' to just open the explainer without singling one "
                               "out (e.g. they asked about more than one, or asked generally)."},
                 },
                 "required": ["synth"],
+            },
+        },
+    },
+    "set_recommended_synthesizer": {
+        "type": "function",
+        "function": {
+            "name": "set_recommended_synthesizer",
+            "description": "Set or update your own working recommendation for which synthesizer fits "
+                           "this data best -- the one used if the user says 'go ahead' without naming "
+                           "one themselves, and the one you'll name out loud once you reach step 3. "
+                           "This is silent bookkeeping, not something the user sees or gets asked "
+                           "about, call it any time your read of the data changes enough that your "
+                           "pick would change: right after the upload's structural analysis (a first "
+                           "best guess, before schema/relationships are even confirmed), again once "
+                           "the schema is confirmed if reviewing the columns changed your read, and "
+                           "again once relationships are confirmed (usually the biggest factor -- a "
+                           "genuine link normally makes HMA the right call, since it's the one that "
+                           "actually models the join instead of patching keys on afterward). Don't "
+                           "call ask_question or say anything to the user in the same turn just "
+                           "because you called this, it doesn't need their input.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "synth": {"type": "string", "enum": CHAT_SYNTHS},
+                    "reason": {"type": "string", "description": "One short phrase for your own record "
+                              "(e.g. 'tables are linked, HMA models the join directly'), reuse it "
+                              "verbatim as your step-3 one-line reason later instead of re-deriving it."},
+                },
+                "required": ["synth", "reason"],
             },
         },
     },
@@ -429,7 +482,7 @@ _CONFIG_PANELS = {"structure", "constraints", "pii", "synthesizers", "run_parame
 
 def _tools_for(plan: dict) -> list[dict]:
     names = ["ask_question", "open_schema_editor", "set_column_types", "confirm_schema",
-             "open_config_panel", "explain_synthesizer"]
+             "open_config_panel", "explain_synthesizer", "set_recommended_synthesizer"]
     if plan.get("schema_confirmed"):
         names += ["open_data_model", "set_entity_key", "set_relationship", "confirm_relationships"]
     if plan.get("schema_confirmed") and plan.get("relationships_confirmed"):
@@ -444,6 +497,12 @@ def _chat_plan_from_profile(tables: dict, profile: dict) -> dict:
     rec = (profile or {}).get("recommendation") or {}
     rels = rec.get("relationships") or []
     n_tables = len(tables)
+    # a safe deterministic seed, not the final word -- the LLM is expected to
+    # actively own this via set_recommended_synthesizer from here on (right
+    # after seeing this same structural analysis, and again after schema/
+    # relationships are confirmed), this is just what's used if it never
+    # gets the chance to (no LLM configured, or the very first render before
+    # its first turn completes)
     if rec.get("tier") == 1 and rels:
         synth = "HMA"
     else:
@@ -455,9 +514,17 @@ def _chat_plan_from_profile(tables: dict, profile: dict) -> dict:
     table_cols = {t: [c["name"] for c in info.get("columns", [])] for t, info in tables.items()}
     # per-column auto-detected type + a sample value, so the model can
     # actually review the schema (not just list column names) -- this is
-    # what set_column_types-based self-review reasons from in STEP 1
+    # what set_column_types-based self-review reasons from in STEP 1.
+    # distinct_pct_of_rows is computed here rather than left for the model to
+    # derive from distinct+the table's row count (a separate part of the
+    # payload) -- confirmed by direct testing that leaving it implicit isn't
+    # reliable: a real 14-distinct-value/1000-row column with no name hint
+    # (X_SRC_SYS_LAST_UPD_TRANSIT) was accepted as "numerical, seems fair"
+    # rather than flagged, backing the ratio into the data itself removes
+    # the cross-referencing step that was apparently getting skipped.
     column_types = {
-        t: [{"name": c["name"], "sdtype": c["sdtype"], "distinct": c["distinct"], "example": c["example"]}
+        t: [{"name": c["name"], "sdtype": c["sdtype"], "distinct": c["distinct"], "example": c["example"],
+             "distinct_pct_of_rows": round(100 * c["distinct"] / info["rows"], 1) if info.get("rows") else None}
             for c in info.get("columns", [])]
         for t, info in tables.items()
     }
@@ -476,7 +543,7 @@ def _chat_plan_from_profile(tables: dict, profile: dict) -> dict:
         "suggested_synthesizer": synth,
         "pii_columns_detected": pii_cols,
         "column_types": column_types,
-        "synth": synth, "relationships": rels, "primary_keys": primary_keys,
+        "synth": synth, "synth_reason": "", "relationships": rels, "primary_keys": primary_keys,
         "entity_key": "", "entity_children": [],
         "selected_synths": [], "epochs": 100,
         "schema": {}, "schema_confirmed": False, "relationships_confirmed": False,
@@ -580,6 +647,16 @@ def _chat_set_column_types(st: dict, changes: list[dict]) -> dict:
     if not applied:
         return {"error": "no changes given"}
     return {"status": "applied", "changes": applied}
+
+
+def _chat_set_recommended_synthesizer(st: dict, synth: str, reason: str) -> dict:
+    plan = st.get("chat_plan")
+    if not plan:
+        return {"error": "no data has been uploaded yet"}
+    if synth not in CHAT_SYNTHS:
+        return {"error": f"'{synth}' isn't a real synthesizer"}
+    plan["synth"], plan["synth_reason"] = synth, str(reason or "").strip()
+    return {"status": "set", "synth": synth}
 
 
 def _chat_confirm_schema(st: dict, modified: bool) -> dict:
@@ -828,6 +905,11 @@ def _chat_turn(st: dict, force_tool: bool = True, tools: list[dict] | None = Non
                 focus = f"docs:{synth}"
                 result = {"status": "opened", "synth": synth}
                 question_like = True
+        elif name == "set_recommended_synthesizer":
+            # deliberately NOT question_like -- silent bookkeeping, doesn't
+            # suppress/override the model's own narration the way ask_question
+            # or an open_* call does, see the tool's own description
+            result = _chat_set_recommended_synthesizer(st, args.get("synth", ""), args.get("reason", ""))
         else:
             result = {"error": "unknown tool"}
         st["chat_messages"].append({"role": "tool", "tool_call_id": c.id, "content": json.dumps(result)})
@@ -985,6 +1067,12 @@ def _plan_sync_dict(plan: dict) -> dict:
         "entity_key": plan.get("entity_key") or "",
         "entity_children": plan.get("entity_children") or [],
         "selected_synths": plan.get("selected_synths") or [],
+        # the bot's own current pick (set_recommended_synthesizer) -- only
+        # meaningful as a chip-picker highlight while the user hasn't made
+        # their OWN explicit selection yet (selected_synths empty); once
+        # they've clicked chips themselves that takes priority, same rule
+        # run_synthesis's own fallback already uses
+        "recommended_synth": plan.get("synth") or "",
         "epochs": plan.get("epochs") or 100,
         "schema": plan.get("schema") or {},
     }

@@ -213,7 +213,14 @@ function applyPlanSync(sync){
     buildHubBar();
     afterModelChange();
   }
-  const synths=sync.selected_synths||[];
+  // mirrors the backend's own run_synthesis fallback precedence exactly
+  // (selected_synths, if any, else the bot's recommended_synth) -- doesn't
+  // touch the frontend's own default chip state otherwise, that's a
+  // separate, bigger decision (does a recommendation override a click the
+  // user hasn't actually made vs. the page's own hardcoded default) left
+  // alone for now
+  const synths=sync.selected_synths&&sync.selected_synths.length ? sync.selected_synths
+    : (sync.recommended_synth ? [sync.recommended_synth] : []);
   if(synths.length){
     const cur=[...selectedSynths].sort().join(",");
     if(cur!==synths.slice().sort().join(",")){
