@@ -35,6 +35,10 @@ def build_single_table_synthesizer(name: str, single_meta, epochs: int = 300):
         return TVAESynthesizer(single_meta, epochs=epochs)
     if key == "copulagan":
         return CopulaGANSynthesizer(single_meta, epochs=epochs, verbose=False)
+    if key == "tabsyn":
+        from .tabsyn import TabSynSynthesizer
+
+        return TabSynSynthesizer(single_meta, epochs=epochs)
     raise ValueError(f"Unknown synthesizer '{name}'")
 
 

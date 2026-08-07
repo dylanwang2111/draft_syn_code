@@ -39,15 +39,20 @@ useful for downstream work, before you trust it.
 
 ## Synthesizers
 
-Five SDV synthesizers. If a relationship is declared, all five preserve it,
-just by two different mechanisms:
+Six synthesizers: five from SDV, plus TabSyn (`synth_eval/tabsyn.py`), a
+from-scratch VAE + latent-diffusion model built for this project (TabSyn has
+no pip package or fit()/sample() library to depend on, only script-based
+research code tied to a fixed dataset config, so it's reimplemented here
+against this pipeline's own mixed-type column handling instead). If a
+relationship is declared, all six preserve it, just by two different
+mechanisms:
 
 | Tier | Synthesizer(s) | Notes |
 |---|---|---|
 | Joint | HMA | Fits every table together; relationships are preserved by construction, including cross-table correlations. |
-| Fit-then-linked | GaussianCopula, CTGAN, TVAE, CopulaGAN | Each fits every table independently, then has its foreign keys relinked to real synthetic parent rows afterward (`synth_eval/link.py`), so referential integrity holds too, just without HMA's joint cross-table modelling. |
+| Fit-then-linked | GaussianCopula, CTGAN, TVAE, CopulaGAN, TabSyn | Each fits every table independently, then has its foreign keys relinked to real synthetic parent rows afterward (`synth_eval/link.py`), so referential integrity holds too, just without HMA's joint cross-table modelling. |
 
-Not shown as separate UI tiers (the dashboard just lists all five together),
+Not shown as separate UI tiers (the dashboard just lists all six together),
 the distinction above is real but mostly invisible day-to-day: pick whichever
 synthesizer suits your data, referential integrity is handled either way as
 long as a relationship or entity key is declared.

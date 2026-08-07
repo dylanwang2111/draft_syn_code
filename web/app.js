@@ -14,13 +14,13 @@ function apiFetch(url,opts={}){
   return fetch(url,o);
 }
 const SDTYPES=["categorical","numerical","datetime","boolean","id","unknown"];
-const SYNTHS=["HMA","GaussianCopula","CTGAN","TVAE","CopulaGAN"];
-const GAN_SYNTHS=new Set(["CTGAN","TVAE","CopulaGAN"]);
+const SYNTHS=["HMA","GaussianCopula","CTGAN","TVAE","CopulaGAN","TabSyn"];
+const GAN_SYNTHS=new Set(["CTGAN","TVAE","CopulaGAN","TabSyn"]);
 // When a relationship is declared, every synthesizer honors it: HMA fits
-// tables jointly, the other four fit independently and get their foreign
+// tables jointly, the other five fit independently and get their foreign
 // keys relinked afterward (see synth_eval.link). Same referential-integrity
 // guarantee either way, so they're not split into separate UI tiers.
-const PALETTE={real:"#555f5c",HMA:"#1f77b4",GaussianCopula:"#2ca02c",CTGAN:"#d62728",TVAE:"#9467bd",CopulaGAN:"#ff7f0e"};
+const PALETTE={real:"#555f5c",HMA:"#1f77b4",GaussianCopula:"#2ca02c",CTGAN:"#d62728",TVAE:"#9467bd",CopulaGAN:"#ff7f0e",TabSyn:"#17becf"};
 // how much real data to hold back for privacy/utility testing -- a fixed
 // best-practice value (the standard 20-30% test-split range), not something
 // worth exposing as a tunable knob

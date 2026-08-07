@@ -93,7 +93,7 @@
     <div class="panel collapsed" id="synth-panel" style="display:none">
       <div class="panel-h"><h2><span class="step">4 ·</span> Synthesizers</h2><span class="panel-sum" id="sum-synths"></span></div>
       <div class="field" style="margin-top:0"><div id="synth-chips"></div>
-        <p class="hint">CTGAN/TVAE/CopulaGAN are neural (slower).
+        <p class="hint">CTGAN/TVAE/CopulaGAN/TabSyn are neural (slower).
           <a href="#" class="link-inline" id="link-how-works">How do these work?</a></p></div>
     </div>
 
@@ -102,7 +102,7 @@
       <div class="field" style="margin-top:0"><label><span class="lbl-main">How many rows to generate <i class="lbl-tech">scale × real rows</i></span> <output id="out-scale">1.0</output></label>
         <input type="range" id="in-scale" min="0.25" max="2" step="0.25" value="1"></div>
       <div class="field" id="field-epochs" style="display:none">
-        <label><span class="lbl-main">Training passes — neural models <i class="lbl-tech">epochs · CTGAN / TVAE / CopulaGAN</i></span> <output id="out-epochs">60</output></label>
+        <label><span class="lbl-main">Training passes — neural models <i class="lbl-tech">epochs · CTGAN / TVAE / CopulaGAN / TabSyn</i></span> <output id="out-epochs">60</output></label>
         <input type="range" id="in-epochs" min="10" max="1000" step="10" value="60"></div>
       <div class="field"><label><span class="lbl-main">What the usefulness test predicts <i class="lbl-tech">ML-efficacy target / table</i></span></label><div id="target-fields"></div></div>
       <div class="field"><label><span class="lbl-main">Sensitive field the safety test guesses <i class="lbl-tech">privacy attack column / table</i></span></label><div id="cap-fields"></div></div>
@@ -399,6 +399,34 @@
           as CTGAN. Same FK-relinking as CTGAN when tables are linked.</div>
       </div>
 
+      <div class="doc-card" id="doc-tabsyn" style="border-left-color:#17becf">
+        <div class="doc-card-h"><span class="dot" style="background:#17becf"></span><h3>TabSyn</h3></div>
+        <div class="doc-tag">Single-table, FK-linked · neural (VAE + diffusion) · two training stages</div>
+        <ol class="doc-steps">
+          <li><b>Tokenize each column.</b> Turn every numeric value and every category into its own small
+            vector ("token"), the same width for every column regardless of type.</li>
+          <li><b>Stage 1 — learn a compact space (VAE).</b> A small Transformer reads a row's tokens together
+            and compresses them into a per-column latent code; a matching decoder tries to reconstruct the
+            original row from that code, training the two together until reconstruction is reliable.</li>
+          <li><b>Encode the whole real table</b> into that latent space once training stabilizes — every real
+            row now has a compact numeric fingerprint.</li>
+          <li><b>Stage 2 — learn to generate fingerprints (diffusion).</b> A second, smaller network learns to
+            turn pure random noise into a realistic latent fingerprint through a series of denoising steps,
+            trained on the fingerprints from the step above.</li>
+          <li><b>Sample.</b> Draw random noise, run it through the trained denoiser to get a new fingerprint,
+            then run that through Stage 1's decoder to get a brand-new row.</li>
+        </ol>
+        <div class="doc-foot"><b>Best for:</b> tables where earlier synthesizers seem to be losing a
+          relationship between columns that clearly holds in the real data (e.g. two columns that logically
+          go together but come out mismatched) — the two-stage design is built specifically to preserve
+          those tangled-together relationships better than a single model trying to do everything at once.
+          <b>Trade-off:</b> the slowest and newest of the six here, with two training stages instead of one
+          and less of a track record than the others; sized for this dashboard's data volumes rather than
+          the scale it was originally benchmarked at, so treat it as the ambitious option to try when the
+          others visibly aren't capturing something, not the default. Same FK-relinking as CTGAN when tables
+          are linked.</div>
+      </div>
+
       <h4 class="block-title">At a glance</h4>
       <table class="rep">
         <thead><tr><th>Synthesizer</th><th>Scope</th><th>Approach</th><th>Relative speed</th>
@@ -414,6 +442,8 @@
             <td>single-table, FK-linked</td><td>neural (VAE)</td><td>moderate to slow</td><td>yes, relinked after fitting</td><td>yes (softer than CTGAN)</td></tr>
           <tr><td class="mono"><span class="dot" style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#ff7f0e;margin-right:7px"></span>CopulaGAN</td>
             <td>single-table, FK-linked</td><td>hybrid (copula + GAN)</td><td>slow</td><td>yes, relinked after fitting</td><td>yes</td></tr>
+          <tr><td class="mono"><span class="dot" style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#17becf;margin-right:7px"></span>TabSyn</td>
+            <td>single-table, FK-linked</td><td>neural (VAE + diffusion)</td><td>slowest</td><td>yes, relinked after fitting</td><td>yes (best at tangled column relationships)</td></tr>
         </tbody>
       </table>
       <p class="hint">See <b>docs/METRICS.md</b> for how each of these is scored (fidelity / privacy / utility) once

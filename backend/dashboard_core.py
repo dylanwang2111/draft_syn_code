@@ -98,7 +98,7 @@ REPORTS_DIR = "reports"
 #: natively by fitting tables jointly (see synth_eval.link). If a
 #: relationship was declared, every synthesizer should honor it -- there's
 #: no reason to let one ignore it on purpose.
-LINKABLE_SYNTHS = {"GAUSSIANCOPULA", "CTGAN", "TVAE", "COPULAGAN"}
+LINKABLE_SYNTHS = {"GAUSSIANCOPULA", "CTGAN", "TVAE", "COPULAGAN", "TABSYN"}
 
 class _Cancelled(Exception):
     """Raised inside a job when the user cancels, to unwind and stop all work."""
@@ -807,7 +807,7 @@ def _run_job(cfg: dict, st: dict):
         phase_seconds["prep"] = time.perf_counter() - t_prep_start
 
         # epochs only apply to the neural synthesizers; HMA / GaussianCopula have none
-        _uses_epochs = any(s.upper() in ("CTGAN", "TVAE", "COPULAGAN") for s in fit_synths)
+        _uses_epochs = any(s.upper() in ("CTGAN", "TVAE", "COPULAGAN", "TABSYN") for s in fit_synths)
         say(f"Fitting: {', '.join(fit_synths)} (scale={cfg['scale']}"
             + (f", epochs={cfg['epochs']}" if _uses_epochs else "") + ")")
         _real_err = sys.stderr

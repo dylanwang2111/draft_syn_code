@@ -10,8 +10,11 @@ nearest-record ceiling's percentile sensitivity.
 
 No pytest, script-based like backend/evals.py -- every check runs against
 real small pandas DataFrames (never mocks), is fast (no model fitting, no
-network calls), and is meant to catch a future edit silently reintroducing
-one of these bugs. Run from the repo root:
+network calls -- one deliberate exception: a tiny/few-epoch TabSyn fit+sample
+smoke test, since that model's fit/sample contract is this repo's own code,
+not an external library's, and deserves the same regression coverage as
+everything else here), and is meant to catch a future edit silently
+reintroducing one of these bugs. Run from the repo root:
 
     .venv/bin/python -m synth_eval.regression_suite
 """
@@ -463,6 +466,67 @@ def _c_refill_unseen_code_falls_back():
     out = _refill(synth, real, ["LABEL_DESC", "AUDIT_USER"], ["CODE_CD", "LABEL_DESC", "AUDIT_USER"],
                   seed=0, group_candidates=["CODE_CD"], min_group_size=10)
     _assert(out["LABEL_DESC"].notna().all(), "an unseen code must still get a real fallback value, not NaN")
+
+
+# ---------------------------------------------------------------------------
+# TabSyn (synth_eval.tabsyn) -- fit()/sample() contract smoke test. Tiny data
+# and 2 epochs deliberately don't test generation QUALITY (that needs real
+# training time and is validated separately, not on every regression run),
+# just that fitting and sampling completes and honors the same interface
+# shape SDV's own single-table synthesizers do.
+# ---------------------------------------------------------------------------
+
+@check("TabSynSynthesizer: fits and samples without crashing, honoring the SDV single-table contract")
+def _c_tabsyn_fit_sample_smoke():
+    from .tabsyn import TabSynSynthesizer
+
+    rng = np.random.RandomState(0)
+    n = 40
+    df = pd.DataFrame({
+        "AMOUNT": rng.normal(100, 20, n),
+        "STATUS_CD": rng.choice(["A", "B", "C"], n),
+    })
+    df.loc[rng.choice(n, 4, replace=False), "AMOUNT"] = np.nan
+
+    class _FakeMeta:
+        def to_dict(self):
+            return {"columns": {"AMOUNT": {"sdtype": "numerical"}, "STATUS_CD": {"sdtype": "categorical"}}}
+
+    syn = TabSynSynthesizer(_FakeMeta(), epochs=2, d_token=8, d_latent=2, denoiser_hidden=16,
+                            denoiser_depth=1, sample_steps=5)
+    syn._set_random_state(0)
+    syn.fit(df)
+    out = syn.sample(25)
+    _assert(list(out.columns) == list(df.columns), f"column order must match the input, got {list(out.columns)}")
+    _assert(len(out) == 25, f"expected 25 sampled rows, got {len(out)}")
+    _assert(set(out["STATUS_CD"].dropna().unique()) <= set(df["STATUS_CD"].unique()),
+            "sampled categories must come from the real column's own vocabulary")
+    _assert(pd.api.types.is_numeric_dtype(out["AMOUNT"]), "a numerical column must stay numeric, not object")
+
+
+@check("TabSynSynthesizer: same seed (fit-time global + _set_random_state) reproduces the same sample")
+def _c_tabsyn_reproducible():
+    from .suite import _seed_global, _seed_synth
+    from .tabsyn import TabSynSynthesizer
+
+    rng = np.random.RandomState(1)
+    n = 40
+    df = pd.DataFrame({"AMOUNT": rng.normal(0, 1, n), "STATUS_CD": rng.choice(["A", "B"], n)})
+
+    class _FakeMeta:
+        def to_dict(self):
+            return {"columns": {"AMOUNT": {"sdtype": "numerical"}, "STATUS_CD": {"sdtype": "categorical"}}}
+
+    def run():
+        _seed_global(7)
+        syn = TabSynSynthesizer(_FakeMeta(), epochs=2, d_token=8, d_latent=2, denoiser_hidden=16,
+                                denoiser_depth=1, sample_steps=5)
+        syn.fit(df)
+        _seed_synth(syn, 7)
+        return syn.sample(20)
+
+    out1, out2 = run(), run()
+    _assert(out1.equals(out2), "same seed via the real suite.py seeding flow must reproduce identically")
 
 
 # ---------------------------------------------------------------------------

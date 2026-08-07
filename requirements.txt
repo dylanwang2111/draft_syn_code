@@ -4,7 +4,7 @@ numpy
 scikit-learn
 matplotlib
 seaborn
-sdv          # pulls in ctgan + torch, needed for CTGAN/TVAE/CopulaGAN
+sdv          # pulls in ctgan + torch, needed for CTGAN/TVAE/CopulaGAN (torch also used directly by TabSyn, synth_eval/tabsyn.py)
 sdmetrics
 fastapi    # dashboard backend: `uvicorn server:app` (UI in web/index.html)
 uvicorn
