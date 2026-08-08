@@ -792,9 +792,9 @@ def _run_job(cfg: dict, st: dict):
                            f" HMA was not selected, so no model learns the hub — referential "
                            f"integrity is measured, not enforced."))
                 if others_note:
-                    say(f"{', '.join(others_note)} {_v} fit per-table independently "
-                        f"(single-table models can't preserve cross-table RI — shown for "
-                        f"quality/privacy/utility comparison only).")
+                    say(f"{', '.join(others_note)} {_v} fit per-table independently, then "
+                        f"relinked to the hub afterward so referential integrity holds too — "
+                        f"just without HMA's joint cross-table correlation modelling.")
             except Exception as e:
                 say(f"⚠ entity-key mode failed ({e}); falling back to normal synthesis")
                 parent_names, hub_rels, fit_synths = {}, [], cfg["synths"]
