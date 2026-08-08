@@ -5,6 +5,7 @@ scikit-learn
 matplotlib
 seaborn
 sdv          # pulls in ctgan + torch, needed for CTGAN/TVAE/CopulaGAN (torch also used directly by TabSyn, synth_eval/tabsyn.py)
+tqdm         # already pulled in transitively via sdv/ctgan; TabSyn imports it directly for its own training progress bars
 sdmetrics
 fastapi    # dashboard backend: `uvicorn server:app` (UI in web/index.html)
 uvicorn

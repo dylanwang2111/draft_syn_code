@@ -235,6 +235,7 @@ def _train_vae(vae, df: pd.DataFrame, specs: List[_ColumnSpec], epochs: int, dev
                 batch_size: int = 256, lr: float = 1e-3, beta: float = 1e-2) -> None:
     import torch
     from torch import nn
+    from tqdm import tqdm
 
     vae.to(device).train()
     opt = torch.optim.Adam(vae.parameters(), lr=lr)
@@ -242,7 +243,12 @@ def _train_vae(vae, df: pd.DataFrame, specs: List[_ColumnSpec], epochs: int, dev
     batch_size = max(1, min(batch_size, n))
     full = _to_batch(df, specs, device)
     modeled = vae._modeled
-    for _ in range(max(1, epochs)):
+    # a real tqdm bar (stderr, same as CTGAN/TVAE's own verbose=True output) --
+    # not a bespoke callback: backend.dashboard_core's _TqdmTee already
+    # intercepts stderr progress bars and forwards a compact live line to the
+    # job console, this rides that same mechanism for free instead of
+    # plumbing a separate progress callback through suite.py just for this
+    for _ in tqdm(range(max(1, epochs)), desc="TabSyn·VAE"):
         perm = torch.randperm(n, device=device)
         for start in range(0, n, batch_size):
             idx = perm[start:start + batch_size]
@@ -337,12 +343,13 @@ def _train_denoiser(denoiser, z: "torch.Tensor", epochs: int, device,
                      batch_size: int = 256, lr: float = 1e-3,
                      p_mean: float = -1.2, p_std: float = 1.2, sigma_data: float = 1.0) -> None:
     import torch
+    from tqdm import tqdm
 
     denoiser.to(device).train()
     opt = torch.optim.Adam(denoiser.parameters(), lr=lr)
     n = z.shape[0]
     batch_size = max(1, min(batch_size, n))
-    for _ in range(max(1, epochs)):
+    for _ in tqdm(range(max(1, epochs)), desc="TabSyn·diffusion"):
         perm = torch.randperm(n, device=device)
         for start in range(0, n, batch_size):
             x0 = z[perm[start:start + batch_size]]

@@ -26,15 +26,18 @@ def build_single_table_synthesizer(name: str, single_meta, epochs: int = 300):
         TVAESynthesizer,
     )
 
+    # verbose=True: each of these prints a real tqdm epoch bar to stderr,
+    # which backend.dashboard_core's _TqdmTee intercepts and forwards as a
+    # live "epoch N/M" line to the job console instead of a wall of raw text.
     key = name.lower().replace("_", "").replace("-", "")
     if key in {"gaussiancopula", "gc", "copula"}:
         return GaussianCopulaSynthesizer(single_meta)
     if key == "ctgan":
-        return CTGANSynthesizer(single_meta, epochs=epochs, verbose=False)
+        return CTGANSynthesizer(single_meta, epochs=epochs, verbose=True)
     if key == "tvae":
-        return TVAESynthesizer(single_meta, epochs=epochs)
+        return TVAESynthesizer(single_meta, epochs=epochs, verbose=True)
     if key == "copulagan":
-        return CopulaGANSynthesizer(single_meta, epochs=epochs, verbose=False)
+        return CopulaGANSynthesizer(single_meta, epochs=epochs, verbose=True)
     if key == "tabsyn":
         from .tabsyn import TabSynSynthesizer
 
@@ -147,6 +150,7 @@ def generate_synthetic_suite(
     close_filter_report: Optional[Dict[str, Dict[str, dict]]] = None,
     resample_timings: Optional[Dict[str, float]] = None,
     random_state: int = 0,
+    on_progress: Optional[callable] = None,
 ) -> Dict[str, Dict[str, pd.DataFrame]]:
     """Fit every requested synthesizer and sample synthetic data.
 
@@ -195,6 +199,15 @@ def generate_synthetic_suite(
     being close, is not covered. ``close_filter_report``, if given, is filled
     in-place with ``{synth_name: {table_name: report}}`` from each table's
     filter run (HMA's entry is keyed by its root table(s)).
+
+    ``on_progress``, if given, is called once per (synthesizer, table) right
+    before that table's ``fit()`` starts, with a short human-readable string
+    -- the epoch-by-epoch progress *within* a neural fit isn't reported here,
+    each neural synthesizer prints its own real tqdm bar to stderr instead
+    (``verbose=True`` on the single-table constructors, TabSyn's own training
+    loop does the same), which the caller is expected to be intercepting
+    already (see ``backend.dashboard_core._TqdmTee``) -- this callback exists
+    just to say *which* synthesizer/table those bars belong to.
 
     Returns ``{synthesizer_name: {table_name: synthetic_df}}``.  A synthesizer
     that fails (e.g. torch missing for CTGAN/TVAE) is skipped with a warning
@@ -252,6 +265,10 @@ def generate_synthetic_suite(
                 for tname, df in train_tables.items():
                     if verbose:
                         print(f"[{name}] fitting {tname} ({len(df)} rows) ...")
+                    if on_progress:
+                        epoch_note = f", epochs={epochs}" if name.upper() in \
+                            {"CTGAN", "TVAE", "COPULAGAN", "TABSYN"} else ""
+                        on_progress(f"Fitting {name} on {tname} ({len(df)} rows{epoch_note}) ...")
                     _seed_global(random_state)
                     single_meta = _single_table_metadata(metadata, tname)
                     syn = build_single_table_synthesizer(name, single_meta, epochs=epochs)

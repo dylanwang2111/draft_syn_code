@@ -23,6 +23,12 @@ class _TqdmTee:
 
     _PAT = re.compile(r"(Preprocess Tables|Learning relationships|Modeling Tables|"
                       r"Modeling|Sampling|Creating report)\D*?(\d+)\s*%")
+    # CTGAN/TVAE/CopulaGAN's own verbose=True training bar, and TabSyn's own
+    # (synth_eval/tabsyn.py) -- tqdm's standard "{desc}: NN%|bar| cur/total ["
+    # shape, greedy [^\r\n]* backtracks to the RIGHTMOST ": NN%|" so a desc
+    # that itself contains a colon (TVAE's "Loss: 0.1234: 60%|...") still
+    # parses correctly, not just up to its own first colon.
+    _EPOCH_PAT = re.compile(r"([^\r\n]*):\s*\d+%\|[^|]*\|\s*(\d+)/(\d+)\s*\[")
 
     def __init__(self, real, progress_fn):
         self.real = real
@@ -47,6 +53,19 @@ class _TqdmTee:
             if m:
                 try:
                     self.progress(f"{m.group(1)} … {m.group(2)}%")
+                except Exception:
+                    pass
+                continue
+            m2 = self._EPOCH_PAT.search(seg)
+            if m2:
+                desc, cur, total = (g.strip() for g in m2.groups())
+                # TabSyn's own desc ("TabSyn·VAE"/"TabSyn·diffusion") is worth
+                # showing verbatim (distinguishes its two training stages);
+                # CTGAN/TVAE's desc is a raw loss value, not meaningful to a
+                # non-technical reader, so just say "epoch" there instead
+                label = desc if desc.lower().startswith("tabsyn") else "epoch"
+                try:
+                    self.progress(f"{label} {cur}/{total}")
                 except Exception:
                     pass
             elif seg.strip():
@@ -833,7 +852,7 @@ def _run_job(cfg: dict, st: dict):
                             timings=gen_timings, roles=roles,
                             close_filter_report=close_filter_report,
                             resample_timings=resample_timings, random_state=run_seed,
-                            filter_close_percentile=close_percentile)
+                            filter_close_percentile=close_percentile, on_progress=say)
                     others = [s for s in cfg["synths"] if s.upper() != "HMA"]
                     if others and not cancelled():
                         single_meta = _build_metadata(_reduce_meta(tables_meta, keep), [])
@@ -844,7 +863,7 @@ def _run_job(cfg: dict, st: dict):
                             timings=gen_timings, roles=roles,
                             close_filter_report=close_filter_report,
                             resample_timings=resample_timings, random_state=run_seed,
-                            filter_close_percentile=close_percentile))
+                            filter_close_percentile=close_percentile, on_progress=say))
                 else:
                     suite = se.generate_synthetic_suite(
                         fit_tables, fit_metadata, synthesizers=fit_synths,
@@ -853,7 +872,7 @@ def _run_job(cfg: dict, st: dict):
                         roles=roles, close_filter_report=close_filter_report,
                         filter_close_percentile=close_percentile,
                         timings=gen_timings, resample_timings=resample_timings,
-                        random_state=run_seed)
+                        random_state=run_seed, on_progress=say)
         finally:
             sys.stderr = _real_err
         # gen_timings/resample_timings are per-synthesizer wall-clock (see
