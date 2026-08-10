@@ -27,7 +27,7 @@ import pandas as pd
 
 from .columns import (ColumnRoles, auto_categorical_threshold, best_refill_group_column,
                       classify_columns, group_diversity_reduction, suffix_sdtype_overrides)
-from .compare import structure_scores
+from .compare import shapes_heatmap_data, structure_scores
 from .efficacy import auto_select_target
 from .entity import _normalize_key_name, _resolve_key_column, build_entity_hub, entity_key_tables
 from .link import _normalize_key_values, _real_parent_counts, link_relationships, link_table
@@ -363,6 +363,33 @@ def _c_structure_scores_baseline_defaults_none():
     out = structure_scores(ri_rows, cardinality, derived_parent=False)
     _assert(out["SomeSynth"]["cardinality_shape_baseline"] is None,
             "a caller that doesn't pass a baseline must not see one appear from nowhere")
+
+
+@check("shapes_heatmap_data: carries an error reason for an unscoreable (not just unevaluated) cell")
+def _c_shapes_heatmap_data_carries_errors():
+    # a blank Column Shapes cell can mean "not evaluated" or "sdmetrics tried
+    # and couldn't compute a similarity at all" (e.g. IncomputableMetricError
+    # on a sparse real column whose synthetic side came back 100% null) --
+    # the two must not collapse into the same unexplained blank cell
+    shape_scores = {
+        "TVAE": pd.Series({"COL_A": 0.9, "COL_B": float("nan")}),
+        "TabSyn": pd.Series({"COL_A": 0.8, "COL_B": 0.3}),
+    }
+    shape_errors = {"TVAE": {"COL_B": "IncomputableMetricError: ... 1 or more non-null values."}}
+    out = shapes_heatmap_data(shape_scores, shape_errors)
+    i, j = out["y"].index("TVAE"), out["x"].index("COL_B")
+    _assert(out["z"][i][j] is None, "an uncomputable cell must still be a null score, not a fake number")
+    _assert(out["err"][i][j] is not None and "Incomputable" in out["err"][i][j],
+            f"expected the error reason to reach the same cell position, got {out['err'][i][j]}")
+    i2, j2 = out["y"].index("TabSyn"), out["x"].index("COL_A")
+    _assert(out["err"][i2][j2] is None, "a normally-scored cell must not carry a stray error")
+
+
+@check("shapes_heatmap_data: no shape_errors given still returns a same-shape all-None err matrix")
+def _c_shapes_heatmap_data_no_errors():
+    shape_scores = {"TVAE": pd.Series({"COL_A": 0.9})}
+    out = shapes_heatmap_data(shape_scores, None)
+    _assert(out["err"] == [[None]], f"expected an all-None err matrix when no errors are given, got {out['err']}")
 
 
 # ---------------------------------------------------------------------------

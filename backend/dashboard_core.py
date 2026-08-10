@@ -1171,7 +1171,7 @@ def _run_job(cfg: dict, st: dict):
         n_st = sum(len(tabs) for tabs in suite.values())         # synth × table
         n_tab = len(tables)
         done_q = done_p = done_e = 0
-        quality_scores, shape_details, pair_details, pair_full = {}, {}, {}, {}
+        quality_scores, shape_details, shape_errors, pair_details, pair_full = {}, {}, {}, {}, {}
         for s, tabs in suite.items():
             quality_scores[s] = {}
             for t, sdf in tabs.items():
@@ -1194,6 +1194,17 @@ def _run_job(cfg: dict, st: dict):
                 }
                 det = qr.get_details("Column Shapes")
                 shape_details.setdefault(t, {})[s] = det.set_index("Column")["Score"]
+                # a NaN score can mean two very different things: "not
+                # evaluated" vs. sdmetrics couldn't even compute a similarity
+                # at all (e.g. a very sparse real column whose synthetic side
+                # came back 100% null -- IncomputableMetricError, not a low
+                # score) -- keep the reason so a blank heatmap cell doesn't
+                # read as "nothing to see here" when it's actually a real
+                # generation failure worth knowing about
+                if "Error" in det.columns:
+                    errs = det.set_index("Column")["Error"].dropna()
+                    if len(errs):
+                        shape_errors.setdefault(t, {})[s] = errs.to_dict()
                 pd_det = qr.get_details("Column Pair Trends")
                 # full records feed the pair-trend heatmap; a trimmed copy is
                 # sent to the client for the on-page details table.
@@ -1281,7 +1292,7 @@ def _run_job(cfg: dict, st: dict):
             # shapes/pairs: interactive Plotly data + a PNG fallback (offline).
             "shapes": {t: se.plot_column_shapes_heatmap(d, f"{fig_dir}/web_shapes_{t}.png", t)
                        for t, d in shape_details.items()},
-            "shapes_data": {t: se.shapes_heatmap_data(d) for t, d in shape_details.items()},
+            "shapes_data": {t: se.shapes_heatmap_data(d, shape_errors.get(t)) for t, d in shape_details.items()},
             "pairs": {}, "pairs_data": {},
         }
         # Column Pair Trends heatmap per synthesizer per table (a pair matrix is

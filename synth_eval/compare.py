@@ -209,20 +209,32 @@ def _matrix_to_z(mat):
     return [[None if pd.isna(v) else float(v) for v in row] for row in mat.values]
 
 
-def shapes_heatmap_data(shape_scores) -> Optional[dict]:
+def shapes_heatmap_data(shape_scores, shape_errors=None) -> Optional[dict]:
     """Interactive-chart data for the per-column shape-score heatmap.
 
-    Returns {"x": data columns, "y": synthesizers, "z": [[score]]} — the same
-    wide orientation as the PNG — or None.  Consumed by the dashboard's Plotly
-    renderer; the PNG remains an offline fallback.
+    Returns {"x": data columns, "y": synthesizers, "z": [[score]], "err":
+    [[reason or None]]} — the same wide orientation as the PNG — or None.
+    Consumed by the dashboard's Plotly renderer; the PNG remains an offline
+    fallback.
+
+    A blank (null) ``z`` cell can mean two very different things: the
+    column simply wasn't evaluated, or sdmetrics tried and couldn't even
+    compute a similarity at all (``IncomputableMetricError`` — e.g. a very
+    sparse real column whose synthetic side came back 100% null, a genuine
+    generation failure, not a "nothing to see here" gap). ``shape_errors``
+    (``{synth: {column: reason}}``, same keys as ``shape_scores``) carries
+    that reason through so the UI can tell the two apart instead of
+    rendering an unexplained blank cell either way.
     """
     if not shape_scores:
         return None
     mat = pd.DataFrame(shape_scores).T          # rows = synths, cols = data columns
     if mat.empty:
         return None
+    err_mat = pd.DataFrame(shape_errors or {}).T.reindex(index=mat.index, columns=mat.columns)
+    err = [[(None if pd.isna(v) else str(v)) for v in row] for row in err_mat.values]
     return {"x": [str(c) for c in mat.columns], "y": [str(i) for i in mat.index],
-            "z": _matrix_to_z(mat)}
+            "z": _matrix_to_z(mat), "err": err}
 
 
 def pair_trends_heatmap_data(details) -> Optional[dict]:
