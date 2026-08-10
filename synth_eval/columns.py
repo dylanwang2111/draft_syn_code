@@ -89,11 +89,31 @@ class ColumnRoles:
         return self.numeric + self.categorical
 
 
+#: default ratio for the auto-detected categorical-cardinality threshold: a
+#: column whose distinct-value count stays under this fraction of the
+#: table's OWN row count still shows real repeats (a genuine type code, no
+#: matter how many categories it has), so it's safe to treat as categorical
+#: regardless of its absolute cardinality. A fixed absolute count can't be
+#: right for both a 100-row table and a 100,000-row table at once -- an id
+#: column approaches 100% distinct (one row per value) in either case, so
+#: the RATIO is what actually generalizes across table sizes, not a number
+#: tuned against whatever table happened to be tested first.
+AUTO_CATEGORICAL_RATIO = 0.9
+
+
+def auto_categorical_threshold(n_rows: int, ratio: float = AUTO_CATEGORICAL_RATIO) -> int:
+    """The absolute distinct-value cutoff ``ratio`` implies for a table of
+    ``n_rows`` rows -- what ``max_categorical_card`` auto-detects to when
+    left unset, exposed as its own function so a caller (or the UI) can show
+    the concrete number instead of an opaque ratio."""
+    return max(1, int(round(ratio * n_rows)))
+
+
 def classify_columns(
     df: pd.DataFrame,
     metadata=None,
     table_name: str = "",
-    max_categorical_card: int = 50,
+    max_categorical_card: Optional[int] = None,
 ) -> ColumnRoles:
     """Split a table's columns into numeric / categorical / skipped.
 
@@ -105,7 +125,14 @@ def classify_columns(
            'categorical'/'boolean' -> categorical, 'datetime' -> skip).
         3. Name heuristic (looks like an id / name -> skip).
         4. pandas dtype + cardinality.
+
+    ``max_categorical_card`` defaults to auto-detected (``None``):
+    ``auto_categorical_threshold(len(df))``, i.e. a fraction of THIS table's
+    own row count rather than a fixed constant -- pass an explicit int to
+    override with a fixed absolute cutoff applied regardless of table size.
     """
+    if max_categorical_card is None:
+        max_categorical_card = auto_categorical_threshold(len(df))
     sdtypes = _metadata_sdtypes(metadata, table_name)
     roles = ColumnRoles()
 
@@ -229,7 +256,7 @@ def best_refill_group_column(
 def suffix_sdtype_overrides(
     df: pd.DataFrame,
     sdtypes: Dict[str, str],
-    max_categorical_card: int = 50,
+    max_categorical_card: Optional[int] = None,
 ) -> Dict[str, str]:
     """Promote ``*_TP_CD``/``*_CD``/``*_CODE``/``*_IND`` columns SDV's own
     ``detect_from_dataframes`` left as 'numerical' back to 'categorical'.
@@ -247,7 +274,14 @@ def suffix_sdtype_overrides(
     just applied to the sdtype SDV actually trains on, not just the
     ML-efficacy feature roles. Only touches columns currently 'numerical';
     anything SDV already got right (or that isn't in ``df``) is untouched.
+
+    ``max_categorical_card`` defaults to auto-detected (``None``), same
+    convention and same reasoning as ``classify_columns``: a fraction of
+    THIS table's own row count, not a fixed constant that's wrong for either
+    a much smaller or much larger table than whatever it was tuned against.
     """
+    if max_categorical_card is None:
+        max_categorical_card = auto_categorical_threshold(len(df))
     out = dict(sdtypes)
     for col, sdtype in sdtypes.items():
         if sdtype != "numerical" or col not in df.columns:

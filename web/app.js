@@ -882,6 +882,15 @@ function renderRecipe(){
       <select id="cap-${t}" title="column the attribute-inference attack tries to guess — (auto) picks the most balanced categorical">
         <option value="auto">(auto)</option>
         ${(v.categoricals||[]).map(c=>`<option>${c}</option>`).join("")}</select></div>`).join("");
+  // auto-detected max_categorical_card per table (90% of that table's own row
+  // count, see se.auto_categorical_threshold) -- shown so leaving the field
+  // blank isn't a black box; a table with fewer rows auto-detects to a lower
+  // number, which is expected, not a mistake
+  const acc=$("#auto-cat-card-hint");
+  if(acc){
+    const rows=Object.entries(DATA.tables).map(([t,v])=>`${esc(t)} ${v.auto_max_categorical_card}`);
+    acc.textContent="blank uses, per table: "+rows.join(" · ");
+  }
   // hidden entity-key store — the Data Model tab (hub generator) sets its value;
   // options list every shared candidate key (see sharedKeys()) so syncEntity()
   // can select any of them.
@@ -1043,7 +1052,7 @@ $("#btn-run").addEventListener("click",async()=>{
     scd_effective:$("#in-scd-eff").value||"", scd_end:$("#in-scd-end").value||"", scd_current:$("#in-scd-cur").value||"",
     synths:[...selectedSynths],
     epochs:+$("#in-epochs").value, scale:+$("#in-scale").value, holdout:HOLDOUT_FRAC,
-    max_categorical_card:+($("#in-max-cat-card")||{}).value||50,
+    max_categorical_card:($("#in-max-cat-card")||{}).value?+$("#in-max-cat-card").value:null,
     min_target_rows:+($("#in-min-target-rows")||{}).value||30,
     close_percentile:+($("#in-close-percentile")||{}).value||5};
   let r;

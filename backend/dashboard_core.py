@@ -249,6 +249,10 @@ def _tables_payload(st: dict):
             "targets": roles.modelable,
             "categoricals": roles.categorical,           # CAP sensitive-column options
             "pii": se.detect_pii(df, roles.modelable),   # {col: kind} for the PII panel
+            # what max_categorical_card auto-detects to for THIS table if left
+            # unset at run time -- shown in the run-parameters panel so "auto"
+            # isn't a black box, see se.auto_categorical_threshold
+            "auto_max_categorical_card": se.auto_categorical_threshold(len(df)),
         }
     # structural profile + recommended synthesis tier (safe: structure only)
     try:
@@ -266,14 +270,14 @@ def _build_metadata(tables_meta: dict, relationships: list[dict]):
 
 def _metadata_from_request(schema: dict, rels: list[dict], st: dict,
                             tables: dict | None = None,
-                            max_categorical_card: int = 50) -> dict:
+                            max_categorical_card: int | None = None) -> dict:
     """Merge client sdtype/pk edits onto the detected metadata dict.
 
     ``st["meta_detected"]`` was built once at upload time by ``_detect()``,
     which promotes wide ``*_TP_CD``/``*_CD``/``*_CODE``/``*_IND`` columns
-    SDV left 'numerical' back to 'categorical' -- but only up to the
-    HARDCODED default max_categorical_card (50), since no run config exists
-    yet at upload time. A run that raises this threshold for genuinely wide
+    SDV left 'numerical' back to 'categorical' -- using whatever
+    max_categorical_card was in effect AT THAT TIME, before any run config
+    exists yet. A run that sets an explicit threshold for genuinely wide
     production codes (see _run_job's own max_categorical_card, which DOES
     reach classify_columns' role decision -- privacy scope, refill, feature
     selection) would otherwise never see that reflected in the sdtype
@@ -282,8 +286,9 @@ def _metadata_from_request(schema: dict, rels: list[dict], st: dict,
     rounded back, inventing values that never existed and destroying the
     column's shape score (independent of whether the pair-trend/refill side
     is otherwise correct). Re-running the override here, against the run's
-    own threshold, closes that gap; explicit user edits from the schema
-    editor still always win over it.
+    own threshold (``None`` -> auto-detected per table, same as everywhere
+    else -- see ``se.auto_categorical_threshold``), closes that gap;
+    explicit user edits from the schema editor still always win over it.
     """
     detected = st["meta_detected"]
     tables_meta = {}
@@ -735,7 +740,12 @@ def _run_job(cfg: dict, st: dict):
         # * max_categorical_card: above this many distinct values, a would-be
         #   categorical column is treated as id-like and skipped instead.
         #   Too low on a real column set with genuinely wide categories
-        #   silently drops it out of fidelity/privacy scoring entirely.
+        #   silently drops it out of fidelity/privacy scoring entirely. Left
+        #   unset (None), classify_columns/suffix_sdtype_overrides each
+        #   auto-detect it PER TABLE from that table's own row count
+        #   (se.auto_categorical_threshold) instead of a fixed number that
+        #   can't be right for every table size at once -- an explicit value
+        #   here still overrides that and applies uniformly, same as before.
         # * min_target_rows: below this many rows, auto_select_target won't
         #   pick an ML-efficacy target for a table (holdout too small to
         #   mean anything).
@@ -744,7 +754,8 @@ def _run_job(cfg: dict, st: dict):
         #   shrink as row count grows (denser space), so the same fixed
         #   percentile reads as stricter on a much bigger real table than on
         #   the seed data this was tuned against.
-        max_categorical_card = int(cfg.get("max_categorical_card") or 50)
+        _mcc_cfg = cfg.get("max_categorical_card")
+        max_categorical_card = int(_mcc_cfg) if _mcc_cfg else None  # None -> auto per table
         min_target_rows = int(cfg.get("min_target_rows") or 30)
         close_percentile = float(cfg.get("close_percentile") or 5.0)
         tables = st["tables"]

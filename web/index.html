@@ -109,8 +109,9 @@
       <details class="biz-expander field">
         <summary>Advanced thresholds <span style="opacity:.7">(tune for a different data scale)</span></summary>
         <div class="biz-details" style="display:flex; flex-direction:column; gap:12px">
-          <label><span class="lbl-main" style="font-size:12.5px">Max distinct values for a categorical column <i class="lbl-tech">above this, treated as id-like and skipped</i></span>
-            <input type="number" id="in-max-cat-card" min="2" step="1" value="50" style="width:100%; margin-top:4px"></label>
+          <label><span class="lbl-main" style="font-size:12.5px">Max distinct values for a categorical column <i class="lbl-tech">above this, treated as id-like and skipped — blank = auto-detect per table</i></span>
+            <input type="number" id="in-max-cat-card" min="2" step="1" placeholder="auto" style="width:100%; margin-top:4px">
+            <p class="hint" id="auto-cat-card-hint" style="margin-top:4px"></p></label>
           <label><span class="lbl-main" style="font-size:12.5px">Min rows to auto-pick an ML-efficacy target <i class="lbl-tech">below this, a table is skipped as too small to score meaningfully</i></span>
             <input type="number" id="in-min-target-rows" min="1" step="1" value="30" style="width:100%; margin-top:4px"></label>
           <label><span class="lbl-main" style="font-size:12.5px">Privacy filter strictness <i class="lbl-tech">percentile — lower is stricter, catches more rows</i></span>
