@@ -35,7 +35,7 @@ from .privacy import filter_close_records, filter_close_records_multitable, near
 # imported from backend, not synth_eval -- _refill's conditional-grouping
 # dispatch is where the actual bug this section guards against lives (see
 # below), the synth_eval-level building blocks alone don't exercise it
-from backend.dashboard_core import _refill
+from backend.dashboard_core import _detect, _metadata_from_request, _refill
 
 CHECKS: list[tuple[str, "object"]] = []
 
@@ -368,6 +368,41 @@ def _c_suffix_sdtype_overrides_leaves_correct_alone():
     sdtypes = {"STATUS_CD": "categorical"}
     fixed = suffix_sdtype_overrides(df, sdtypes)
     _assert(fixed["STATUS_CD"] == "categorical", "already-categorical sdtype must be left untouched")
+
+
+@check("_metadata_from_request: re-applies suffix_sdtype_overrides at the run's OWN max_categorical_card")
+def _c_metadata_from_request_rechecks_cardinality():
+    # integer-typed code (matches real *_TP_CD columns, e.g. 348820.0 in the
+    # seed data) with 80 distinct values -- wider than _detect()'s hardcoded
+    # upload-time default (50), so SDV's raw detector + that first pass both
+    # leave it 'numerical'. A run that raises max_categorical_card to 100
+    # (documented in _run_job as exactly the knob for "real production data,
+    # a different cardinality distribution") must see that reflected in the
+    # sdtype actually fed to the synthesizer, not just in classify_columns'
+    # role decision -- otherwise the column is fit as a continuous
+    # distribution and rounded back, inventing values and wrecking its
+    # column-shape score regardless of anything downstream.
+    df = pd.DataFrame({"OCCUPATION_TP_CD": list(range(340000, 340080)) * 3})
+    tables = {"OCCUPATION": df}
+    st = {"tables": tables, "meta_detected": _detect(tables)}
+    stale = _metadata_from_request({}, [], st)
+    _assert(stale["OCCUPATION"]["columns"]["OCCUPATION_TP_CD"]["sdtype"] == "numerical",
+            "sanity check: the stale upload-time-only path should still show the bug")
+    fixed = _metadata_from_request({}, [], st, tables=tables, max_categorical_card=100)
+    _assert(fixed["OCCUPATION"]["columns"]["OCCUPATION_TP_CD"]["sdtype"] == "categorical",
+            "raising the run's max_categorical_card to 100 must promote an 80-value *_TP_CD "
+            "column to categorical, not leave it stuck at the upload-time default of 50")
+
+
+@check("_metadata_from_request: an explicit user sdtype edit still wins over the re-check")
+def _c_metadata_from_request_user_edit_wins():
+    df = pd.DataFrame({"OCCUPATION_TP_CD": list(range(340000, 340080)) * 3})
+    tables = {"OCCUPATION": df}
+    st = {"tables": tables, "meta_detected": _detect(tables)}
+    edited = _metadata_from_request({"OCCUPATION": {"sdtypes": {"OCCUPATION_TP_CD": "numerical"}}},
+                                     [], st, tables=tables, max_categorical_card=100)
+    _assert(edited["OCCUPATION"]["columns"]["OCCUPATION_TP_CD"]["sdtype"] == "numerical",
+            "a user's explicit schema-editor override must not be clobbered by the cardinality re-check")
 
 
 # ---------------------------------------------------------------------------

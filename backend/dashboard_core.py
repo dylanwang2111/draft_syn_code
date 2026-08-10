@@ -264,16 +264,38 @@ def _build_metadata(tables_meta: dict, relationships: list[dict]):
     return Metadata.load_from_dict({"tables": tables_meta, "relationships": relationships})
 
 
-def _metadata_from_request(schema: dict, rels: list[dict], st: dict) -> dict:
-    """Merge client sdtype/pk edits onto the detected metadata dict."""
+def _metadata_from_request(schema: dict, rels: list[dict], st: dict,
+                            tables: dict | None = None,
+                            max_categorical_card: int = 50) -> dict:
+    """Merge client sdtype/pk edits onto the detected metadata dict.
+
+    ``st["meta_detected"]`` was built once at upload time by ``_detect()``,
+    which promotes wide ``*_TP_CD``/``*_CD``/``*_CODE``/``*_IND`` columns
+    SDV left 'numerical' back to 'categorical' -- but only up to the
+    HARDCODED default max_categorical_card (50), since no run config exists
+    yet at upload time. A run that raises this threshold for genuinely wide
+    production codes (see _run_job's own max_categorical_card, which DOES
+    reach classify_columns' role decision -- privacy scope, refill, feature
+    selection) would otherwise never see that reflected in the sdtype
+    actually fed to the synthesizer: a code with, say, 80 real values stays
+    'numerical' regardless, gets fit as a continuous distribution and
+    rounded back, inventing values that never existed and destroying the
+    column's shape score (independent of whether the pair-trend/refill side
+    is otherwise correct). Re-running the override here, against the run's
+    own threshold, closes that gap; explicit user edits from the schema
+    editor still always win over it.
+    """
     detected = st["meta_detected"]
     tables_meta = {}
     for t, tmeta in detected["tables"].items():
         edits = (schema.get(t) or {}).get("sdtypes", {})
         pk = (schema.get(t) or {}).get("primary_key")
+        base_sdtypes = {c: p.get("sdtype") for c, p in tmeta["columns"].items()}
+        if tables is not None and t in tables:
+            base_sdtypes = se.suffix_sdtype_overrides(tables[t], base_sdtypes, max_categorical_card)
         cols = {}
         for col, props in tmeta["columns"].items():
-            new = edits.get(col, props.get("sdtype"))
+            new = edits.get(col, base_sdtypes.get(col, props.get("sdtype")))
             cols[col] = dict(props) if new == props.get("sdtype") else {"sdtype": new}
         entry = {"columns": cols}
         if pk:
@@ -726,7 +748,8 @@ def _run_job(cfg: dict, st: dict):
         min_target_rows = int(cfg.get("min_target_rows") or 30)
         close_percentile = float(cfg.get("close_percentile") or 5.0)
         tables = st["tables"]
-        tables_meta = _metadata_from_request(cfg.get("schema", {}), cfg.get("relationships", []), st)
+        tables_meta = _metadata_from_request(cfg.get("schema", {}), cfg.get("relationships", []), st,
+                                              tables=tables, max_categorical_card=max_categorical_card)
         rels = cfg.get("relationships", [])
 
         # Entity key detection + naming-convention normalization, done here,
