@@ -1246,21 +1246,23 @@ function renderHeatmap(el,kind,data,c){
   const z=data.z, nCol=x.length, nRow=y.length;
   const width=Math.max(560, 26*nCol+150);
   const height=(kind==="pairs")?Math.max(360,26*nRow+150):(80+52*nRow+Math.min(160,7*maxLen(x)));
-  // a blank shapes cell can mean "not evaluated" OR "sdmetrics tried and
-  // couldn't even compute a similarity" (e.g. a sparse real column whose
-  // synthetic side came back 100% null) -- data.err (same shape as z) carries
-  // the reason so the two don't look identical; build one hover text per
-  // cell rather than relying on Plotly's numeric %{z} formatting, which has
-  // nothing to show for a null cell either way
+  // a blank shapes cell can mean "not evaluated" (e.g. this column never
+  // reached sdmetrics at all -- no Error entry exists for it either, since
+  // nothing was ever attempted) OR "sdmetrics tried and couldn't even
+  // compute a similarity" (e.g. a sparse real column whose synthetic side
+  // came back 100% null -- data.err carries that reason). Always build
+  // per-cell hover text for shapes when err data is present, NOT only when
+  // some OTHER cell happens to have a captured error -- gating on that
+  // silently left the far more common "not evaluated" case with no hover
+  // at all, indistinguishable from a rendering bug.
   const rawErr=(kind==="shapes")?(data.err||null):null;
-  const hasErr=rawErr && rawErr.some(row=>row.some(e=>e));
-  const text=hasErr ? z.map((row,i)=>row.map((v,j)=>{
+  const text=rawErr ? z.map((row,i)=>row.map((v,j)=>{
     if(v!=null) return `col ${x[j]}<br>${y[i]}: ${v.toFixed(3)}`;
     const e=rawErr[i]?.[j];
     return e ? `col ${x[j]}<br>${y[i]}: not computable<br>${e}` : `col ${x[j]}<br>${y[i]}: not evaluated`;
   })) : null;
   const trace={type:"heatmap", z, x, y, zmin:0, zmax:1, colorscale:RDYLGN, xgap:1, ygap:1,
-    hoverongaps:hasErr, ...(text?{text}:{}),
+    hoverongaps:!!text, ...(text?{text}:{}),
     hovertemplate:(text?"%{text}<extra></extra>"
       :kind==="shapes"?"col %{x}<br>%{y}: %{z:.3f}<extra></extra>":"%{x} × %{y}: %{z:.3f}<extra></extra>"),
     colorbar:{title:{text:kind==="shapes"?"shape":"pair sim",side:"right"},thickness:10,len:0.9}};
