@@ -22,6 +22,20 @@ _MIN_SIGNAL_LIFT = 0.05
 _SHUFFLE_REPEATS = 5
 
 
+class InsufficientHoldoutError(ValueError):
+    """Raised by sdmetrics_ml_efficacy when the REAL baseline's own holdout
+    split doesn't share enough target classes with its own training split to
+    score reliably (small table, many-class target -- e.g. 131 rows across
+    21 codes leaves an 80/20 holdout with only a handful of rows per class,
+    easily missing several entirely). Per-metric failures already fall back
+    to a NaN row with an explanatory note (see the try/except around each
+    metric below) -- this is different: if even the REAL baseline can't be
+    scored, comparing synthesizers against it is meaningless, so the caller
+    should skip the WHOLE target for this table (folding it into the same
+    efficacy_skipped list auto_select_target's own guards use) rather than
+    publish a table of NaN rows that reads as a cascade of failures."""
+
+
 def _predictive_signal(
     df: pd.DataFrame, target_col: str, feature_roles: ColumnRoles, task: str,
 ) -> Optional[Tuple[float, float]]:
@@ -458,6 +472,17 @@ def sdmetrics_ml_efficacy(
             base_note = (base_note + "; " if base_note else "") + \
                 f"aligned {n_aligned} feature col(s) with unseen/missing categories to train"
         enough = len(test_src) >= 5
+        if src == "real" and not enough:
+            # "real" is always the first source (dict insertion order, see
+            # `sources` above) -- if even the REAL baseline's own train/
+            # holdout split can't be scored, no synthesizer comparison
+            # against it means anything either; bail out before producing
+            # ANY rows (real or synthetic) instead of a table full of NaNs.
+            raise InsufficientHoldoutError(
+                f"{len(test)} holdout rows have a value for '{target}', but only "
+                f"{len(test_src)} of those share a class the real training split also has"
+                + (f" ({nun} classes total)" if task == "classification" else "")
+                + " -- too few to score reliably")
 
         def _add(metric, score, note):
             rows.append({"table": table_name, "target": target, "task": task,

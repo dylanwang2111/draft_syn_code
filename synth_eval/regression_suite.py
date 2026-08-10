@@ -28,7 +28,7 @@ import pandas as pd
 from .columns import (ColumnRoles, auto_categorical_threshold, best_refill_group_column,
                       classify_columns, group_diversity_reduction, suffix_sdtype_overrides)
 from .compare import shapes_heatmap_data, structure_scores
-from .efficacy import auto_select_target
+from .efficacy import InsufficientHoldoutError, auto_select_target, sdmetrics_ml_efficacy
 from .entity import _normalize_key_name, _resolve_key_column, build_entity_hub, entity_key_tables
 from .link import _normalize_key_values, _real_parent_counts, link_relationships, link_table
 from .privacy import filter_close_records, filter_close_records_multitable, nearest_real_examples
@@ -137,6 +137,48 @@ def _c_picks_regression():
     roles = ColumnRoles(numeric=["ID_CD", "AMOUNT"], categorical=[])
     sel = auto_select_target(df, roles, min_rows=10)
     _assert(sel is not None and sel[1] == "regression", f"expected a regression pick, got {sel}")
+
+
+def _small_many_class_fixture():
+    """Real OCCUPATION.csv's own shape: 21 codes, ~6 rows each (131 total).
+    An 80/20-ish split leaves several codes' entire small cluster on one
+    side -- the real trigger for InsufficientHoldoutError, not a contrived
+    edge case."""
+    rng = np.random.default_rng(0)
+    codes, other = [], []
+    for i in range(21):
+        codes += [f"C{i}"] * 6
+        other += rng.choice(["A", "B", "C"], 6).tolist()
+    df = pd.DataFrame({"CODE": codes, "OTHER_CD": other})
+    train_real = df.iloc[:105].reset_index(drop=True)
+    holdout_real = df.iloc[105:].reset_index(drop=True)
+    roles = ColumnRoles(categorical=["CODE", "OTHER_CD"])
+    return train_real, holdout_real, roles
+
+
+@check("sdmetrics_ml_efficacy: raises InsufficientHoldoutError instead of scoring a table of NaNs")
+def _c_sdmetrics_ml_efficacy_insufficient_holdout():
+    train_real, holdout_real, roles = _small_many_class_fixture()
+    synth = {"TVAE": train_real.copy()}
+    try:
+        out = sdmetrics_ml_efficacy(train_real, holdout_real, synth, roles, "CODE",
+                                    "classification", table_name="OCCUPATION")
+        raise AssertionError(f"expected InsufficientHoldoutError, got a frame instead:\n{out}")
+    except InsufficientHoldoutError as e:
+        _assert("too few to score reliably" in str(e), f"unexpected message: {e}")
+
+
+@check("sdmetrics_ml_efficacy: still scores normally when the holdout shares enough classes")
+def _c_sdmetrics_ml_efficacy_normal_case_unaffected():
+    rng = np.random.default_rng(0)
+    n = 2000
+    df = pd.DataFrame({"CODE": rng.choice(["A", "B"], n), "OTHER_CD": rng.choice(["X", "Y", "Z"], n)})
+    train_real, holdout_real = df.iloc[:1600].reset_index(drop=True), df.iloc[1600:].reset_index(drop=True)
+    roles = ColumnRoles(categorical=["CODE", "OTHER_CD"])
+    out = sdmetrics_ml_efficacy(train_real, holdout_real, {"TVAE": train_real.copy()},
+                                roles, "CODE", "classification", table_name="BIGTABLE")
+    _assert(not out.empty and out["score"].notna().all(),
+            f"expected a normally-scored, non-empty frame, got:\n{out}")
 
 
 # ---------------------------------------------------------------------------

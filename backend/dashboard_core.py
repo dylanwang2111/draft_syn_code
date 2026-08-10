@@ -1305,8 +1305,18 @@ def _run_job(cfg: dict, st: dict):
                 note_eff(t, sig_note, target, task)
             say(f"ML efficacy · {t} · target={target} ({task})")
             synth_dict = {s: tabs[t] for s, tabs in suite.items() if t in tabs}
-            eff_frames.append(se.sdmetrics_ml_efficacy(
-                train[t], hold[t], synth_dict, roles[t], target, task, table_name=t))
+            try:
+                eff_frames.append(se.sdmetrics_ml_efficacy(
+                    train[t], hold[t], synth_dict, roles[t], target, task, table_name=t))
+            except se.InsufficientHoldoutError as e:
+                # the real baseline's own train/holdout split can't be scored
+                # reliably (small table, many-class target) -- not a per-metric
+                # hiccup, a signal the whole target isn't viable for this table;
+                # skip it the same way auto_select_target's own guards do,
+                # instead of publishing a table of NaN rows that reads as a
+                # cascade of failures
+                skip_eff(t, str(e), target, task)
+                continue
             done_e += 1; set_pct(80 + 12 * done_e / max(1, n_tab))
         efficacy = pd.concat(eff_frames, ignore_index=True) if eff_frames else pd.DataFrame()
 
