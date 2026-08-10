@@ -437,16 +437,50 @@ def _c_refill_conditions_on_matching_group():
             "every synthetic row with CODE_CD=A should get A's real label once conditioning is on")
 
 
-@check("_refill: privacy floor falls back to the whole table when the matching real group is too small")
+def _noisy_group_fixture() -> pd.DataFrame:
+    """REGION_CD only PARTIALLY narrows SEGMENT_DESC -- an individual-level
+    attribute that correlates with the group but isn't determined by it,
+    unlike _refill_fixture's CODE_CD/LABEL_DESC (a true 1:1 lookup label).
+    Association clears min_association (0.6 >= 0.5) but sits at 75% of its
+    own ceiling (0.8), well under the near-total bar -- so region Z's small
+    group (3 rows, itself not even uniform) must still get the individual-
+    level privacy floor, not the lookup-table bypass.
+    """
+    codes, segs = [], []
+    for code, pattern in {
+        "V": ["B1"] * 8 + ["B2"] * 4, "W": ["B2"] * 8 + ["B3"] * 4,
+        "X": ["B3"] * 8 + ["B4"] * 4, "Y": ["B4"] * 8 + ["B5"] * 4,
+    }.items():
+        codes += [code] * len(pattern)
+        segs += pattern
+    codes += ["Z"] * 3
+    segs += ["B1", "B5", "B1"]
+    return pd.DataFrame({"REGION_CD": codes, "SEGMENT_DESC": segs})
+
+
+@check("_refill: privacy floor still blocks a small group when the dependency isn't near-total")
 def _c_refill_privacy_floor_blocks_small_group():
-    real = _refill_fixture()  # code D has only 3 real rows
+    real = _noisy_group_fixture()  # region Z has only 3 real rows, itself non-uniform
+    synth = pd.DataFrame({"REGION_CD": ["Z"] * 30})
+    out = _refill(synth, real, ["SEGMENT_DESC"], ["REGION_CD", "SEGMENT_DESC"],
+                  seed=0, group_candidates=["REGION_CD"], min_group_size=10)
+    distinct = set(out["SEGMENT_DESC"])
+    _assert(len(distinct) > 2,
+            f"Z's real group (3 rows) is below min_group_size=10 and the REGION_CD->SEGMENT_DESC "
+            f"dependency isn't near-total, expected a whole-table fallback mix (5 possible segments), "
+            f"got only {distinct} -- the privacy floor isn't blocking a too-small, non-deterministic group")
+
+
+@check("_refill: privacy floor is bypassed for a near-total (lookup-table) dependency on a small group")
+def _c_refill_deterministic_bypasses_floor():
+    real = _refill_fixture()  # code D has only 3 real rows, but CODE_CD->LABEL_DESC is a true 1:1 lookup
     synth = pd.DataFrame({"CODE_CD": ["D"] * 30})
     out = _refill(synth, real, ["LABEL_DESC", "AUDIT_USER"], ["CODE_CD", "LABEL_DESC", "AUDIT_USER"],
                   seed=0, group_candidates=["CODE_CD"], min_group_size=10)
-    distinct = set(out["LABEL_DESC"])
-    _assert(len(distinct) > 1,
-            f"D's real group (3 rows) is below min_group_size=10, expected a whole-table fallback mix, "
-            f"got only {distinct} -- the privacy floor isn't blocking a too-small group")
+    _assert((out["LABEL_DESC"] == "Name-D").all(),
+            "D's CODE_CD->LABEL_DESC dependency is a near-total 1:1 lookup (public reference data, not "
+            "individual-level information) -- conditioning should bypass the min_group_size=10 floor "
+            "despite D's real group having only 3 rows, same as OCCUPATION_TP_CD->OCCUPATION_NAME in prod")
 
 
 @check("_refill: conditioning kicks in once min_group_size is lowered to match the real group size")

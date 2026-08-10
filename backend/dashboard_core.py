@@ -448,6 +448,18 @@ def _refill(synth: pd.DataFrame, real: pd.DataFrame, fill_cols, order, seed=0,
     privacy floor above). Fill columns with no qualifying modeled column fall
     back to the unconditional whole-row sample, same as before.
 
+    A near-TOTAL association (every group has essentially one fill value --
+    a lookup table's code->label, e.g. OCCUPATION_TP_CD->OCCUPATION_NAME) is
+    public reference data, not individual-level information: the floor exists
+    to stop a rare GROUP OF PEOPLE sharing a code from being traced back to
+    each other via a distinctive shared label, which doesn't apply when the
+    label is the same no matter who ends up in the group. That case bypasses
+    ``min_group_size`` down to ``_DETERMINISTIC_FLOOR`` instead (a small deposit
+    of real corroborating rows, not the individual-level floor) -- verified
+    against real OCCUPATION.csv (21 codes, 4-8 real rows each, well under the
+    default floor of 10): ContingencySimilarity for TP_CD x NAME/DESC rose
+    from ~0.06 (always-unconditional, every code below the floor) to ~0.87.
+
     A fill column that's also flagged PII gets overwritten again right after
     this by apply_pii_plan, so in practice this only changes the output for
     the non-PII ones -- the PII ones were never going to keep their real
@@ -473,9 +485,37 @@ def _refill(synth: pd.DataFrame, real: pd.DataFrame, fill_cols, order, seed=0,
         if gcol is None:
             idx = real.sample(n, replace=True, random_state=seed + i).index.to_numpy()
         else:
-            idx = _sample_conditional_row_indices(synth[gcol], real, gcol, min_group_size, seed + i)
+            floor = min_group_size
+            if _is_deterministic_dependency(real, gcol, group_cols):
+                floor = min(min_group_size, _DETERMINISTIC_FLOOR)
+            idx = _sample_conditional_row_indices(synth[gcol], real, gcol, floor, seed + i)
         out[group_cols] = real.loc[idx, group_cols].to_numpy()
     return out[[c for c in order if c in out.columns]]
+
+
+#: floor used instead of the individual-level min_group_size once a fill
+#: column's dependency on its group column is confirmed near-total (below) --
+#: still requires a couple of real corroborating rows, not zero, as a guard
+#: against the association measurement itself being noise on a tiny table.
+_DETERMINISTIC_FLOOR = 2
+#: how close to the theoretical ceiling (1 - 1/n_groups) group_diversity_reduction
+#: must land to call a dependency "near-total" rather than merely strong.
+_DETERMINISTIC_TOLERANCE = 0.9
+
+
+def _is_deterministic_dependency(real: pd.DataFrame, gcol: str, group_cols: list) -> bool:
+    """True if EVERY fill column sharing ``gcol`` is (near-)fully determined
+    by it in the real data -- i.e. gcol is a lookup key and these are its
+    label columns, not individual-level attributes that merely correlate with
+    it. Conservative: the worst (lowest) association among the clustered
+    columns decides, so a cluster is only treated as deterministic if none of
+    its columns fall short."""
+    card = real[gcol].nunique(dropna=True)
+    if card <= 1:
+        return False
+    ceiling = 1.0 - 1.0 / card
+    return all(se.group_diversity_reduction(real, gcol, c) >= _DETERMINISTIC_TOLERANCE * ceiling
+               for c in group_cols)
 
 
 def _referential_integrity(rels, real_tables, suite):
