@@ -22,26 +22,69 @@ import numpy as np
 import pandas as pd
 
 
+def _normalize_key_values(values) -> np.ndarray:
+    """Canonical string form for matching key values across a possible real/
+    synthetic dtype mismatch -- e.g. a *_TP_CD column read from CSV as
+    float64 (348820.0) whose synthesizer output comes back as a plain int
+    (348820): naively casting both to str gives "348820.0" vs "348820",
+    which never match. Numeric-looking values are routed through float
+    first so both sides land on the same string; anything that isn't
+    numeric (a real string code) is compared as plain text, unchanged.
+    """
+    s = pd.Series(values)
+    num = pd.to_numeric(s, errors="coerce")
+    out = s.astype(str).to_numpy(dtype=object)
+    is_num = num.notna().to_numpy()
+    if is_num.any():
+        out[is_num] = num[num.notna()].astype(float).astype(str).to_numpy()
+    return out
+
+
 def _real_parent_counts(real_parent: pd.DataFrame, real_child: pd.DataFrame,
-                         pk: str, fk: str) -> np.ndarray:
-    """Real children-per-parent counts, including parents with zero children
-    (they matter too: dropping them would overstate how many parents get a
-    child). One count per real parent row."""
+                         pk: str, fk: str) -> pd.Series:
+    """Real children-per-parent counts, KEYED BY THE PARENT KEY VALUE itself
+    (not row position) -- including parents with zero children (they matter
+    too: dropping them would overstate how many parents get a child).
+
+    Keyed, not a plain array, so link_table can match a synthetic parent key
+    that IS a real value (the normal case for a properly-typed categorical
+    key column) to ITS OWN real popularity directly, instead of a randomly
+    bootstrapped count from an unrelated key -- see link_table's docstring
+    for why that distinction matters.
+    """
     counts = real_child[fk].value_counts()
-    return real_parent[pk].map(counts).fillna(0).to_numpy()
+    keys = real_parent[pk]
+    vals = keys.map(counts).fillna(0.0).to_numpy(dtype=float)
+    s = pd.Series(vals, index=keys.to_numpy())
+    return s[~s.index.duplicated(keep="first")]   # defensive: pk should already be unique
 
 
 def link_table(child_df: pd.DataFrame, fk: str, parent_keys: Sequence,
-                real_counts: np.ndarray, seed: int = 0) -> pd.DataFrame:
+                real_counts, seed: int = 0) -> pd.DataFrame:
     """Reassign ``child_df[fk]`` to values drawn from ``parent_keys``.
 
     Every resulting value is a real synthetic parent key (100% referential
     integrity by construction). The number of rows assigned to each parent
-    is resampled from ``real_counts`` (the real per-parent child-count
-    distribution) and rescaled so the total matches ``len(child_df)`` exactly
-    — the row count a single-table model already generated for this table
-    (which reflects the run's `scale`) is left untouched, only the FK values
-    are.
+    is matched to ``real_counts`` (see :func:`_real_parent_counts`) and
+    rescaled so the total matches ``len(child_df)`` exactly — the row count
+    a single-table model already generated for this table (which reflects
+    the run's `scale`) is left untouched, only the FK values are.
+
+    A synthetic parent key is matched to ITS OWN real count whenever it IS a
+    real key value (matched via :func:`_normalize_key_values`, robust to a
+    real/synthetic dtype mismatch like ``348820.0`` vs ``348820`` from
+    upstream float-vs-int coercion) — not a randomly bootstrapped count from
+    an unrelated key. Matching shape-only (the previous behaviour: bootstrap
+    every count independently of which key it lands on) preserves the
+    AGGREGATE distribution of counts but scrambles WHICH specific value ends
+    up common vs rare, destroying that column's own marginal-frequency
+    fidelity (Column Shapes) even though the aggregate CardinalityShapeSimilarity
+    metric looks fine — verified on a 30-code fixture where the 3 truly most
+    common real codes came back as three unrelated, randomly "popular" codes
+    under the old bootstrap (TVComplement 0.13); matching by value fixes it.
+    A parent key with no real match at all (out-of-vocabulary — not the
+    normal case for a properly-typed categorical column) falls back to a
+    bootstrap draw from the real pool, same as the old behaviour throughout.
     """
     n = len(child_df)
     parent_keys = np.asarray(list(parent_keys))
@@ -49,19 +92,25 @@ def link_table(child_df: pd.DataFrame, fk: str, parent_keys: Sequence,
     if n == 0 or len(parent_keys) == 0:
         return out
     rng = np.random.default_rng(seed)
-    real_counts = np.asarray(real_counts, dtype=float)
-    real_counts = real_counts[np.isfinite(real_counts)]
-    if len(real_counts) == 0 or real_counts.sum() <= 0:
-        real_counts = np.array([1.0])   # degenerate fallback: one child each
+    if not isinstance(real_counts, pd.Series):
+        real_counts = pd.Series(np.asarray(real_counts, dtype=float))
+    pool = real_counts.to_numpy(dtype=float)
+    pool = pool[np.isfinite(pool)]
+    if len(pool) == 0 or pool.sum() <= 0:
+        pool = np.array([1.0])   # degenerate fallback: one child each
 
-    # draw a raw count per synthetic parent from the real shape, then rescale
-    # so the total lands exactly on the child rows already generated
-    draws = rng.choice(real_counts, size=len(parent_keys))
-    total = draws.sum()
+    lookup = real_counts.set_axis(_normalize_key_values(real_counts.index))
+    lookup = lookup[~lookup.index.duplicated(keep="first")]
+    weights = lookup.reindex(_normalize_key_values(parent_keys)).to_numpy(dtype=float)
+    missing = ~np.isfinite(weights)
+    if missing.any():
+        weights[missing] = rng.choice(pool, size=int(missing.sum()))
+
+    total = weights.sum()
     if total <= 0:
-        draws = np.ones(len(parent_keys))
-        total = draws.sum()
-    counts = np.floor(draws * (n / total)).astype(int)
+        weights = np.ones(len(parent_keys))
+        total = weights.sum()
+    counts = np.floor(weights * (n / total)).astype(int)
     diff = n - counts.sum()
     if diff != 0:
         idx = rng.integers(0, len(counts), size=abs(diff))
