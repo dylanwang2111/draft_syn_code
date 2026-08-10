@@ -38,9 +38,21 @@ ID_NAME_TOKENS = (
 #   *_IND                            -> Y/N indicator flags   => categorical
 #   *_ID, *_TX_ID                    -> identifiers           => skip
 #   *_DT, *_DATE                     -> dates (often Excel-mangled) => skip
-#   *_NAME, *_DESC, *_USER           -> names / free text / audit  => skip
+#   *_USER                           -> audit user             => skip
+#   *_NAME, *_DESC                   -> lookup label OR free text -> see below
 SUFFIX_CATEGORICAL = ("_tp_cd", "_tp_code", "_cd", "_code", "_ind")
-SUFFIX_SKIP = ("_id", "_dt", "_date", "_name", "_desc", "_user")
+SUFFIX_SKIP = ("_id", "_dt", "_date", "_user")
+# *_NAME / *_DESC is ambiguous by suffix alone: a lookup table's label column
+# (OCCUPATION_NAME, one value per OCCUPATION_TP_CD) behaves like a categorical
+# code, not free text -- refilling it from real rows instead of letting the
+# synthesizer model it directly is why it shows up weak in Column Pair Trends
+# against its own type code (the refill's post-hoc conditioning has a privacy
+# floor -- min_group_size -- that a rare code can't clear). Cardinality (same
+# guard SUFFIX_CATEGORICAL already uses) plus a content check (not just the
+# column name -- reuses the same real-name-corpus check synth_eval.pii uses
+# for OCCUPATION_NAME) decide categorical vs. skip below, instead of trusting
+# the suffix alone.
+SUFFIX_LABEL = ("_name", "_desc")
 
 
 def _looks_like_id_or_name(col: str) -> bool:
@@ -51,6 +63,30 @@ def _looks_like_id_or_name(col: str) -> bool:
     if any(p in ID_NAME_TOKENS for p in parts):
         return True
     return any(c.endswith(tok) or c.startswith(tok) for tok in ("id", "guid", "uuid"))
+
+
+def _is_person_name_content(series: pd.Series, sample_n: int = 60) -> bool:
+    """Content check for a *_NAME/*_DESC column: do its actual VALUES look
+    like real person names, as opposed to a lookup label (e.g. "Registered
+    Nurse") that only happens to trip the NAME suffix? Same corpus check
+    synth_eval.pii uses to decide PII-faking, reused here so the two
+    decisions (model directly vs. refill+fake) never disagree about what a
+    column actually contains."""
+    from .pii import _confirms_person_name
+    s = series.head(2000)
+    n_notna = int(s.notna().sum())
+    if not n_notna:
+        # No values anywhere to check -- e.g. an all-null column pandas
+        # infers as float64, which would otherwise short-circuit the dtype
+        # check below into a false "definitely not a name". No evidence of
+        # safety is not evidence of safety: stay conservative and treat it
+        # as if it could be one, same as _confirms_person_name's own
+        # too-little-data fallback for a merely small (not empty) sample.
+        return True
+    if series.dtype != object:
+        return False
+    sample = s.sample(min(sample_n, n_notna), random_state=0)
+    return _confirms_person_name(sample)
 
 
 def _metadata_sdtypes(metadata, table_name: str) -> Dict[str, str]:
@@ -98,9 +134,10 @@ def classify_columns(
     """Split a table's columns into numeric / categorical / skipped.
 
     Priority order for each column:
-        1. Schema suffix conventions (``*_ID``/``*_DT``/``*_NAME`` -> skip,
-           ``*_TP_CD``/``*_CODE``/``*_IND`` -> categorical, with a
-           cardinality guard).
+        1. Schema suffix conventions (``*_ID``/``*_DT``/``*_USER`` -> skip,
+           ``*_TP_CD``/``*_CODE``/``*_IND`` -> categorical, ``*_NAME``/
+           ``*_DESC`` -> categorical if low-cardinality and not person-name
+           content, else skip; all three cardinality-gated).
         2. SDV metadata sdtype ('id' -> skip, 'numerical' -> numeric,
            'categorical'/'boolean' -> categorical, 'datetime' -> skip).
         3. Name heuristic (looks like an id / name -> skip).
@@ -121,6 +158,13 @@ def classify_columns(
                 roles.skipped.append(col)
             else:
                 roles.categorical.append(col)
+            continue
+        if cl.endswith(SUFFIX_LABEL):
+            if (df[col].nunique(dropna=True) <= max_categorical_card
+                    and not _is_person_name_content(df[col])):
+                roles.categorical.append(col)
+            else:
+                roles.skipped.append(col)
             continue
 
         sdt = sdtypes.get(col)
