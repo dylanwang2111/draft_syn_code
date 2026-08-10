@@ -266,8 +266,16 @@ def generate_synthetic_suite(
                     if verbose:
                         print(f"[{name}] fitting {tname} ({len(df)} rows) ...")
                     if on_progress:
-                        epoch_note = f", epochs={epochs}" if name.upper() in \
-                            {"CTGAN", "TVAE", "COPULAGAN", "TABSYN"} else ""
+                        # TabSyn splits the configured budget evenly across its
+                        # two training stages (VAE, then diffusion -- see
+                        # TabSynSynthesizer.fit) -- say so up front, otherwise
+                        # the per-epoch log line ("TabSyn·VAE 80/175" for
+                        # epochs=350) reads as a bug instead of by design.
+                        half = max(1, epochs // 2)
+                        epoch_note = (f", epochs={epochs} ({half} VAE + {half} diffusion)"
+                                      if name.upper() == "TABSYN"
+                                      else f", epochs={epochs}" if name.upper() in
+                                      {"CTGAN", "TVAE", "COPULAGAN"} else "")
                         on_progress(f"Fitting {name} on {tname} ({len(df)} rows{epoch_note}) ...")
                     _seed_global(random_state)
                     single_meta = _single_table_metadata(metadata, tname)
