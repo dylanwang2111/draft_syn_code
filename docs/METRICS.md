@@ -281,25 +281,53 @@ attached to every synth's row so each can be read against it; shown as a `real
 | **FK validity** | share of synthetic child rows whose FK hits a parent key (forward coverage) | **pass/fail gate, not scored.** A *constraint*, not a similarity — averaging it in would let a model buy its way out of orphan rows with good marginals. For a derived entity hub, single-table synths (GaussianCopula/CTGAN/TVAE/CopulaGAN/TabSyn) get their hub relationships relinked post-hoc the same way plain declared relationships are (`synth_eval.link_relationships`, against the union of keys their own per-table models emitted, resampled to the real per-parent shape), so it is genuinely ~1.0 there. HMA instead models each hub jointly with its children and is **not** relinked — for a table that's a child of more than one simultaneous hub (a "diamond," e.g. a PERSON table under both a contact-id hub and an occupation-code hub), SDV's HMASynthesizer only fully guarantees one FK per child table, so HMA's own coverage on the others can measurably land below 1.0. Both are still reported as `n/a` in the aggregate scorecard rather than a free 1.0/misleadingly-scored number — a known gap: this currently hides HMA's real shortfall on multi-parent children along with the single-table case's genuine 1.0. The **per-relationship coverage table** always shows the real measured percentage regardless |
 | **participation** | 1 − \|synth parent coverage − real parent coverage\|, where parent coverage = share of parents with ≥ 1 child row | **diagnostic, not scored.** Parent coverage is `P(count > 0)` — a single point on the CDF of the very distribution cardinality shape already measures in full, so scoring both would double-count. Still worth reading: it should **match real**, and is *not* supposed to be 1 |
 
-**Relinking (`synth_eval.link.link_table`) matches by VALUE, not just by shape.**
-The number of children assigned to each synthetic parent key is resampled from
-the real per-parent count distribution — but a synthetic parent key that IS a
-real key value (the normal case for a properly-typed categorical key column)
-gets matched to **its own** real count directly, not a randomly bootstrapped
-one. This matters because a real *_TP_CD column's own popularity is usually
-lopsided (a few common codes, e.g. common occupations, absorbing most rows,
-most codes rare) — resampling counts independently of which key they land on
-reproduces the right *aggregate* shape (good cardinality-shape score) while
-scrambling *which specific value* ends up common vs. rare, which wrecks that
-column's own marginal-frequency fidelity (Column Shapes) even when referential
-integrity and cardinality shape both look fine. Matching is done on a
+**Relinking (`synth_eval.link.link_table`) relabels the model's own row
+groupings instead of reshuffling rows.** Two problems, one mechanism:
+
+1. *Which specific value is popular.* A real `*_TP_CD` column's popularity is
+   usually lopsided (a few common codes, e.g. common occupations, absorbing
+   most rows, most codes rare). Resampling a count independently of which
+   parent key it lands on gets the right *aggregate* shape (a good
+   cardinality-shape score) while scrambling *which specific value* ends up
+   common vs. rare, wrecking that column's own marginal-frequency fidelity
+   (Column Shapes) even when referential integrity and cardinality shape
+   both look fine.
+2. *Row-level correlation with the rest of the table.* Even fixing (1) with
+   a pure popularity-weighted reshuffle still assigns each row's new code
+   independently of everything else about that row, destroying any
+   relationship the model's own joint fit learned between this column and
+   the rest of the row (e.g. which occupation codes skew toward which age
+   group) — a relationship the model was at least trying to capture, however
+   imperfectly.
+
+The fix for both is the same two-step move, not a lookup table: **rank-swap**
+ranks the model's own pre-relink values by how often *it* generated them, and
+relabels them, rank for rank, to the real parent keys ranked by real
+popularity — a pure relabel, so which rows share a value never changes,
+whatever correlation the model learned survives under the new, correctly-
+popular name. **Rebalance** then moves the fewest rows needed from
+over-represented keys to under-represented ones so the final counts still hit
+their real-weighted targets (rank-swap alone only inherits the model's own
+counts per rank, exactly what these models tend to get wrong on extreme
+skew) — every row *not* selected for a move keeps the label rank-swap gave
+it. Matching (both real-count lookup and rank ordering) is done on a
 normalized string form of the key (`synth_eval.link._normalize_key_values`),
 robust to a real/synthetic dtype mismatch like a `*_TP_CD` column read from
-CSV as `348820.0` vs. a synthesizer emitting the plain int `348820` — a naive
-match would treat every key as unseen and silently fall back to the old
-scrambling behavior for 100% of keys. A synthetic key with no real match at
-all (genuinely out-of-vocabulary) still falls back to a bootstrap draw from
-the real pool.
+CSV as `348820.0` vs. a synthesizer emitting the plain int `348820`. A
+synthetic key with no real match at all (genuinely out-of-vocabulary), and
+any row the model produced no usable value for, falls back to a popularity-
+weighted random draw — the old pure-reshuffle behavior, so a model that
+gives no usable row-level signal degrades gracefully to that instead of the
+hybrid doing nothing.
+
+**Known tradeoff**: rank-swap only preserves correlation on the FEWER rows
+each key's rebalance had to touch — a key the model badly under- or
+over-generated relative to real (needing lots of rows moved in or out) will
+show diluted correlation for the moved rows specifically, since the rebalance
+step has no signal for which SPECIFIC rows are "more suitable" to reassign.
+Still strictly better than a full reshuffle (which preserves 0% of row-level
+correlation everywhere), and the dilution only ever affects the keys the
+model already got the scale wrong on.
 
 The same numbers are surfaced per report tab in the dashboard (`results["summary"]`,
 built by `compute_summary`), so the Fidelity / Utility / Privacy tabs each show the

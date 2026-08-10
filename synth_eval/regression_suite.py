@@ -324,19 +324,24 @@ def _skewed_code_fixture(n_codes: int = 30, seed: int = 0):
 
 @check("link_table: keeps WHICH code is popular, not just the shape of the popularity distribution")
 def _c_link_table_preserves_value_popularity():
-    # Before this fix, link_table bootstrap-sampled a count independently of
-    # which synthetic parent key it landed on: the AGGREGATE distribution of
-    # counts matched real (good CardinalityShapeSimilarity) but WHICH code
-    # got which count was scrambled, wrecking that column's own marginal
-    # frequency (Column Shapes) even though referential integrity looked
-    # fine. Real-world trigger: an occupation code, PERSON.OCCUPATION_TP_CD,
-    # showing solid red on Column Shapes for every synthesizer even after
-    # the sdtype fix, because relinking (not the model) scrambled it.
+    # Before the value-matching fix, link_table bootstrap-sampled a count
+    # independently of which synthetic parent key it landed on: the
+    # AGGREGATE distribution of counts matched real (good
+    # CardinalityShapeSimilarity) but WHICH code got which count was
+    # scrambled, wrecking that column's own marginal frequency (Column
+    # Shapes) even though referential integrity looked fine. Real-world
+    # trigger: an occupation code, PERSON.OCCUPATION_TP_CD, showing solid
+    # red on Column Shapes for every synthesizer even after the sdtype fix,
+    # because relinking (not the model) scrambled it.
     real_parent, real_child, codes = _skewed_code_fixture()
     real_counts = _real_parent_counts(real_parent, real_child, "CD", "CD")
-    # the synthesizer got the vocabulary right (same real codes) but has no
-    # reason to know their relative popularity -- link_table's job
-    linked = link_table(pd.DataFrame(index=range(len(real_child))), "CD", codes, real_counts, seed=1)
+    # the synthesizer's OWN pre-relink guess: it got the vocabulary right
+    # (same real codes) but has no reason to know their relative popularity
+    # -- uniform-random, the worst case for the hybrid rank-swap+rebalance
+    # to still get value-popularity right regardless of what it started from
+    rng = np.random.default_rng(2)
+    child_df = pd.DataFrame({"CD": rng.choice(codes, size=len(real_child))})
+    linked = link_table(child_df, "CD", codes, real_counts, seed=1)
     real_top3 = set(real_child["CD"].value_counts().head(3).index)
     linked_top3 = set(linked["CD"].value_counts().head(3).index)
     _assert(real_top3 == linked_top3,
@@ -356,12 +361,52 @@ def _c_link_table_dtype_mismatch_still_matches():
     real_child["CD"] = real_child["CD"].map(lambda c: 340000.0 + int(c[1:]))
     real_counts = _real_parent_counts(real_parent, real_child, "CD", "CD")
     synth_keys = [int(v) for v in real_parent["CD"]]   # dtype mismatch: int, not float64
-    linked = link_table(pd.DataFrame(index=range(len(real_child))), "CD", synth_keys, real_counts, seed=1)
+    rng = np.random.default_rng(2)
+    child_df = pd.DataFrame({"CD": rng.choice(synth_keys, size=len(real_child))})
+    linked = link_table(child_df, "CD", synth_keys, real_counts, seed=1)
     real_top3 = set(real_child["CD"].value_counts().head(3).index.astype(int))
     linked_top3 = set(linked["CD"].value_counts().head(3).index)
     _assert(real_top3 == linked_top3,
             f"expected the dtype-normalized match to still find the 3 real most-common codes "
             f"{real_top3}, got {linked_top3}")
+
+
+@check("link_table: rank-swap preserves a row's OWN correlation with other columns, not just aggregate shape")
+def _c_link_table_preserves_row_level_correlation():
+    # A pure popularity-weighted reshuffle (the pre-hybrid approach) assigns
+    # each row's new code independently of everything else about that row,
+    # destroying any relationship the model's own joint fit learned between
+    # this column and the REST of the row (e.g. occupation code vs gender).
+    # The hybrid rank-swap relabels the model's OWN groupings instead of
+    # reshuffling rows, so that relationship should survive, at least for
+    # codes the model's own generation was reasonably close to real on.
+    codes = [f"C{i}" for i in range(5)]
+    pop = np.array([500, 400, 300, 200, 150], dtype=float)
+    real_child = pd.DataFrame({"CD": np.repeat(codes, pop.astype(int))})
+    real_parent = pd.DataFrame({"CD": codes})
+    real_counts = _real_parent_counts(real_parent, real_child, "CD", "CD")
+
+    # model's own pre-relink generation: SAME counts as real (so rebalancing
+    # barely has to move anything), each code strongly paired with GENDER
+    rng = np.random.default_rng(3)
+    model_codes, gender = [], []
+    for i, c in enumerate(codes):
+        cnt = int(pop[i])
+        fem_p = 0.9 if i % 2 == 0 else 0.1
+        model_codes += [c] * cnt
+        gender += list(rng.choice(["F", "M"], size=cnt, p=[fem_p, 1 - fem_p]))
+    child_df = pd.DataFrame({"CD": model_codes, "GENDER": gender})
+
+    linked = link_table(child_df, "CD", codes, real_counts, seed=1)
+    linked["GENDER"] = child_df["GENDER"].to_numpy()   # same row order/index throughout
+    fem_share = linked.groupby("CD")["GENDER"].apply(lambda s: (s == "F").mean())
+    for i, c in enumerate(codes):
+        expected_high = i % 2 == 0
+        got_high = fem_share[c] >= 0.5
+        _assert(got_high == expected_high,
+                f"{c}: expected {'mostly F' if expected_high else 'mostly M'} to survive relinking "
+                f"(model's own count matched real here, so rebalancing barely touches it), "
+                f"got F share {fem_share[c]:.2f}")
 
 
 @check("_normalize_key_values: 348820.0 and 348820 normalize to the same value")

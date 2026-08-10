@@ -3,16 +3,23 @@
 
 HMA fits parent and child tables jointly, so referential integrity holds by
 construction. A single-table synthesizer (GaussianCopula, CTGAN, TVAE,
-CopulaGAN) has no idea the other tables exist: it fits each one
+CopulaGAN, TabSyn) has no idea the other tables exist: it fits each one
 independently, so a child table's foreign-key column just comes out as
 whatever values that column's own model reproduced, almost never a real
 parent key.
 
-This module fixes that up after the fact: it reassigns each child table's
-foreign-key column to values drawn from the *synthetic* parent's primary key,
-with the number of children per parent resampled from the real per-parent
-count distribution (so the shape, not just the linkage, resembles real data).
-It doesn't retrain anything and doesn't touch any other column.
+This module fixes that up after the fact, reassigning each child table's
+foreign-key column to values drawn from the *synthetic* parent's primary
+key -- not by discarding the model's own output and rebuilding the column
+from scratch (that gets referential integrity and the real per-parent count
+shape right, but at the cost of every row-level relationship the model's own
+joint fit learned between this column and the rest of that row, e.g. which
+occupation codes skew toward which age group), but by RELABELING it: the
+model's own per-row groupings are kept (see :func:`link_table`'s "rank-swap"
+step), and only nudged toward the real per-parent counts where the model's
+own counts were off (the "rebalance" step), moving the fewest rows needed
+rather than reshuffling everything. It doesn't retrain anything and doesn't
+touch any other column.
 """
 from __future__ import annotations
 
@@ -64,27 +71,36 @@ def link_table(child_df: pd.DataFrame, fk: str, parent_keys: Sequence,
     """Reassign ``child_df[fk]`` to values drawn from ``parent_keys``.
 
     Every resulting value is a real synthetic parent key (100% referential
-    integrity by construction). The number of rows assigned to each parent
-    is matched to ``real_counts`` (see :func:`_real_parent_counts`) and
-    rescaled so the total matches ``len(child_df)`` exactly — the row count
-    a single-table model already generated for this table (which reflects
-    the run's `scale`) is left untouched, only the FK values are.
+    integrity by construction), and the number of rows per parent is matched
+    to ``real_counts`` (see :func:`_real_parent_counts`), rescaled so the
+    total matches ``len(child_df)`` exactly — the row count a single-table
+    model already generated for this table (reflecting the run's `scale`)
+    is left untouched, only the FK values are.
 
-    A synthetic parent key is matched to ITS OWN real count whenever it IS a
-    real key value (matched via :func:`_normalize_key_values`, robust to a
-    real/synthetic dtype mismatch like ``348820.0`` vs ``348820`` from
-    upstream float-vs-int coercion) — not a randomly bootstrapped count from
-    an unrelated key. Matching shape-only (the previous behaviour: bootstrap
-    every count independently of which key it lands on) preserves the
-    AGGREGATE distribution of counts but scrambles WHICH specific value ends
-    up common vs rare, destroying that column's own marginal-frequency
-    fidelity (Column Shapes) even though the aggregate CardinalityShapeSimilarity
-    metric looks fine — verified on a 30-code fixture where the 3 truly most
-    common real codes came back as three unrelated, randomly "popular" codes
-    under the old bootstrap (TVComplement 0.13); matching by value fixes it.
-    A parent key with no real match at all (out-of-vocabulary — not the
-    normal case for a properly-typed categorical column) falls back to a
-    bootstrap draw from the real pool, same as the old behaviour throughout.
+    Unlike a pure popularity-weighted reshuffle, this REUSES the model's own
+    pre-relink values in ``child_df[fk]`` as row-level structure, instead of
+    discarding them outright:
+
+      1. **Rank-swap**: the model's own DISTINCT generated values are ranked
+         by how often IT produced them, and relabeled, rank for rank, to the
+         real parent keys ranked by real popularity (its most-common value
+         becomes the real most-popular key, etc.). This is a pure relabel —
+         which ROWS share a value never changes — so any relationship the
+         model's own joint fit learned between this column and the REST of
+         that row (age, region, whatever else is in the table) survives
+         under the new, correctly-popular label instead of being destroyed.
+      2. **Rebalance**: rank-swap alone only inherits the model's OWN counts
+         per rank, which is exactly what these models tend to get wrong
+         (flattening extreme real-world skew) -- so a second pass moves the
+         FEWEST rows needed to bring each key's count to its real-weighted
+         target, pulled from surplus keys into needy ones. Every row NOT
+         selected for a move keeps the label rank-swap gave it.
+
+    A key with no real match at all (out-of-vocabulary) and rows the model
+    never produced anything usable for both fall back to a popularity-
+    weighted random draw, the same mechanism the old pure-reshuffle
+    approach used throughout -- so a model that gives no usable row-level
+    signal degrades gracefully to that instead of the hybrid doing nothing.
     """
     n = len(child_df)
     parent_keys = np.asarray(list(parent_keys))
@@ -110,23 +126,64 @@ def link_table(child_df: pd.DataFrame, fk: str, parent_keys: Sequence,
     if total <= 0:
         weights = np.ones(len(parent_keys))
         total = weights.sum()
-    counts = np.floor(weights * (n / total)).astype(int)
-    diff = n - counts.sum()
+    p = weights / weights.sum()
+    target = np.floor(weights * (n / total)).astype(int)
+    diff = n - target.sum()
     if diff != 0:
-        idx = rng.integers(0, len(counts), size=abs(diff))
+        # weighted, not uniform -- an extra/short row should land on a
+        # popular key far more often than a key with near-zero real weight
+        idx = rng.choice(len(target), size=abs(diff), p=p)
         if diff > 0:
-            np.add.at(counts, idx, 1)
+            np.add.at(target, idx, 1)
         else:
-            np.subtract.at(counts, idx, 1)
-            counts = np.clip(counts, 0, None)
+            np.subtract.at(target, idx, 1)
+            target = np.clip(target, 0, None)
 
-    fks = np.repeat(parent_keys, counts)
-    if len(fks) < n:                                    # rounding can leave a few short
-        fks = np.concatenate([fks, rng.choice(parent_keys, size=n - len(fks))])
-    fks = fks[:n]
-    rng.shuffle(fks)
+    # 1. rank-swap: relabel the model's own values by frequency rank,
+    # keeping every row's original position (a pure `.map`, never a reorder)
+    order = np.argsort(-target, kind="stable")
+    ranked_keys, ranked_target = parent_keys[order], target[order]
+    model_vals = child_df[fk]
+    model_ranked = model_vals.value_counts().index.to_numpy()  # dropna=True by default
+    k = min(len(model_ranked), len(ranked_keys))
+    label_map = {model_ranked[i]: ranked_keys[i] for i in range(k)}
+    # a model that produced MORE distinct values than there are real parent
+    # keys: the overflow collapses onto the least-popular mapped key rather
+    # than being silently dropped
+    for i in range(k, len(model_ranked)):
+        label_map[model_ranked[i]] = ranked_keys[k - 1] if k else ranked_keys[0]
+    fks = model_vals.map(label_map).to_numpy()
+    # the only way .map() leaves a gap here is a null in the model's own
+    # column (every non-null value is guaranteed a label_map entry, built
+    # straight from model_vals' own distinct values above)
+    unmapped = model_vals.isna().to_numpy()
+    if unmapped.any():
+        fks[unmapped] = rng.choice(parent_keys, size=int(unmapped.sum()), p=p)
 
-    out[fk] = fks
+    # 2. rebalance: move the fewest rows needed from surplus keys to needy
+    # ones so the FINAL counts match `target`; every untouched row keeps
+    # whichever label the rank-swap gave it
+    fks = pd.Series(fks, index=child_df.index)
+    current = fks.value_counts()
+    target_s = pd.Series(target, index=parent_keys)
+    deficit = target_s.subtract(current, fill_value=0)
+    surplus = (-deficit[deficit < 0]).astype(int)
+    needy = deficit[deficit > 0].astype(int)
+    if len(surplus) and len(needy):
+        movable = []
+        for key, cnt in surplus.items():
+            idxs = fks.index[fks.to_numpy() == key].to_numpy()
+            take = min(int(cnt), len(idxs))
+            if take:
+                movable.append(rng.choice(idxs, size=take, replace=False))
+        movable = np.concatenate(movable) if movable else np.array([], dtype=fks.index.dtype)
+        needy_slots = np.repeat(needy.index.to_numpy(), needy.to_numpy())
+        rng.shuffle(needy_slots)
+        m = min(len(movable), len(needy_slots))
+        if m:
+            fks.loc[movable[:m]] = needy_slots[:m]
+
+    out[fk] = fks.to_numpy()
     return out
 
 
