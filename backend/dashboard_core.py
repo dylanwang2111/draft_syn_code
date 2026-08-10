@@ -666,9 +666,30 @@ def _run_job(cfg: dict, st: dict):
         if cancelled():
             raise _Cancelled()
 
+    # Estimated (synth × table) single-table fit jobs for THIS run, used to
+    # advance the overall bar through per-epoch ticks -- "n" is a placeholder
+    # until fit_synths/reduced_train are known further down; "idx" advances
+    # once per (synth, table) via on_fit_start below, right before that
+    # table's .fit() starts (mirrors suite.py's own on_progress call site).
+    # HMA has no epochs and isn't counted here: its own phase-progress text
+    # (Preprocess/Learning/Modeling/Sampling/report, from SDV) already
+    # advances the bar independently below. set_pct is monotonic, so
+    # whichever mechanism is further along at any moment simply wins --
+    # no coordination needed when a run combines HMA with other synths.
+    _epoch_progress = {"idx": 0, "n": 1}
+
+    def on_fit_start(msg):
+        _epoch_progress["idx"] += 1
+        say(msg)
+
     def progress(msg):
         """Update a single live '⏳' line (from captured tqdm) instead of spamming.
-        Also maps the fit phase/percent onto the overall progress bar (5–40%)."""
+        Also maps the fit phase/percent onto the overall progress bar (5–40%):
+        HMA's own phase-progress text directly, or a single-table neural
+        synth's per-epoch tick ("epoch 80/175", "TabSyn·VAE 80/175" -- see
+        _TqdmTee) via _epoch_progress's running job index -- without this,
+        the bar sits frozen at whatever set_pct(3) left it at for the whole
+        fit+sample phase, which is usually most of the job's wall-clock time."""
         line = "⏳ " + msg
         if log and log[-1].startswith("⏳ "):
             log[-1] = line
@@ -679,6 +700,23 @@ def _run_job(cfg: dict, st: dict):
             base = {"Preprocess": 5, "Learning": 10, "Modeling": 22,
                     "Sampling": 34, "report": 38}.get(m.group(1), 10)
             set_pct(base + 0.06 * float(m.group(2)))
+            return
+        m2 = re.search(r"^(epoch|TabSyn·VAE|TabSyn·diffusion)\s+(\d+)/(\d+)$", msg)
+        if m2:
+            stage, cur, total = m2.group(1), float(m2.group(2)), float(m2.group(3))
+            stage_frac = cur / max(1.0, total)
+            # TabSyn is two stages within ONE job slot: without splitting the
+            # slice, diffusion's own cur/total (also 0..1) would map to the
+            # same within-job fraction VAE already reached, and since set_pct
+            # is monotonic the bar would sit frozen through all of diffusion.
+            if stage == "TabSyn·diffusion":
+                within_job = 0.5 + 0.5 * stage_frac
+            elif stage == "TabSyn·VAE":
+                within_job = 0.5 * stage_frac
+            else:
+                within_job = stage_frac
+            job_frac = (_epoch_progress["idx"] - 1 + within_job) / max(1, _epoch_progress["n"])
+            set_pct(5 + min(1.0, max(0.0, job_frac)) * 33)
 
     # A job-wide heartbeat: whenever visible progress stalls for a few seconds —
     # HMA's un-instrumented augment/sample, or a single slow metric on wide data —
@@ -907,6 +945,8 @@ def _run_job(cfg: dict, st: dict):
         _uses_epochs = any(s.upper() in ("CTGAN", "TVAE", "COPULAGAN", "TABSYN") for s in fit_synths)
         say(f"Fitting: {', '.join(fit_synths)} (scale={cfg['scale']}"
             + (f", epochs={cfg['epochs']}" if _uses_epochs else "") + ")")
+        _epoch_progress["n"] = max(1, len([s for s in fit_synths if s.upper() != "HMA"])
+                                    * max(1, len(reduced_train)))
         _real_err = sys.stderr
         sys.stderr = _TqdmTee(_real_err, progress)     # forward fit progress to the console
         gen_timings: dict = {}   # {synth_name: fit+sample seconds} -- the time-savings metric
@@ -941,7 +981,7 @@ def _run_job(cfg: dict, st: dict):
                             timings=gen_timings, roles=roles,
                             close_filter_report=close_filter_report,
                             resample_timings=resample_timings, random_state=run_seed,
-                            filter_close_percentile=close_percentile, on_progress=say))
+                            filter_close_percentile=close_percentile, on_progress=on_fit_start))
                 else:
                     suite = se.generate_synthetic_suite(
                         fit_tables, fit_metadata, synthesizers=fit_synths,
@@ -950,7 +990,7 @@ def _run_job(cfg: dict, st: dict):
                         roles=roles, close_filter_report=close_filter_report,
                         filter_close_percentile=close_percentile,
                         timings=gen_timings, resample_timings=resample_timings,
-                        random_state=run_seed, on_progress=say)
+                        random_state=run_seed, on_progress=on_fit_start)
         finally:
             sys.stderr = _real_err
         # gen_timings/resample_timings are per-synthesizer wall-clock (see
