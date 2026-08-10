@@ -853,6 +853,10 @@ def _run_job(cfg: dict, st: dict):
                     if c in set(roles[t].modelable) | keep_keys[t]] for t in train}
         fill = {t: [c for c in train[t].columns if c not in keep[t]] for t in train}
         reduced_train = {t: train[t][keep[t]].copy() for t in train}
+        # mirrors reduced_train, from the holdout split -- used ONLY to grade
+        # cardinality shape against what a real holdout achieves (see the
+        # cardinality_report baseline calls below), never fit on
+        reduced_hold = {t: hold[t][keep[t]].copy() for t in train}
         n_fill = sum(len(v) for v in fill.values())
         if n_fill:
             say(f"Modelling {sum(len(v) for v in keep.values())} signal columns; the other "
@@ -983,6 +987,7 @@ def _run_job(cfg: dict, st: dict):
         # parent is present (they need the parent table), then the parent is
         # dropped so only real tables are evaluated by the other metrics.
         cardinality = {}
+        cardinality_baseline = None  # {"shape":..., "statistic":..., "per_relationship":{...}} or None
         if parent_names:
             # HMA emits the hub itself; for the independent single-table synths,
             # derive an equivalent hub per key (the distinct keys they generated
@@ -1025,6 +1030,21 @@ def _run_job(cfg: dict, st: dict):
                 cardinality = se.cardinality_report(fit_metadata, fit_tables, suite)
             except Exception as e:
                 say(f"⚠ cardinality metrics skipped: {e}")
+            try:
+                # a real holdout's own hub, built the same way fit_tables' was,
+                # from HOLD's rows instead of TRAIN's -- already referentially
+                # consistent (real data), no relinking needed. Graded as if it
+                # were "another synthesizer" against the same real training
+                # hub, exactly the NewRowSynthesis/CategoricalCAP baseline
+                # pattern in synth_eval.privacy: real=train, "synthetic"=hold.
+                hold_fit_tables, _, _, _ = se.build_entity_hub(
+                    reduced_hold, entity_keys, child_primary_keys=child_pks,
+                    lift_invariant=False, child_tables=entity_children_by_key)
+                cardinality_baseline = se.cardinality_report(
+                    fit_metadata, fit_tables, {"__real_holdout__": hold_fit_tables}
+                ).get("__real_holdout__")
+            except Exception as e:
+                say(f"⚠ cardinality baseline skipped: {e}")
             for s in list(suite):
                 for pname in parent_names.values():
                     suite[s].pop(pname, None)
@@ -1034,6 +1054,12 @@ def _run_job(cfg: dict, st: dict):
                 cardinality = se.cardinality_report(fit_metadata, reduced_train, suite)
             except Exception as e:
                 say(f"⚠ cardinality metrics skipped: {e}")
+            try:
+                cardinality_baseline = se.cardinality_report(
+                    fit_metadata, reduced_train, {"__real_holdout__": reduced_hold}
+                ).get("__real_holdout__")
+            except Exception as e:
+                say(f"⚠ cardinality baseline skipped: {e}")
         else:
             ri = _referential_integrity(rels, reduced_train, suite) if rels else []
 
@@ -1241,9 +1267,11 @@ def _run_job(cfg: dict, st: dict):
         # hub was built from the synthesizers' own keys, which makes forward FK
         # coverage 1.0 by construction: a diagnostic, never a score.
         derived = bool(parent_names)
-        summary = se.compute_summary(quality_scores, privacy_all, efficacy, ri, cardinality, derived)
+        cardinality_baseline_shape = (cardinality_baseline or {}).get("shape")
+        summary = se.compute_summary(quality_scores, privacy_all, efficacy, ri, cardinality, derived,
+                                     cardinality_baseline_shape)
         leaderboard = se.compute_leaderboard(quality_scores, privacy_all, efficacy, ri,
-                                             cardinality, derived)
+                                             cardinality, derived, cardinality_baseline_shape)
         fig_dir = f"{REPORTS_DIR}/figures"
         figs = {
             "quality": se.plot_quality_comparison(quality_scores, f"{fig_dir}/web_quality.png"),
@@ -1285,6 +1313,7 @@ def _run_job(cfg: dict, st: dict):
             "pair_details": pair_details,
             "referential": ri,
             "cardinality": cardinality,
+            "cardinality_baseline": cardinality_baseline,  # what a real holdout scores, same shape
             "cross_table": cross_table,
             "relationships_modeled": rels_ok and bool(rels),
             "linked_synths": linked_synths,

@@ -1857,15 +1857,29 @@ function renderReport(res){
       }).join("")}</tbody></table>`;
     const card=res.cardinality||{}; const cnames=Object.keys(card);
     if(cnames.length){
+      const cbase=res.cardinality_baseline;   // what a real holdout scores against real training rows
       riH+=head("Cardinality similarity",
           "The distribution of child rows per parent (including parents with none), synthetic vs real. "
           + "1 = identical. This catches a synthesizer that over- or under-generates child rows even when "
-          + "forward coverage is a perfect 1. Shape compares the whole distribution; statistic compares its mean.")
+          + "forward coverage is a perfect 1. Shape compares the whole distribution; statistic compares its mean."
+          + (cbase?.shape!=null
+            ? " The grey 'real (holdout)' row is the achievable ceiling for THIS data's own parent-child "
+              + "fan-out: a real, unseen slice of rows scored against the real training rows, using the exact "
+              + "same metric. A lopsided real distribution (a few common parents absorbing most children, most "
+              + "parents rare) won't hit 1.0 even here — judge synthesizers against this row, not against 1.0."
+            : ""))
         +`<table class="rep"><thead><tr><th>synthesizer</th><th style="text-align:right">shape similarity</th>
           <th style="text-align:right">statistic similarity</th></tr></thead><tbody>`;
       const cell=v=>v==null?`<span class="dim">—</span>`:`<span style="color:${meterColor(v)}">${fmt(v)}</span>`;
+      if(cbase?.shape!=null)
+        riH+=`<tr><td class="mono dim">${dot("real")}real (holdout)</td>
+          <td class="score-cell">${cell(cbase.shape)}</td><td class="score-cell">${cell(cbase.statistic)}</td></tr>`;
       for(const s of cnames){ const e=card[s];
-        riH+=`<tr><td class="mono">${dot(s)}${esc(s)}</td><td class="score-cell">${cell(e.shape)}</td>
+        const gap=(cbase?.shape!=null && e.shape!=null) ? cbase.shape-e.shape : null;
+        const gapBadge=gap==null ? "" :
+          `<span class="delta-badge ${gap<=0.05?"ok":gap<=0.15?"warn":"bad"}" title="real-holdout ceiling: ${fmt(cbase.shape)}">
+            ${gap<=0.005?"= ceiling":(gap>0?"↓ ":"↑ ")+Math.abs(gap).toFixed(2)}</span>`;
+        riH+=`<tr><td class="mono">${dot(s)}${esc(s)}</td><td class="score-cell">${cell(e.shape)}${gapBadge}</td>
           <td class="score-cell">${cell(e.statistic)}</td></tr>`; }
       riH+=`</tbody></table>`;
     }

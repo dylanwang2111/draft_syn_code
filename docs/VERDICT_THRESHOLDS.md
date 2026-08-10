@@ -120,6 +120,7 @@ status on it.
 | Where | ok / green | **warn / yellow** | bad / red |
 |---|---|---|---|
 | **Parent-coverage delta badge** (how far a synthesizer's reverse FK coverage sits from the real ratio) | `\|delta\| ≤ 5 pts` | `5 pts < \|delta\| ≤ 15 pts` | `\|delta\| > 15 pts` |
+| **Cardinality-shape delta badge** (gap vs. the real-holdout baseline — see `docs/METRICS.md` §4) | `gap ≤ 0.05` | `0.05 < gap ≤ 0.15` | `gap > 0.15` |
 | **Nearest-record drill-down example**, percentile vs. real-to-real baseline spacing | percentile ≥ 50 | `20 ≤ percentile < 50` | percentile < 20 |
 
 The second row colors the single worked example shown in the drill-down panel

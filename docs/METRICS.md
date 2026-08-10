@@ -263,11 +263,43 @@ parent (including parents with none). It is the only one of the three quantities
 that is a *distribution-similarity* measure on the same footing as Column Shapes, which
 is why it is the only one averaged into fidelity.
 
+**Cardinality shape is judged against a real-holdout baseline**, the same idea as the
+privacy metrics above: a real holdout's own rows are scored against the real training
+rows with the identical `CardinalityShapeSimilarity` call, using the "synthetic" slot
+for the holdout. A parent-child fan-out can be genuinely lopsided in real data (a few
+common parent values absorbing most children, most parent values rare, e.g. a handful
+of common occupation codes shared by most people, the rest rare) — on that kind of
+distribution even a real, unseen slice of rows won't score close to 1.0 against the
+training split, so a synthesizer's raw score means little without this for context.
+Computed once per run (a property of the real data, not of any synthesizer) and
+attached to every synth's row so each can be read against it; shown as a `real
+(holdout)` row plus a delta badge per synthesizer in the Referential Integrity tab.
+
 | Quantity | Formula | Role |
 |---|---|---|
 | **cardinality shape** | sdmetrics `CardinalityShapeSimilarity` | **the score.** Averaged into fidelity |
 | **FK validity** | share of synthetic child rows whose FK hits a parent key (forward coverage) | **pass/fail gate, not scored.** A *constraint*, not a similarity — averaging it in would let a model buy its way out of orphan rows with good marginals. For a derived entity hub, single-table synths (GaussianCopula/CTGAN/TVAE/CopulaGAN/TabSyn) get their hub relationships relinked post-hoc the same way plain declared relationships are (`synth_eval.link_relationships`, against the union of keys their own per-table models emitted, resampled to the real per-parent shape), so it is genuinely ~1.0 there. HMA instead models each hub jointly with its children and is **not** relinked — for a table that's a child of more than one simultaneous hub (a "diamond," e.g. a PERSON table under both a contact-id hub and an occupation-code hub), SDV's HMASynthesizer only fully guarantees one FK per child table, so HMA's own coverage on the others can measurably land below 1.0. Both are still reported as `n/a` in the aggregate scorecard rather than a free 1.0/misleadingly-scored number — a known gap: this currently hides HMA's real shortfall on multi-parent children along with the single-table case's genuine 1.0. The **per-relationship coverage table** always shows the real measured percentage regardless |
 | **participation** | 1 − \|synth parent coverage − real parent coverage\|, where parent coverage = share of parents with ≥ 1 child row | **diagnostic, not scored.** Parent coverage is `P(count > 0)` — a single point on the CDF of the very distribution cardinality shape already measures in full, so scoring both would double-count. Still worth reading: it should **match real**, and is *not* supposed to be 1 |
+
+**Relinking (`synth_eval.link.link_table`) matches by VALUE, not just by shape.**
+The number of children assigned to each synthetic parent key is resampled from
+the real per-parent count distribution — but a synthetic parent key that IS a
+real key value (the normal case for a properly-typed categorical key column)
+gets matched to **its own** real count directly, not a randomly bootstrapped
+one. This matters because a real *_TP_CD column's own popularity is usually
+lopsided (a few common codes, e.g. common occupations, absorbing most rows,
+most codes rare) — resampling counts independently of which key they land on
+reproduces the right *aggregate* shape (good cardinality-shape score) while
+scrambling *which specific value* ends up common vs. rare, which wrecks that
+column's own marginal-frequency fidelity (Column Shapes) even when referential
+integrity and cardinality shape both look fine. Matching is done on a
+normalized string form of the key (`synth_eval.link._normalize_key_values`),
+robust to a real/synthetic dtype mismatch like a `*_TP_CD` column read from
+CSV as `348820.0` vs. a synthesizer emitting the plain int `348820` — a naive
+match would treat every key as unseen and silently fall back to the old
+scrambling behavior for 100% of keys. A synthetic key with no real match at
+all (genuinely out-of-vocabulary) still falls back to a bootstrap draw from
+the real pool.
 
 The same numbers are surfaced per report tab in the dashboard (`results["summary"]`,
 built by `compute_summary`), so the Fidelity / Utility / Privacy tabs each show the

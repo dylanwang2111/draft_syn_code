@@ -27,9 +27,10 @@ import pandas as pd
 
 from .columns import (ColumnRoles, auto_categorical_threshold, best_refill_group_column,
                       classify_columns, group_diversity_reduction, suffix_sdtype_overrides)
+from .compare import structure_scores
 from .efficacy import auto_select_target
 from .entity import _normalize_key_name, _resolve_key_column, build_entity_hub, entity_key_tables
-from .link import link_relationships
+from .link import _normalize_key_values, _real_parent_counts, link_relationships, link_table
 from .privacy import filter_close_records, filter_close_records_multitable, nearest_real_examples
 
 # imported from backend, not synth_eval -- _refill's conditional-grouping
@@ -262,6 +263,106 @@ def _c_link_relationships_multi_parent_hub():
         ct, fk = r["child_table_name"], r["child_foreign_key"]
         cov = tabs[ct][fk].isin(set(tabs[pt][pk])).mean()
         _assert(cov == 1.0, f"{ct}.{fk} -> {pt}.{pk} coverage {cov}, expected 1.0 after relinking")
+
+
+def _skewed_code_fixture(n_codes: int = 30, seed: int = 0):
+    """A handful of very common codes (e.g. common occupations) plus many
+    rare ones -- the shape a real *_TP_CD column's own popularity usually
+    takes. Used to prove link_table keeps which SPECIFIC code is common,
+    not just the aggregate shape of the popularity distribution."""
+    rng = np.random.default_rng(seed)
+    pop = np.concatenate([[3000, 2000, 1000], rng.integers(5, 60, size=n_codes - 3)]).astype(float)
+    codes = [f"C{i}" for i in range(n_codes)]
+    child_codes = np.repeat(codes, pop.astype(int))
+    rng.shuffle(child_codes)
+    real_child = pd.DataFrame({"CD": child_codes})
+    real_parent = pd.DataFrame({"CD": codes})
+    return real_parent, real_child, codes
+
+
+@check("link_table: keeps WHICH code is popular, not just the shape of the popularity distribution")
+def _c_link_table_preserves_value_popularity():
+    # Before this fix, link_table bootstrap-sampled a count independently of
+    # which synthetic parent key it landed on: the AGGREGATE distribution of
+    # counts matched real (good CardinalityShapeSimilarity) but WHICH code
+    # got which count was scrambled, wrecking that column's own marginal
+    # frequency (Column Shapes) even though referential integrity looked
+    # fine. Real-world trigger: an occupation code, PERSON.OCCUPATION_TP_CD,
+    # showing solid red on Column Shapes for every synthesizer even after
+    # the sdtype fix, because relinking (not the model) scrambled it.
+    real_parent, real_child, codes = _skewed_code_fixture()
+    real_counts = _real_parent_counts(real_parent, real_child, "CD", "CD")
+    # the synthesizer got the vocabulary right (same real codes) but has no
+    # reason to know their relative popularity -- link_table's job
+    linked = link_table(pd.DataFrame(index=range(len(real_child))), "CD", codes, real_counts, seed=1)
+    real_top3 = set(real_child["CD"].value_counts().head(3).index)
+    linked_top3 = set(linked["CD"].value_counts().head(3).index)
+    _assert(real_top3 == linked_top3,
+            f"the 3 truly most common real codes {real_top3} must still be the 3 most common "
+            f"after relinking, got {linked_top3} -- popularity got scrambled")
+
+
+@check("link_table: matches real/synthetic keys by value even across an int/float dtype mismatch")
+def _c_link_table_dtype_mismatch_still_matches():
+    # *_TP_CD columns are frequently read from CSV as float64 (e.g. 348820.0)
+    # while a synthesizer's own categorical decoder can emit a plain int for
+    # the same value -- naive equality (or a naive str() cast) would treat
+    # every key as "no match" and silently fall back to the old scrambling
+    # behavior for 100% of keys, defeating the fix above without erroring.
+    real_parent, real_child, codes = _skewed_code_fixture()
+    real_parent["CD"] = real_parent["CD"].map(lambda c: 340000.0 + int(c[1:]))
+    real_child["CD"] = real_child["CD"].map(lambda c: 340000.0 + int(c[1:]))
+    real_counts = _real_parent_counts(real_parent, real_child, "CD", "CD")
+    synth_keys = [int(v) for v in real_parent["CD"]]   # dtype mismatch: int, not float64
+    linked = link_table(pd.DataFrame(index=range(len(real_child))), "CD", synth_keys, real_counts, seed=1)
+    real_top3 = set(real_child["CD"].value_counts().head(3).index.astype(int))
+    linked_top3 = set(linked["CD"].value_counts().head(3).index)
+    _assert(real_top3 == linked_top3,
+            f"expected the dtype-normalized match to still find the 3 real most-common codes "
+            f"{real_top3}, got {linked_top3}")
+
+
+@check("_normalize_key_values: 348820.0 and 348820 normalize to the same value")
+def _c_normalize_key_values_numeric():
+    out = _normalize_key_values([348820.0, 348820, "C0", "C0"])
+    _assert(out[0] == out[1], f"float and int forms of the same number must normalize equal, got {out}")
+    _assert(out[2] == out[3], "identical strings must normalize equal")
+    _assert(out[0] != out[2], "a numeric value and a text code must not collide")
+
+
+@check("structure_scores: cardinality_shape_baseline is attached per synth when given")
+def _c_structure_scores_baseline_attached():
+    # cardinality_report's own end-to-end behavior (a real holdout scoring
+    # below 1.0 on a lopsided parent-child fan-out, exactly the OCCUPATION-
+    # shaped production case this was built for) is validated by hand against
+    # real sdmetrics calls, not re-run here (heavy: needs sdv+sdmetrics) --
+    # this only checks structure_scores' OWN plumbing: the single baseline
+    # float reaches every synth's row, unchanged from what was passed in.
+    ri_rows = [
+        {"relationship": "CHILD.CODE -> PARENT.CODE", "source": "real",
+         "fk_coverage": 1.0, "parent_coverage": 0.9},
+        {"relationship": "CHILD.CODE -> PARENT.CODE", "source": "SomeSynth",
+         "fk_coverage": 1.0, "parent_coverage": 0.85},
+    ]
+    cardinality = {"SomeSynth": {"shape": 0.5, "statistic": 0.6}}
+    out = structure_scores(ri_rows, cardinality, derived_parent=False, cardinality_baseline=0.75)
+    _assert(out["SomeSynth"]["cardinality_shape_baseline"] == 0.75,
+            f"expected the baseline passed in to be attached verbatim, got {out['SomeSynth']}")
+    _assert(out["SomeSynth"]["cardinality_shape"] == 0.5, "the synth's own score must be untouched")
+
+
+@check("structure_scores: cardinality_shape_baseline is None when not given (backward compatible)")
+def _c_structure_scores_baseline_defaults_none():
+    ri_rows = [
+        {"relationship": "CHILD.CODE -> PARENT.CODE", "source": "real",
+         "fk_coverage": 1.0, "parent_coverage": 0.9},
+        {"relationship": "CHILD.CODE -> PARENT.CODE", "source": "SomeSynth",
+         "fk_coverage": 1.0, "parent_coverage": 0.85},
+    ]
+    cardinality = {"SomeSynth": {"shape": 0.5, "statistic": 0.6}}
+    out = structure_scores(ri_rows, cardinality, derived_parent=False)
+    _assert(out["SomeSynth"]["cardinality_shape_baseline"] is None,
+            "a caller that doesn't pass a baseline must not see one appear from nowhere")
 
 
 # ---------------------------------------------------------------------------

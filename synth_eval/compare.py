@@ -467,8 +467,21 @@ def _mean(vals) -> float:
     return float(np.mean(vals)) if vals else float("nan")
 
 
-def structure_scores(ri_rows, cardinality=None, derived_parent=False) -> Dict[str, Dict[str, float]]:
+def structure_scores(ri_rows, cardinality=None, derived_parent=False,
+                      cardinality_baseline: Optional[float] = None) -> Dict[str, Dict[str, float]]:
     """Per-synthesizer referential-integrity score, plus its diagnostics.
+
+    ``cardinality_baseline``, when given, is what a REAL holdout scores on
+    CardinalityShapeSimilarity against the real training rows (same idea as
+    NewRowSynthesis/CategoricalCAP's real-holdout baselines in
+    ``synth_eval.privacy``): unlike a column's marginal shape, a table's real
+    child-per-parent fan-out can be genuinely lopsided (a handful of common
+    values absorbing most children, most values rare) -- on that kind of
+    distribution even a real holdout won't score close to 1.0 against the
+    training split, so a synthesizer's own score means little without this
+    for context. One number for the whole run (a property of the real data,
+    not of any synthesizer), attached to every synth's row so each can be
+    read against it.
 
     Column Shapes / Column Pair Trends only look inside one table, so a
     synthesizer can score a perfect QualityReport while getting the cross-table
@@ -518,6 +531,7 @@ def structure_scores(ri_rows, cardinality=None, derived_parent=False) -> Dict[st
         out[s] = {
             "score": float("nan") if shape is None else float(shape),   # cardinality shape ONLY
             "cardinality_shape": (None if shape is None else float(shape)),
+            "cardinality_shape_baseline": cardinality_baseline,
             # diagnostics — shown, not scored (see the docstring)
             "fk_validity": fk_v,
             "fk_by_construction": bool(derived_parent),
@@ -535,6 +549,7 @@ def compute_summary(
     ri_rows=None,
     cardinality=None,
     derived_parent: bool = False,
+    cardinality_baseline: Optional[float] = None,
 ) -> Dict[str, dict]:
     """Per-synthesizer scorecard: one headline 0-1 number per dimension plus the
     components it is made of, so every report tab can show the same arithmetic.
@@ -555,7 +570,7 @@ def compute_summary(
     * utility  = mean over table x metric of clip(synth score / real score, 0, 1)
       (TSTR / TRTR).
     """
-    struct = structure_scores(ri_rows, cardinality, derived_parent)
+    struct = structure_scores(ri_rows, cardinality, derived_parent, cardinality_baseline)
     out: Dict[str, dict] = {}
     for s in quality_scores:
         tabs = quality_scores[s].values()
@@ -665,6 +680,7 @@ def compute_leaderboard(
     ri_rows=None,
     cardinality=None,
     derived_parent: bool = False,
+    cardinality_baseline: Optional[float] = None,
 ) -> pd.DataFrame:
     """One row per synthesizer with 0-1 scores: fidelity / privacy / utility.
 
@@ -673,7 +689,7 @@ def compute_leaderboard(
     integrity counted inside ``fidelity`` (see :func:`structure_scores`).
     """
     summary = compute_summary(quality_scores, privacy_all, efficacy_table, ri_rows,
-                              cardinality, derived_parent)
+                              cardinality, derived_parent, cardinality_baseline)
     rows = []
     for s, v in summary.items():
         rows.append({
