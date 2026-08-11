@@ -298,7 +298,7 @@ attached to every synth's row so each can be read against it; shown as a `real
 | Quantity | Formula | Role |
 |---|---|---|
 | **cardinality shape** | sdmetrics `CardinalityShapeSimilarity` | **the score.** Averaged into fidelity |
-| **FK validity** | share of synthetic child rows whose FK hits a parent key (forward coverage) | **pass/fail gate, not scored.** A *constraint*, not a similarity — averaging it in would let a model buy its way out of orphan rows with good marginals. For a derived entity hub, single-table synths (GaussianCopula/CTGAN/TVAE/CopulaGAN/TabSyn) get their hub relationships relinked post-hoc the same way plain declared relationships are (`synth_eval.link_relationships`, against the union of keys their own per-table models emitted, resampled to the real per-parent shape), so it is genuinely ~1.0 there. HMA instead models each hub jointly with its children and is **not** relinked — for a table that's a child of more than one simultaneous hub (a "diamond," e.g. a PERSON table under both a contact-id hub and an occupation-code hub), SDV's HMASynthesizer only fully guarantees one FK per child table, so HMA's own coverage on the others can measurably land below 1.0. Both are still reported as `n/a` in the aggregate scorecard rather than a free 1.0/misleadingly-scored number — a known gap: this currently hides HMA's real shortfall on multi-parent children along with the single-table case's genuine 1.0. The **per-relationship coverage table** always shows the real measured percentage regardless |
+| **FK validity** | share of synthetic child rows whose FK hits a parent key (forward coverage) | **pass/fail gate, not scored.** A *constraint*, not a similarity — averaging it in would let a model buy its way out of orphan rows with good marginals. For a derived entity hub, single-table synths (GaussianCopula/CTGAN/TVAE/CopulaGAN/TabSyn) get their hub relationships relinked post-hoc the same way plain declared relationships are (`synth_eval.link_relationships`, against a per-key pool derived by `synth_eval.entity.derive_synthetic_hub_pool` — see below — resampled to the real per-parent shape), so it is genuinely ~1.0 there. HMA instead models each hub jointly with its children and is **not** relinked — for a table that's a child of more than one simultaneous hub (a "diamond," e.g. a PERSON table under both a contact-id hub and an occupation-code hub), SDV's HMASynthesizer only fully guarantees one FK per child table, so HMA's own coverage on the others can measurably land below 1.0. Both are still reported as `n/a` in the aggregate scorecard rather than a free 1.0/misleadingly-scored number — a known gap: this currently hides HMA's real shortfall on multi-parent children along with the single-table case's genuine 1.0. The **per-relationship coverage table** always shows the real measured percentage regardless |
 | **participation** | 1 − \|synth parent coverage − real parent coverage\|, where parent coverage = share of parents with ≥ 1 child row | **diagnostic, not scored.** Parent coverage is `P(count > 0)` — a single point on the CDF of the very distribution cardinality shape already measures in full, so scoring both would double-count. Still worth reading: it should **match real**, and is *not* supposed to be 1 |
 
 **Relinking (`synth_eval.link.link_table`) relabels the model's own row
@@ -348,6 +348,46 @@ step has no signal for which SPECIFIC rows are "more suitable" to reassign.
 Still strictly better than a full reshuffle (which preserves 0% of row-level
 correlation everywhere), and the dilution only ever affects the keys the
 model already got the scale wrong on.
+
+**Two further fixes, specific to a high-cardinality entity-hub key (e.g. a
+surrogate id like `CONT_ID`), that closed a real, measured gap between
+synthetic and real parent coverage:**
+
+1. **The synthetic hub's own key pool was inflated for an id-typed key**
+   (`synth_eval.entity.derive_synthetic_hub_pool`). For a single-table synth,
+   the hub is derived by unioning each child table's own generated values for
+   the key — trustworthy for a real, LEARNED vocabulary (a `*_TP_CD` code
+   column: a categorical decoder can only emit a value it saw during
+   training). But confirmed directly on a real id-typed key: SDV/TabSyn both
+   fabricate a fresh, fully-unique value per ROW for it (fitting TVAE on a
+   1756-row table with 963 real distinct keys produced 1756 distinct
+   synthetic values, 0 overlap with the real ones) — unioning that across
+   every child table inflates the pool toward the SUM of their row counts,
+   not the real entity count, so any one child's own row count can only ever
+   cover a fraction of that inflated pool. Now detected directly (does the
+   union already overlap meaningfully with the real hub's own key identity?)
+   rather than guessed from column name or sdtype: high overlap keeps the
+   union as-is, near-zero overlap resizes it to the real entity count with
+   equally-fabricated placeholders instead (only the pool's SIZE was ever
+   informative in that case; relinking already treats a non-matching key as
+   a random draw either way).
+2. **`link_table`'s target-count rounding systematically undercounted
+   weight-1 keys.** `floor(weight * n/total)` zeroes out any key whose real
+   weight is exactly 1 — the single most common count for a near-unique key
+   — any time the resampled total lands even slightly above `n`, which is
+   the ordinary case. The old fallback (a random, weight-proportional
+   top-up) only restored a random *subset* of those zeroed keys. Replaced
+   with largest-remainder (Hamilton) apportionment: the leftover units after
+   flooring go deterministically to whichever keys' fractional share was
+   closest to rounding up, not a lottery.
+
+Verified together on real seed data (CONTACT/PERSON/PERSONNAME sharing
+`CONT_ID`): parent coverage went from 35–48% (pool-inflated, rounding-biased)
+to within ~1–2 points of the real ratio on every relationship, and
+cardinality shape from below the real-holdout ceiling to comfortably above
+it (0.42 → 0.97 in that test). Fix (1) is the bigger lever; fix (2) applies
+to every relinked relationship, not just entity hubs, though it's most
+visible on a high-cardinality key where weight-1 is the common case.
 
 The same numbers are surfaced per report tab in the dashboard (`results["summary"]`,
 built by `compute_summary`), so the Fidelity / Utility / Privacy tabs each show the

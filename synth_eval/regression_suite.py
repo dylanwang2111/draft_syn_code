@@ -30,7 +30,8 @@ from .columns import (ColumnRoles, auto_categorical_threshold, best_refill_group
 from .compare import shapes_heatmap_data, structure_scores
 from .efficacy import (InsufficientHoldoutError, _predictive_signal, _quasi_identifier_group_col,
                        auto_select_target, sdmetrics_ml_efficacy)
-from .entity import _normalize_key_name, _resolve_key_column, build_entity_hub, entity_key_tables
+from .entity import (_normalize_key_name, _resolve_key_column, build_entity_hub,
+                     derive_synthetic_hub_pool, entity_key_tables)
 from .link import _normalize_key_values, _real_parent_counts, link_relationships, link_table
 from .privacy import filter_close_records, filter_close_records_multitable, nearest_real_examples
 
@@ -359,6 +360,46 @@ def _c_link_relationships_multi_parent_hub():
         _assert(cov == 1.0, f"{ct}.{fk} -> {pt}.{pk} coverage {cov}, expected 1.0 after relinking")
 
 
+@check("derive_synthetic_hub_pool: keeps the union as-is when it's a real, learned vocabulary")
+def _c_hub_pool_keeps_real_vocabulary():
+    # a *_TP_CD-style code column: each child's own model can only ever
+    # reproduce a value it saw during training, so the union across children
+    # IS the real vocabulary -- must be left untouched
+    real_ids = pd.Series(["A", "B", "C", "D", "E"])
+    children_values = {
+        "T1": pd.Series(["A", "A", "B", "C"]),
+        "T2": pd.Series(["B", "D", "E", "A"]),
+    }
+    pool = derive_synthetic_hub_pool(children_values, real_ids, "CD")
+    _assert(set(pool) == {"A", "B", "C", "D", "E"},
+            f"high-overlap union must be kept as-is, got {sorted(pool)}")
+
+
+@check("derive_synthetic_hub_pool: resizes to the real entity count when the union is fabricated noise")
+def _c_hub_pool_resizes_fabricated_ids():
+    # an id-typed surrogate key: each child fabricates a fresh, fully-unique
+    # value per row with ZERO overlap with real identity or with the other
+    # children's own fabrication -- the union is uninformative noise whose
+    # only useful property was ever its SIZE, which is wrong (inflated
+    # toward the sum of the children's row counts, not the real entity count)
+    real_ids = pd.Series(range(50))            # 50 real distinct entities
+    children_values = {
+        "T1": pd.Series([f"fake_t1_{i}" for i in range(80)]),   # 80 fabricated, unique
+        "T2": pd.Series([f"fake_t2_{i}" for i in range(60)]),   # 60 fabricated, unique
+    }
+    pool = derive_synthetic_hub_pool(children_values, real_ids, "CD")
+    _assert(len(pool) == 50, f"expected the pool resized to the real entity count (50), got {len(pool)}")
+    _assert(not (set(pool) & set(real_ids)), "resized pool should use fresh placeholders, not real ids")
+
+
+@check("derive_synthetic_hub_pool: an empty real hub is a no-op (nothing to resize against)")
+def _c_hub_pool_empty_real_noop():
+    real_ids = pd.Series([], dtype=object)
+    children_values = {"T1": pd.Series(["x", "y"])}
+    pool = derive_synthetic_hub_pool(children_values, real_ids, "CD")
+    _assert(set(pool) == {"x", "y"}, f"no real ids to compare against -- union should pass through, got {sorted(pool)}")
+
+
 def _skewed_code_fixture(n_codes: int = 30, seed: int = 0):
     """A handful of very common codes (e.g. common occupations) plus many
     rare ones -- the shape a real *_TP_CD column's own popularity usually
@@ -459,6 +500,44 @@ def _c_link_table_preserves_row_level_correlation():
                 f"{c}: expected {'mostly F' if expected_high else 'mostly M'} to survive relinking "
                 f"(model's own count matched real here, so rebalancing barely touches it), "
                 f"got F share {fem_share[c]:.2f}")
+
+
+@check("link_table: largest-remainder apportionment doesn't systematically undercount weight-1 keys")
+def _c_link_table_apportionment_not_undercounted():
+    # floor(weight * n/total), the old target computation, zeroes out EVERY
+    # key whose real weight is exactly 1 (the common case for a near-unique
+    # key, e.g. a surrogate id) any time the resampled total lands even
+    # slightly above n -- the ordinary case, not an edge case. A random
+    # weighted top-up then only restores a random SUBSET of those zeroed
+    # keys. Real-world trigger: a 998-key hub where 84% of real keys have
+    # exactly 1 child -- the old code covered only 53% of keys after
+    # relinking; largest-remainder apportionment should land much closer to
+    # the real 84%, deterministically (not by lucky redraw).
+    n_keys = 200
+    codes = [f"K{i}" for i in range(n_keys)]
+    rng = np.random.default_rng(0)
+    # 84% of real parents have exactly 1 child, the rest have 0 -- mirrors
+    # the real CONT_ID-style key shape that exposed the bug
+    has_child = rng.random(n_keys) < 0.84
+    real_child = pd.DataFrame({"CD": [c for c, h in zip(codes, has_child) if h]})
+    real_parent = pd.DataFrame({"CD": codes})
+    real_counts = _real_parent_counts(real_parent, real_child, "CD", "CD")
+
+    # synthetic parent pool is the SAME size as the real one (this test
+    # isolates the rounding bug, not the separate pool-sizing bug) but the
+    # keys are fabricated placeholders with zero value-overlap with real --
+    # forces every weight through the random-fallback + apportionment path
+    synth_keys = [f"SYNTH{i}" for i in range(n_keys)]
+    child_df = pd.DataFrame({"CD": rng.choice(synth_keys, size=len(real_child), replace=False)})
+    n_covered_real = int(has_child.sum())
+    linked = link_table(child_df, "CD", synth_keys, real_counts, seed=7)
+    covered = pd.Series(synth_keys).isin(set(linked["CD"])).sum()
+    real_ratio = n_covered_real / n_keys
+    got_ratio = covered / n_keys
+    _assert(got_ratio >= real_ratio - 0.10,
+            f"expected apportionment to land within ~10pts of the real coverage ratio "
+            f"({real_ratio:.2f}), got {got_ratio:.2f} ({covered}/{n_keys} keys covered) -- "
+            f"floor-based rounding would land far below this")
 
 
 @check("_normalize_key_values: 348820.0 and 348820 normalize to the same value")

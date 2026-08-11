@@ -127,17 +127,29 @@ def link_table(child_df: pd.DataFrame, fk: str, parent_keys: Sequence,
         weights = np.ones(len(parent_keys))
         total = weights.sum()
     p = weights / weights.sum()
-    target = np.floor(weights * (n / total)).astype(int)
-    diff = n - target.sum()
-    if diff != 0:
-        # weighted, not uniform -- an extra/short row should land on a
-        # popular key far more often than a key with near-zero real weight
-        idx = rng.choice(len(target), size=abs(diff), p=p)
-        if diff > 0:
-            np.add.at(target, idx, 1)
-        else:
-            np.subtract.at(target, idx, 1)
-            target = np.clip(target, 0, None)
+    # Largest-remainder (Hamilton) apportionment, not floor + a random
+    # weighted top-up: floor(weight * n/total) alone systematically zeroes
+    # out every key whose real weight is small (e.g. exactly 1 -- the common
+    # case for a near-unique key, where most real parents have exactly one
+    # child) any time the resampled total lands even slightly above n, which
+    # is the ordinary case, not an edge case. A random top-up then only
+    # restores a random SUBSET of those zeroed keys (weighted by their own
+    # weight, so a weight-1 key competes on equal footing with every other
+    # weight-1 key for a limited number of draws) -- confirmed on a real
+    # near-unique key where this alone held coverage to ~53% of keys instead
+    # of the ~84% real ratio. The leftover units belong to whichever keys'
+    # fractional share was closest to rounding up, not a lottery.
+    raw = weights * (n / total)
+    target = np.floor(raw).astype(int)
+    remainder = n - target.sum()   # always >= 0: sum(floor(raw)) <= sum(raw) == n
+    if remainder > 0:
+        frac = raw - target
+        top = np.argsort(-frac, kind="stable")[:remainder]
+        target[top] += 1
+    elif remainder < 0:  # pragma: no cover - defensive; not reachable in practice
+        frac = raw - target
+        bottom = np.argsort(frac, kind="stable")[:abs(remainder)]
+        target[bottom] = np.clip(target[bottom] - 1, 0, None)
 
     # 1. rank-swap: relabel the model's own values by frequency rank,
     # keeping every row's original position (a pure `.map`, never a reorder)

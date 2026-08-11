@@ -1040,20 +1040,27 @@ def _run_job(cfg: dict, st: dict):
         cardinality_baseline = None  # {"shape":..., "statistic":..., "per_relationship":{...}} or None
         if parent_names:
             # HMA emits the hub itself; for the independent single-table synths,
-            # derive an equivalent hub per key (the distinct keys they generated
-            # across that key's child tables) so referential integrity +
+            # derive an equivalent hub per key so referential integrity +
             # cardinality are measured and comparable for every synthesizer, not
-            # just HMA.
+            # just HMA. se.derive_synthetic_hub_pool unions each child's own
+            # distinct values for the key (trustworthy for a real, learned
+            # vocabulary like a *_TP_CD code) but resizes to the real entity
+            # count when that union turns out to be fabricated, non-overlapping
+            # noise instead (the common case for a high-cardinality surrogate
+            # id column, which SDV/TabSyn both generate as a fresh unique
+            # value per row) -- see its docstring for why that distinction
+            # matters for parent coverage.
             for s, tabs in suite.items():
                 for entity_key, pname in parent_names.items():
                     if pname in tabs:
                         continue
-                    ids = set()
-                    for t in entity_children_by_key.get(entity_key, []):
-                        if t in tabs and entity_key in tabs[t].columns:
-                            ids |= set(tabs[t][entity_key].dropna().unique())
-                    tabs[pname] = pd.DataFrame(
-                        {entity_key: sorted(ids, key=lambda v: (str(type(v)), str(v)))})
+                    children_values = {
+                        t: tabs[t][entity_key] for t in entity_children_by_key.get(entity_key, [])
+                        if t in tabs and entity_key in tabs[t].columns
+                    }
+                    real_ids = fit_tables.get(pname, pd.DataFrame({entity_key: []}))[entity_key]
+                    ids = se.derive_synthetic_hub_pool(children_values, real_ids, entity_key)
+                    tabs[pname] = pd.DataFrame({entity_key: ids})
             # That per-key union is only a coherent shared pool once every child
             # is actually relinked against it: each single-table synth fit its
             # own copy of the key column independently, so before this the same

@@ -217,3 +217,51 @@ def build_entity_hub(
         for key in entity_keys
     }
     return new_tables, metadata, rels, info
+
+
+def derive_synthetic_hub_pool(
+    children_values: Dict[str, pd.Series], real_ids: pd.Series, entity_key: str,
+    overlap_threshold: float = 0.5,
+) -> pd.Series:
+    """Build a single-table synthesizer's own stand-in entity-hub key pool.
+
+    HMA generates the hub itself; a single-table synth (TVAE/TabSyn/etc.) has
+    no hub at all, so one is derived here from what its own per-table fits
+    already produced for ``entity_key`` -- the union of each child's own
+    distinct values.
+
+    That union is only trustworthy when the key column is something a
+    per-table model genuinely LEARNS (a small, real vocabulary -- e.g. a
+    *_TP_CD code column, whose values a categorical decoder can only ever be
+    one it saw during training). For a high-cardinality, effectively-unique
+    key (e.g. a surrogate id like ``CONT_ID``), SDV/TabSyn both treat it as
+    an id-typed column and fabricate a FRESH, fully-unique value per ROW --
+    confirmed directly: fitting TVAE on a 1756-row table with 963 real
+    distinct keys produced 1756 distinct synthetic values with ZERO overlap
+    with the real ones. Unioning that across every child table inflates the
+    pool toward the SUM of their row counts instead of the real entity
+    count, so any one child's own row count can only ever cover a fraction
+    of that inflated pool -- capping parent coverage well below what the
+    real data achieves, regardless of how well the synthesizer otherwise
+    modeled that table.
+
+    This can't be told apart by column name or sdtype alone (both are
+    caller-specific and not always available here), so it's detected
+    directly: does the union already overlap meaningfully with the REAL
+    hub's own key identity? High overlap (``>= overlap_threshold``) means
+    the union is real, trustworthy vocabulary -- keep it untouched. Near-zero
+    overlap means the union is just fabricated noise, uninformative about
+    identity -- in that case only its SIZE was ever meaningful, so it's
+    resized to match the real entity count, using equally-fabricated
+    placeholder values (which relinking already treats as random draws
+    either way, so nothing about VALUE-matching changes, only the pool's
+    cardinality).
+    """
+    ids: set = set()
+    for v in children_values.values():
+        ids |= set(v.dropna().unique())
+    real_set = set(real_ids.dropna().unique())
+    overlap = (len(ids & real_set) / len(real_set)) if real_set else 1.0
+    if real_set and overlap < overlap_threshold:
+        ids = {f"{entity_key}__synth_{i}" for i in range(len(real_set))}
+    return pd.Series(sorted(ids, key=lambda v: (str(type(v)), str(v))), name=entity_key)
