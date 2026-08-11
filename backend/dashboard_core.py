@@ -1293,6 +1293,12 @@ def _run_job(cfg: dict, st: dict):
         eff_frames = []
         efficacy_skipped = []  # [{table, target, task, reason}] -- surfaced in the report, not just the log
         efficacy_notes = []    # [{table, target, task, note}] -- caution, score still computed
+        # {table: [(column, importance), ...]} -- which of a target's own
+        # feature columns actually drive it, from a real-data-only fit (see
+        # se.real_feature_importance). A wide table makes it hard to tell
+        # which columns are worth chasing when synthetic utility looks off;
+        # this narrows that down instead of guessing across every column.
+        efficacy_feature_importance: dict = {}
 
         def skip_eff(t, reason, target=None, task=None):
             say(f"ML efficacy · {t} · skipped ({reason})")
@@ -1343,6 +1349,15 @@ def _run_job(cfg: dict, st: dict):
                 # cascade of failures
                 skip_eff(t, str(e), target, task)
                 continue
+            try:
+                imp = se.real_feature_importance(train[t], roles[t], target, task)
+            except Exception:  # pragma: no cover - defensive, never blocks the run
+                imp = None
+            if imp:
+                efficacy_feature_importance[t] = {
+                    "target": target, "task": task,
+                    "features": [{"column": c, "importance": v} for c, v in imp],
+                }
             done_e += 1; set_pct(80 + 12 * done_e / max(1, n_tab))
         efficacy = pd.concat(eff_frames, ignore_index=True) if eff_frames else pd.DataFrame()
 
@@ -1414,6 +1429,7 @@ def _run_job(cfg: dict, st: dict):
             "efficacy": efficacy.to_dict(orient="records") if not efficacy.empty else [],
             "efficacy_skipped": efficacy_skipped,
             "efficacy_notes": efficacy_notes,
+            "efficacy_feature_importance": efficacy_feature_importance,
             "figures": figs,
             "config": {k: cfg[k] for k in ("synths", "epochs", "scale", "holdout")},
         })

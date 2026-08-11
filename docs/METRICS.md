@@ -251,6 +251,30 @@ Reported: score per training source, plus **`gap(real-<synth>)` = TRTR − TSTR*
 metric (≈ 0 means the synthetic data is as useful as real data for ML). Saved to
 `reports/ml_efficacy_tstr.csv` with a grouped-bar comparison figure.
 
+### Which fields actually matter (`synth_eval.real_feature_importance`)
+
+A wide table (dozens of modelable columns) makes it hard to tell which columns
+are worth chasing when a target's utility score looks off — most of them
+probably have nothing to do with it. This narrows that down: a shallow
+(`max_depth=6`) `DecisionTree` fit on the **real training data alone** (not a
+TSTR/TRTR comparison — ground truth about what actually drives the target),
+reporting each feature column's importance, ranked. Deliberately shallow
+rather than the unbounded tree the accuracy/precision/recall metrics above
+use — an unbounded tree spreads nonzero importance across nearly every
+column via deep, idiosyncratic splits, which is the opposite of narrowing
+anything down; a shallow tree only credits the splits that reduced impurity
+the most, so most columns land at exactly 0. A one-hot-encoded categorical
+column is reported as ONE aggregated number for the original column (summed
+across its own one-hot slots), not fragmented per category value.
+
+Computed once per (table, auto-selected-or-forced target), independent of
+`sdmetrics_ml_efficacy`'s own tidy score table (several other consumers —
+the Utility score, the efficacy comparison charts — treat every row of that
+table as a comparable real-vs-synthetic score, and an importance number
+isn't one, so this is kept as its own structure rather than more rows
+there). Shown in the dashboard under each table's ML-efficacy breakdown as
+"Which fields actually matter for this target".
+
 ---
 
 ## 4. Leaderboard aggregation (`reports/leaderboard.csv`)

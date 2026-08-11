@@ -600,3 +600,83 @@ def sdmetrics_ml_efficacy(
     return out
 
 
+def real_feature_importance(
+    train_real: pd.DataFrame, roles: ColumnRoles, target: str, task: str,
+    max_train_rows: int = 20000,
+) -> Optional[List[Tuple[str, float]]]:
+    """Which of a target's own feature columns actually drive its
+    predictability, fit on REAL data alone -- ground truth, not a TSTR/TRTR
+    comparison. Kept deliberately separate from :func:`sdmetrics_ml_efficacy`'s
+    tidy score table rather than added as more rows there: several callers
+    (the Utility score, the efficacy comparison charts) treat every row of
+    that table as a comparable real-vs-synthetic score, and an importance
+    number isn't one.
+
+    A wide table with dozens of modelable columns makes it hard to tell
+    which ones are worth fixing first when synthetic utility looks off --
+    this narrows that down to the columns actually driving the target,
+    ranked, so the rest can be set aside.
+
+    Fit with ``max_depth=6`` (shallow, matching the noise-floor check in
+    :func:`_predictive_signal`) rather than the unbounded tree
+    ``sdmetrics_ml_efficacy`` uses for its own accuracy/precision/recall --
+    an unbounded tree spreads nonzero importance across nearly every column
+    via deep, idiosyncratic splits, which is the opposite of narrowing
+    anything down; a shallow tree only credits the few splits that actually
+    reduced impurity the most, so most columns land at exactly 0.
+
+    One-hot-encoded categorical columns are reported as ONE aggregated
+    number per ORIGINAL column (summed across that column's own one-hot
+    slots) -- "GENDER_TP_CD" as a single figure, not fragmented into
+    "GENDER_TP_CD_F"/"GENDER_TP_CD_M"/"GENDER_TP_CD_U" separately.
+
+    Returns ``(column, importance)`` pairs sorted descending (importances
+    sum to ~1, sklearn's own convention), or ``None`` if there aren't
+    enough usable feature columns or rows to fit reliably.
+    """
+    from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
+
+    feature_roles = ColumnRoles(
+        numeric=[c for c in roles.numeric if c != target],
+        categorical=[c for c in roles.categorical if c != target],
+    )
+    if not feature_roles.modelable:
+        return None
+    df = train_real.dropna(subset=[target]) if target in train_real.columns else train_real.iloc[0:0]
+    if len(df) > max_train_rows:
+        df = df.sample(max_train_rows, random_state=0)
+    if len(df) < 20:
+        return None
+    try:
+        enc, use_cols = _fit_mixed_encoder(df, feature_roles)
+    except ValueError:
+        return None
+    X = np.nan_to_num(_encode(enc, df, use_cols))
+    if task == "classification":
+        y = df[target].astype(str)
+        if y.nunique() < 2:
+            return None
+        model = DecisionTreeClassifier(max_depth=6, random_state=0)
+    else:
+        y = pd.to_numeric(df[target], errors="coerce")
+        keep = y.notna().to_numpy()
+        X, y = X[keep], y[keep]
+        if len(y) < 20:
+            return None
+        model = DecisionTreeRegressor(max_depth=6, random_state=0)
+    model.fit(X, y)
+
+    cat_by_len = sorted(feature_roles.categorical, key=len, reverse=True)
+    agg: Dict[str, float] = {}
+    for fname, imp in zip(enc.get_feature_names_out(), model.feature_importances_):
+        prefix, rest = fname.split("__", 1)
+        if prefix == "num":
+            col = rest
+        else:
+            # "cat__COL_VALUE" -> COL; longest-name-first avoids a shorter
+            # column name matching as a false prefix of a longer one
+            col = next((c for c in cat_by_len if rest == c or rest.startswith(c + "_")), rest)
+        agg[col] = agg.get(col, 0.0) + float(imp)
+    return sorted(agg.items(), key=lambda kv: -kv[1])
+
+

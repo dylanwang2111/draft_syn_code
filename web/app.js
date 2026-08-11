@@ -2025,6 +2025,14 @@ function renderReport(res){
             + "the real baseline here, so the ratio was capped at 1.00; hover the cell for the raw value. "
             + "Absolute gaps (real − synth) are in the downloaded CSV.")}</p>`;
       if(notes.size) ml+=`<div class="efflog">`+[...notes].map(n=>"⚠ "+esc(n)).join("\n")+`</div>`;
+      const fi=(res.efficacy_feature_importance||{})[t];
+      if(fi&&fi.features&&fi.features.length){
+        ml+=head("Which fields actually matter for this target",
+          "A shallow decision tree fit on the REAL data alone (not synthetic) — which of this target's own "
+          + "feature columns it actually relies on to predict it. Columns not listed contributed ~0: fixing "
+          + "THEM won't move this target's utility score, so they're not worth chasing first.")
+          + fi.features.slice(0,8).map(f=>meter(esc(f.column),f.importance)).join("");
+      }
     }
     // and the roll-up: the mean over every panel of every table = the headline
     ml+=head("Roll-up",

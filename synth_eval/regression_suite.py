@@ -29,7 +29,7 @@ from .columns import (ColumnRoles, auto_categorical_threshold, best_refill_group
                       classify_columns, group_diversity_reduction, suffix_sdtype_overrides)
 from .compare import compute_summary, shapes_heatmap_data, structure_scores
 from .efficacy import (InsufficientHoldoutError, _predictive_signal, _quasi_identifier_group_col,
-                       auto_select_target, sdmetrics_ml_efficacy)
+                       auto_select_target, real_feature_importance, sdmetrics_ml_efficacy)
 from .entity import (_normalize_key_name, _resolve_key_column, build_entity_hub,
                      derive_synthetic_hub_pool, entity_key_tables)
 from .link import _normalize_key_values, _real_parent_counts, link_relationships, link_table
@@ -182,6 +182,51 @@ def _c_sdmetrics_ml_efficacy_normal_case_unaffected():
                                 roles, "CODE", "classification", table_name="BIGTABLE")
     _assert(not out.empty and out["score"].notna().all(),
             f"expected a normally-scored, non-empty frame, got:\n{out}")
+
+
+@check("real_feature_importance: ranks the genuinely predictive column above a pure-noise one")
+def _c_real_feature_importance_ranks_signal():
+    rng = np.random.default_rng(0)
+    n = 2000
+    skill = rng.choice(["LOW", "HIGH"], n)
+    # FLAG genuinely depends on SKILL; NOISE_CD carries no information at all
+    flag = [("Y" if (s == "HIGH" and rng.random() < 0.85) else
+             ("Y" if (s == "LOW" and rng.random() < 0.10) else "N")) for s in skill]
+    df = pd.DataFrame({"SKILL_LEVEL_CD": skill, "NOISE_CD": rng.choice(["A", "B", "C"], n), "FLAG": flag})
+    roles = ColumnRoles(categorical=["SKILL_LEVEL_CD", "NOISE_CD", "FLAG"])
+    ranked = real_feature_importance(df, roles, "FLAG", "classification")
+    _assert(ranked is not None and ranked[0][0] == "SKILL_LEVEL_CD",
+            f"expected SKILL_LEVEL_CD (the genuinely predictive column) ranked first, got {ranked}")
+    total = sum(v for _, v in ranked)
+    _assert(abs(total - 1.0) < 1e-6, f"importances should sum to ~1 (sklearn's own convention), got {total:.3f}")
+
+
+@check("real_feature_importance: aggregates one-hot slots back to the ORIGINAL column, not fragments")
+def _c_real_feature_importance_aggregates_onehot():
+    rng = np.random.default_rng(1)
+    n = 1500
+    cat = rng.choice(["A", "B", "C", "D"], n)   # 4 one-hot slots once encoded
+    target = np.where(cat == "A", "Y", "N")     # fully determined by CAT_CD
+    df = pd.DataFrame({"CAT_CD": cat, "OTHER_CD": rng.choice(["X", "Y"], n), "TARGET": target})
+    roles = ColumnRoles(categorical=["CAT_CD", "OTHER_CD", "TARGET"])
+    ranked = real_feature_importance(df, roles, "TARGET", "classification")
+    cols = [c for c, _ in ranked]
+    _assert(cols.count("CAT_CD") == 1,
+            f"expected ONE aggregated 'CAT_CD' entry, not one per one-hot value, got {cols}")
+
+
+@check("real_feature_importance: not enough rows or no feature columns returns None, not a crash")
+def _c_real_feature_importance_none_when_unusable():
+    tiny = pd.DataFrame({"CD": ["A", "B"], "TARGET": ["Y", "N"]})
+    roles = ColumnRoles(categorical=["CD", "TARGET"])
+    _assert(real_feature_importance(tiny, roles, "TARGET", "classification") is None,
+            "too few rows to fit reliably must return None, not raise or fabricate a ranking")
+
+    n = 100
+    df = pd.DataFrame({"TARGET": np.random.default_rng(0).choice(["Y", "N"], n)})
+    roles2 = ColumnRoles(categorical=["TARGET"])   # no OTHER feature columns at all
+    _assert(real_feature_importance(df, roles2, "TARGET", "classification") is None,
+            "a target with no feature columns to predict FROM must return None")
 
 
 def _versioned_dimension_fixture():
