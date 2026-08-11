@@ -34,12 +34,14 @@ from .entity import (_normalize_key_name, _resolve_key_column, build_entity_hub,
                      derive_synthetic_hub_pool, entity_key_tables)
 from .link import _normalize_key_values, _real_parent_counts, link_relationships, link_table
 from .pii import apply_pii_plan, fake_series
+from .scd import detect_ordered_date_pairs
 from .privacy import filter_close_records, filter_close_records_multitable, nearest_real_examples
 
 # imported from backend, not synth_eval -- _refill's conditional-grouping
 # dispatch is where the actual bug this section guards against lives (see
 # below), the synth_eval-level building blocks alone don't exercise it
-from backend.dashboard_core import _detect, _metadata_from_request, _refill
+from backend.dashboard_core import (_detect, _merge_ordered_date_clusters,
+                                    _metadata_from_request, _refill)
 
 CHECKS: list[tuple[str, "object"]] = []
 
@@ -948,6 +950,89 @@ def _c_best_refill_group_column_picks_right_one():
 def _c_best_refill_group_column_none():
     best = best_refill_group_column(_refill_fixture(), "AUDIT_USER", ["CODE_CD"])
     _assert(best is None, f"expected None (no real relationship worth conditioning on), got {best}")
+
+
+@check("detect_ordered_date_pairs: finds an effective/end pair even though the end column is mostly null")
+def _c_detect_ordered_date_pairs_finds_open_ended():
+    # an end-date column being mostly null is the NORMAL case (most
+    # entities are still on their first, still-open version), not noise --
+    # confirmed as a real bug against production-shaped data: an earlier
+    # version measured "parsed fraction of ALL rows" instead of "parsed
+    # fraction of the rows that HAVE a value", and silently dropped a real
+    # end-date column that was 55% null by design
+    n = 200
+    rng = np.random.default_rng(0)
+    eff = pd.date_range("2015-01-01", periods=n, freq="7D").strftime("%Y-%m-%d")
+    end = [eff[i + 5] if i + 5 < n and rng.random() < 0.4 else None for i in range(n)]
+    df = pd.DataFrame({"EFFECTIVE_DT": eff, "END_DT": end, "NOISE_ID": rng.integers(10**9, 10**10, n)})
+    pairs = detect_ordered_date_pairs(df, ["EFFECTIVE_DT", "END_DT", "NOISE_ID"])
+    _assert(("EFFECTIVE_DT", "END_DT") in pairs,
+            f"expected the mostly-null END_DT to still be detected, got {pairs}")
+    _assert(all("NOISE_ID" not in p for p in pairs),
+            f"a raw integer id column must never be treated as a date (pd.to_datetime reinterprets a large "
+            f"int as a Unix-epoch timestamp instead of rejecting it), got {pairs}")
+
+
+@check("detect_ordered_date_pairs: a column can appear in more than one pair, not forced disjoint")
+def _c_detect_ordered_date_pairs_not_disjoint():
+    n = 100
+    base = pd.date_range("2020-01-01", periods=n, freq="D")
+    df = pd.DataFrame({
+        "CREATED_DT": base.strftime("%Y-%m-%d"),
+        "EFFECTIVE_DT": (base + pd.Timedelta(days=1)).strftime("%Y-%m-%d"),
+        "END_DT": (base + pd.Timedelta(days=2)).strftime("%Y-%m-%d"),
+    })
+    pairs = detect_ordered_date_pairs(df, ["CREATED_DT", "EFFECTIVE_DT", "END_DT"])
+    involving_eff = [p for p in pairs if "EFFECTIVE_DT" in p]
+    _assert(len(involving_eff) >= 2,
+            f"EFFECTIVE_DT genuinely orders against BOTH CREATED_DT and END_DT -- expected it in >=2 "
+            f"pairs, not forced into just one, got {pairs}")
+
+
+@check("_merge_ordered_date_clusters: unifies a pair split across two different refill clusters")
+def _c_merge_ordered_date_clusters_unifies_split_pair():
+    # _merge_ordered_date_clusters mutates its input's cluster LISTS in
+    # place (same style as _refill's own clusters dict) -- pass fresh lists
+    # each call, and compare against a literal expected total rather than
+    # re-deriving it from the (now also-mutated) original.
+    clusters = {"GROUP_A": ["START_DT", "OTHER_A"], "GROUP_B": ["END_DT", "OTHER_B"], None: ["UNRELATED"]}
+    merged = _merge_ordered_date_clusters(clusters, [("START_DT", "END_DT")])
+    keys_with_both = [k for k, v in merged.items() if "START_DT" in v and "END_DT" in v]
+    _assert(len(keys_with_both) == 1,
+            f"START_DT and END_DT must end up in the SAME cluster so they draw from the same real row, got {merged}")
+    total_cols = sum(len(v) for v in merged.values())
+    _assert(total_cols == 5, f"merging must not drop or duplicate any column, got {merged}")
+
+
+@check("_merge_ordered_date_clusters: prefers a conditioned cluster's key over an unconditioned one")
+def _c_merge_ordered_date_clusters_prefers_conditioned():
+    clusters = {"GROUP_A": ["START_DT"], None: ["END_DT"]}
+    merged = _merge_ordered_date_clusters(dict(clusters), [("START_DT", "END_DT")])
+    _assert(list(merged.keys()) == ["GROUP_A"],
+            f"the conditioned key GROUP_A should survive over the unconditioned None cluster, got {merged}")
+
+
+@check("_refill: an ordered date pair is sampled from the SAME real row even split across two group columns")
+def _c_refill_keeps_date_order_across_clusters():
+    # GROUP_A determines START_DT, GROUP_B (a DIFFERENT, independent column)
+    # determines END_DT -- best_refill_group_column would pick a different
+    # gcol for each column on its own, splitting them into different
+    # clusters (and different sampled real rows) without the merge fix
+    n = 200
+    rng = np.random.default_rng(0)
+    group_a = rng.choice(["A1", "A2"], n)
+    group_b = rng.choice(["B1", "B2"], n)
+    start_dt = np.where(group_a == "A1", "2020-01-01", "2020-06-01")
+    end_dt = np.where(group_b == "B1", "2025-01-01", "2026-01-01")
+    real = pd.DataFrame({"GROUP_A": group_a, "GROUP_B": group_b, "START_DT": start_dt, "END_DT": end_dt})
+    synth = pd.DataFrame({"GROUP_A": rng.choice(["A1", "A2"], n), "GROUP_B": rng.choice(["B1", "B2"], n)})
+    out = _refill(synth, real, ["START_DT", "END_DT"], list(real.columns), seed=0,
+                  group_candidates=["GROUP_A", "GROUP_B"], min_group_size=10)
+    start = pd.to_datetime(out["START_DT"])
+    end = pd.to_datetime(out["END_DT"])
+    _assert((start <= end).all(),
+            f"START_DT <= END_DT must hold for every row (real data never violates it), "
+            f"got {int((start > end).sum())} violation(s)")
 
 
 @check("_refill: conditions a fill column on its matching modeled column once the real group is large enough")

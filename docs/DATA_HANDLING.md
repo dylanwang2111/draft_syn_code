@@ -114,6 +114,29 @@ Two layers, in order:
    is worse for both data availability and privacy, for a case not yet shown to
    matter in practice.
 
+3. **Merging a real ordering relationship BETWEEN two skipped columns, even
+   across two different conditioning groups.** Layer 2 picks each skipped
+   column's best-matching modeled column independently — so an
+   effective-date/end-date pair (or any other pair with a genuine real
+   invariant `low <= high` between *themselves*, not a shared tie to some
+   other field) can end up conditioned on two DIFFERENT modeled columns and
+   get sampled from two DIFFERENT real rows, breaking that invariant even
+   though layer 1's whole-row sampling exists specifically to prevent this.
+   Flagged directly from a manual walkthrough of HMA-synthesized data against
+   production (an effective date later than its own row's end date).
+
+   Detected the same way as layer 2 — measured directly from the real data,
+   never guessed from column names (`synth_eval.detect_ordered_date_pairs`:
+   does `low <= high` hold for virtually every real row with both present?
+   — robust to an end-date column being mostly null by design, e.g. most
+   entities are still on their first, still-open version). Any detected pair
+   split across two clusters is merged into one before sampling
+   (`backend.dashboard_core._merge_ordered_date_clusters`), preferring to
+   keep whichever cluster is conditioned on a modeled column over an
+   unconditioned one. A pair is never assumed disjoint from another — three
+   date columns that all pairwise order (`created <= effective <= end`) all
+   end up in one merged group, not just two of them.
+
 ---
 
 ## PII handling (`synth_eval.pii`, `apply_pii_plan`)

@@ -25,5 +25,5 @@ from .entity import (  # noqa: F401
 )
 from .link import link_relationships, link_table  # noqa: F401
 from .cross_table import entity_cross_table_trends  # noqa: F401
-from .scd import repair_scd_timeline  # noqa: F401
+from .scd import detect_ordered_date_pairs, repair_scd_timeline  # noqa: F401
 from .pii import detect_pii, fake_series, apply_pii_plan  # noqa: F401

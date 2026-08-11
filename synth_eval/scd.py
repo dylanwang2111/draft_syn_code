@@ -12,7 +12,7 @@ date columns it is a no-op (returns a note) rather than producing nonsense.
 """
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -20,9 +20,112 @@ import pandas as pd
 
 def _parse(s: pd.Series) -> pd.Series:
     try:
-        return pd.to_datetime(s, errors="coerce", format="mixed")
+        out = pd.to_datetime(s, errors="coerce", format="mixed")
     except (ValueError, TypeError):
-        return pd.to_datetime(s, errors="coerce")
+        out = pd.to_datetime(s, errors="coerce")
+    # pd.to_datetime's default nanosecond-precision datetime64[ns] can't
+    # represent a date past ~2262-04-11 -- a common "current/open" SCD
+    # sentinel (e.g. 9999-12-31, the convention used elsewhere in this
+    # pipeline) silently comes back NaT here even though it's a perfectly
+    # valid date, indistinguishable from genuinely missing/malformed input.
+    # Recovered per-value via pd.Timestamp (which pandas 2.x's wider
+    # microsecond resolution CAN represent) for whichever values failed the
+    # vectorized ns-bound parse above but aren't actually missing.
+    missing = out.isna() & s.notna()
+    if missing.any():
+        recovered = {}
+        for idx, val in s[missing].items():
+            try:
+                recovered[idx] = pd.Timestamp(val)
+            except (ValueError, TypeError):
+                pass   # genuinely unparseable -- stays NaT, correctly
+        if recovered:
+            out = out.astype("datetime64[us]")
+            for idx, ts in recovered.items():
+                out.loc[idx] = ts
+    return out
+
+
+def detect_ordered_date_pairs(
+    real: pd.DataFrame, cols: Sequence[str],
+    min_support: int = 20, min_ok_ratio: float = 0.99,
+) -> List[Tuple[str, str]]:
+    """Find ``(low, high)`` column pairs among ``cols`` where ``low <= high``
+    holds for virtually every real row with both non-null -- e.g. an
+    effective/end date pair on an SCD-versioned table.
+
+    Measured directly from the data, never guessed from column names: this
+    schema's own naming convention for "start"/"effective"/"end"/"expiry"
+    won't generalize to the next uploaded schema (see the synth-lab-context
+    skill's principle 1 -- measure, don't hardcode). Scales as O(k^2)
+    comparisons where k = number of date-parseable columns among ``cols``,
+    each comparison one vectorized boolean mean over the real column -- fine
+    for the handful to a dozen date-like columns a typical table has; not
+    meant for (and not needed on) hundreds of candidate columns.
+
+    A pair only qualifies if the ordering holds in ONE direction almost
+    always and the OTHER direction does not (``low <= high`` near-total,
+    ``high <= low`` well short of it) -- two columns that are both true
+    almost always are functionally duplicates or constant, not a meaningful
+    low/high relationship, and are excluded rather than arbitrarily picking
+    a direction.
+
+    Returned pairs are NOT forced disjoint -- a column can appear in more
+    than one (e.g. created <= effective <= end all pairwise qualify at
+    once, so ``created`` appears in one pair and ``effective`` in two).
+    Forcing disjointness would risk dropping the exact relationship a
+    caller cares about whenever it loses a tiebreak to an unrelated pair
+    that happens to share a column -- confirmed directly: on real CONTACT
+    data, greedily keeping pairs disjoint let ``CREATED_DT``/
+    ``IDP_EFFECTIVE_DATE`` claim ``IDP_EFFECTIVE_DATE`` first and silently
+    drop ``IDP_EFFECTIVE_DATE``/``IDP_END_DATE`` -- the one pair actually
+    named in the bug this exists to catch. Sorted by ordering-ratio then
+    support, most confident first; a caller that needs disjoint GROUPS
+    (not pairs) should union-find over these as edges instead.
+    """
+    parsed = {}
+    for c in cols:
+        if c not in real.columns:
+            continue
+        col = real[c]
+        # a raw int/float column (a surrogate id, an audit tx id, ...) must
+        # never reach pd.to_datetime here: it silently reinterprets a large
+        # integer as a Unix-epoch timestamp instead of rejecting it as "not
+        # a date" -- confirmed directly, a real CONT_ID column (10-digit
+        # ints) "parsed" as 100% valid dates near 1970-01-01. Only a
+        # string/object column can plausibly BE a date string in the first
+        # place; an already-datetime64 column is fine as-is.
+        if pd.api.types.is_numeric_dtype(col):
+            continue
+        raw_present = int(col.notna().sum())
+        if raw_present == 0:
+            continue
+        s = _parse(col)
+        # of the values that EXIST, do they mostly parse as real dates? --
+        # not "what fraction of every row, including legitimately-null
+        # ones" -- an end-date column is routinely mostly null BY DESIGN
+        # (most entities are still on their first, still-open version) and
+        # that must not disqualify it; confirmed directly: IDP_END_DATE
+        # (55% null on real CONTACT data) was being dropped entirely by an
+        # earlier version of this check that measured against every row.
+        if s.notna().sum() / raw_present >= 0.9:
+            parsed[c] = s
+    names = list(parsed)
+    candidates = []
+    for i, a in enumerate(names):
+        for b in names[i + 1:]:
+            both = parsed[a].notna() & parsed[b].notna()
+            n = int(both.sum())
+            if n < min_support:
+                continue
+            le = float((parsed[a][both] <= parsed[b][both]).mean())
+            ge = float((parsed[b][both] <= parsed[a][both]).mean())
+            if le >= min_ok_ratio and ge < min_ok_ratio:
+                candidates.append((a, b, le, n))
+            elif ge >= min_ok_ratio and le < min_ok_ratio:
+                candidates.append((b, a, ge, n))
+    candidates.sort(key=lambda t: (-t[2], -t[3]))
+    return [(low, high) for low, high, _, _ in candidates]
 
 
 def repair_scd_timeline(

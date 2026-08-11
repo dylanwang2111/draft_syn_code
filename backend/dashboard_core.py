@@ -445,6 +445,37 @@ def _sample_conditional_row_indices(synth_group: pd.Series, real: pd.DataFrame, 
     return out
 
 
+def _merge_ordered_date_clusters(clusters: dict, pairs) -> dict:
+    """Force any ``(low, high)`` pair split across two different ``_refill``
+    clusters into ONE, so both draw from the SAME sampled real row.
+
+    Prefers keeping a CONDITIONED cluster's key (a real modeled-column
+    association) over an unconditioned (``None``) one when merging, so that
+    association isn't thrown away just because the pair's other column
+    happened to land in the unconditioned cluster first; between two
+    conditioned clusters, keeps whichever already has more columns (stable,
+    if somewhat arbitrary -- the invariant this exists to protect matters
+    far more than which of two real associations "wins").
+    """
+    col_key = {c: k for k, cs in clusters.items() for c in cs}
+    for low, high in pairs:
+        if low not in col_key or high not in col_key:
+            continue
+        k1, k2 = col_key[low], col_key[high]
+        if k1 == k2:
+            continue
+        keep, drop = k1, k2
+        if k1 is None and k2 is not None:
+            keep, drop = k2, k1
+        elif k1 is not None and k2 is not None and len(clusters[k2]) > len(clusters[k1]):
+            keep, drop = k2, k1
+        clusters[keep].extend(clusters[drop])
+        for c in clusters[drop]:
+            col_key[c] = keep
+        del clusters[drop]
+    return clusters
+
+
 def _refill(synth: pd.DataFrame, real: pd.DataFrame, fill_cols, order, seed=0,
             group_candidates=None, min_association: float = 0.5, min_group_size: int = 10) -> pd.DataFrame:
     """Add ``fill_cols`` back to a synthetic table by resampling real ROWS
@@ -491,6 +522,19 @@ def _refill(synth: pd.DataFrame, real: pd.DataFrame, fill_cols, order, seed=0,
     this by apply_pii_plan, so in practice this only changes the output for
     the non-PII ones -- the PII ones were never going to keep their real
     value regardless of how they're sampled here.
+
+    Conditioning above picks each fill column's best-matching MODELED column
+    INDEPENDENTLY, so a pair with a genuine real invariant BETWEEN
+    themselves (not a shared tie to some other field) -- an effective-date/
+    end-date pair, where real data always has effective <= end -- can end up
+    conditioned on two different modeled columns and sampled from two
+    different real rows, breaking that invariant even though whole-row
+    sampling above exists specifically to prevent this. Detected the same
+    measure-don't-guess way (``se.detect_ordered_date_pairs``: does
+    low <= high hold for virtually every real row with both present?) and
+    merged into one cluster before sampling (``_merge_ordered_date_clusters``)
+    whenever a detected pair is split across two. Flagged directly from a
+    manual walkthrough of HMA-synthesized data against production.
     """
     out = synth.copy()
     n = len(out)
@@ -507,6 +551,20 @@ def _refill(synth: pd.DataFrame, real: pd.DataFrame, fill_cols, order, seed=0,
     for c in cols:
         gcol = se.best_refill_group_column(real, c, candidates, min_association) if candidates else None
         clusters.setdefault(gcol, []).append(c)
+
+    # A fill column's best-matching MODELED group column is picked
+    # independently above, so two columns that must move TOGETHER for a
+    # reason that has nothing to do with any modeled column (an
+    # effective/end date pair, whose real-world invariant is "low <= high"
+    # between THEMSELVES) can land in different clusters and get filled
+    # from DIFFERENT real rows -- breaking that invariant even though
+    # whole-row sampling exists specifically to prevent this (see the
+    # docstring above). Detected directly from the real data
+    # (se.detect_ordered_date_pairs), not guessed from column names, so it
+    # generalizes to a schema never seen before. Flagged directly from a
+    # manual walkthrough of HMA-synthesized data against production
+    # (effective date later than its own row's end date).
+    clusters = _merge_ordered_date_clusters(clusters, se.detect_ordered_date_pairs(real, cols))
 
     for i, (gcol, group_cols) in enumerate(clusters.items()):
         if gcol is None:
