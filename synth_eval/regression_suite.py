@@ -400,6 +400,34 @@ def _c_hub_pool_empty_real_noop():
     _assert(set(pool) == {"x", "y"}, f"no real ids to compare against -- union should pass through, got {sorted(pool)}")
 
 
+@check("derive_synthetic_hub_pool: a wide code column with PARTIAL real coverage is still kept, not resized")
+def _c_hub_pool_partial_recall_still_kept():
+    # Regression for a real bug: recall-based overlap (does the union cover
+    # the FULL real vocabulary?) wrongly flagged a genuinely-learned 220-code
+    # column as "fabricated" just because two child tables' worth of rows
+    # didn't happen to reproduce every single code -- every value the model
+    # DID emit was still a real one (100% precision), which is what actually
+    # distinguishes a real vocabulary from fabricated noise. Confirmed live:
+    # this turned every PERSON.OCCUPATION_TP_CD value into a meaningless
+    # "OCCUPATION_TP_CD__synth_N" placeholder on a column that previously
+    # matched real values exactly.
+    real_ids = pd.Series([f"CODE{i}" for i in range(220)])
+    rng = np.random.default_rng(0)
+    # each child only reproduces a subset of the 220 codes (a realistic
+    # generation pattern for a long-tail categorical) -- union recall is
+    # well under 50%, but every emitted value is still a real code
+    children_values = {
+        "OCCUPATION": pd.Series(rng.choice(real_ids[:90], size=300)),
+        "PERSON": pd.Series(rng.choice(real_ids[:70], size=500)),
+    }
+    union_recall = len(set().union(*[set(v) for v in children_values.values()])) / len(real_ids)
+    _assert(union_recall < 0.5, f"fixture setup check: expected recall < 0.5, got {union_recall:.2f}")
+    pool = derive_synthetic_hub_pool(children_values, real_ids, "OCCUPATION_TP_CD")
+    _assert(all(not str(v).endswith(tuple(f"__synth_{i}" for i in range(220))) for v in pool),
+            f"a real (if incomplete) vocabulary must never be replaced with fabricated placeholders, got sample {sorted(pool)[:5]}")
+    _assert(set(pool) <= set(real_ids), f"pool must stay within the real vocabulary, got {sorted(pool)[:5]}")
+
+
 def _skewed_code_fixture(n_codes: int = 30, seed: int = 0):
     """A handful of very common codes (e.g. common occupations) plus many
     rare ones -- the shape a real *_TP_CD column's own popularity usually

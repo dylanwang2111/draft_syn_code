@@ -247,21 +247,29 @@ def derive_synthetic_hub_pool(
 
     This can't be told apart by column name or sdtype alone (both are
     caller-specific and not always available here), so it's detected
-    directly: does the union already overlap meaningfully with the REAL
-    hub's own key identity? High overlap (``>= overlap_threshold``) means
-    the union is real, trustworthy vocabulary -- keep it untouched. Near-zero
-    overlap means the union is just fabricated noise, uninformative about
-    identity -- in that case only its SIZE was ever meaningful, so it's
-    resized to match the real entity count, using equally-fabricated
-    placeholder values (which relinking already treats as random draws
-    either way, so nothing about VALUE-matching changes, only the pool's
-    cardinality).
+    directly: what fraction of the union's OWN entries are real key values
+    (precision), not what fraction of the real key SPACE the union happens
+    to cover (recall) -- those are different questions, and recall is the
+    wrong one here. A wide code column (e.g. 220 distinct values) genuinely
+    modeled from real data can easily have every one of ITS generated values
+    be authentically real while still not covering all 220 codes from just
+    a couple of child tables' worth of rows -- recall would incorrectly read
+    that as "fabricated noise" and wrongly discard a real, correctly-learned
+    vocabulary (confirmed: this exact case turned every PERSON.OCCUPATION_TP_CD
+    value into a meaningless placeholder, wrecking Column Shapes and Column
+    Pair Trends for it, on a column that was previously an exact real-value
+    match). Precision doesn't have that failure mode: a categorical decoder
+    can ONLY ever emit a value it saw during training, so its own output is
+    100% real values by construction regardless of how much of the full
+    vocabulary it happens to reproduce; an id-typed column fabricating a
+    fresh value per row scores ~0% precision either way, correctly
+    triggering the resize.
     """
     ids: set = set()
     for v in children_values.values():
         ids |= set(v.dropna().unique())
     real_set = set(real_ids.dropna().unique())
-    overlap = (len(ids & real_set) / len(real_set)) if real_set else 1.0
+    overlap = (len(ids & real_set) / len(ids)) if ids else 1.0
     if real_set and overlap < overlap_threshold:
         ids = {f"{entity_key}__synth_{i}" for i in range(len(real_set))}
     return pd.Series(sorted(ids, key=lambda v: (str(type(v)), str(v))), name=entity_key)
