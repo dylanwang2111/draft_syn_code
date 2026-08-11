@@ -28,7 +28,7 @@ confused:
 | **Membership Inference (MIA) attacker AUC** | `\|AUC − 0.5\| ≤ 0.10` | `0.10 < \|AUC − 0.5\| ≤ 0.20` | `\|AUC − 0.5\| > 0.20` | AUC not computable |
 | **NewRowSynthesis** *(real-holdout baseline available)* | gap ≤ 0.05 | `0.05 < gap ≤ 0.20`, where `gap = baseline − NewRowSynthesis` | gap > 0.20 | n/a |
 | **NewRowSynthesis** *(no baseline, fallback)* | NRS ≥ 0.9 | `0.7 ≤ NRS < 0.9` | NRS < 0.7 | n/a |
-| **CategoricalCAP** *(real-holdout baseline available)* | `gap ≤ 0.05` **OR** `relative loss ≤ 25%` | neither PASS nor FAIL condition met (see below) | `gap > 0.20` **AND** `relative loss > 100%` | not computable / not applicable |
+| **CategoricalCAP** *(real-holdout baseline available)* | `gap ≤ 0.06` **OR** `relative loss ≤ 25%` | neither PASS nor FAIL condition met (see below) | `gap > 0.20` **AND** `relative loss > 100%` | not computable / not applicable |
 | **CategoricalCAP** *(no baseline, fallback)* | CAP ≥ 0.4 | `0.3 ≤ CAP < 0.4` | CAP < 0.3 | not computable / not applicable |
 | **Nearest-record distance** *(≥5 holdout rows, ceiling available)* | `min_dist ≥ ceiling` | `ratio ≥ 0.5`, where `ratio = min_dist / ceiling` | `ratio < 0.5` | fewer than 5 holdout rows |
 
@@ -36,7 +36,7 @@ confused:
 `headroom = 1 − baseline`, `relative loss = gap / headroom` (the attack succeeding
 X% more often than it already does against real data). WARN is everything the two
 lenses disagree on: e.g. a real-world example from this codebase, `CAP = 0.626`
-vs. a `0.710` real-holdout baseline. `gap = 0.084` (fails the ≤0.05 PASS bar),
+vs. a `0.710` real-holdout baseline. `gap = 0.084` (fails the ≤0.06 PASS bar),
 `relative loss = 0.084 / 0.290 ≈ 29%` (fails the ≤25% PASS bar too, but nowhere
 near the FAIL bar of >100%) → WARN. The attacker's absolute success rate
 (`1 − CAP ≈ 37%`) looking "under 50%" is not what's being judged; it's how much

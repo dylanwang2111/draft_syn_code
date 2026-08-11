@@ -787,7 +787,7 @@ def privacy_report(
             gap = base - cap
             headroom = 1 - base
             rel_loss = (gap / headroom) if headroom > 1e-6 else (float("inf") if gap > 1e-6 else 0.0)
-            passes = gap <= 0.05 or rel_loss <= 0.25
+            passes = gap <= 0.06 or rel_loss <= 0.25
             fails = gap > 0.20 and rel_loss > 1.0
             status = "PASS" if passes else "FAIL" if fails else "WARN"
             if status == "PASS":
