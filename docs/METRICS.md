@@ -180,6 +180,26 @@ and +0.002 respectively) — their efficacy ratios were noise divided by noise,
 not a fidelity signal. Both are now skipped in favor of a target that clears
 the bar, or `None` when nothing in the table does.
 
+**The train/test split for this check is entity-aware, not a random row
+split, whenever a quasi-identifier is present**
+(`synth_eval.efficacy._quasi_identifier_group_col`). On an SCD-versioned
+table (multiple history-rows per entity, the normal shape for this schema)
+a plain random split lets a model "predict" a target just by memorizing a
+value it already saw for that same entity elsewhere in training — not by
+learning anything general. A categorical feature whose
+`group_diversity_reduction` against the target sits within `0.5` of that
+feature's own ceiling (`1 - 1/cardinality`) is treated as such a
+quasi-identifier (typically the entity's own versioning key, which
+near-determines every other static attribute), and the split groups by IT
+(`sklearn.model_selection.GroupShuffleSplit`) instead — holding out whole
+entities, never seen at all in training. Confirmed on `OCCUPATION.csv`: a
+random split showed `OCCUPATION_CATEGORY_CD` clearing the signal gate
+(macro-F1 0.244 vs. a 0.087 noise floor) purely via `OCCUPATION_TP_CD`
+memorization; the entity-aware split drops that to 0.109 (lift ~0.02,
+correctly rejected), while a genuine target on the same table
+(`RED_SEAL_IND`, real signal via `SKILL_LEVEL_CD`) still passes since no
+quasi-identifier is detected for it.
+
 `synth_eval.target_signal_note` runs this same check again as a caution, not a
 gate, for **every** target the pipeline scores — auto-picked or
 manually-forced (`TARGETS` / the dashboard's per-table dropdown, which

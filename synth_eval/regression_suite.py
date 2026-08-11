@@ -28,7 +28,8 @@ import pandas as pd
 from .columns import (ColumnRoles, auto_categorical_threshold, best_refill_group_column,
                       classify_columns, group_diversity_reduction, suffix_sdtype_overrides)
 from .compare import shapes_heatmap_data, structure_scores
-from .efficacy import InsufficientHoldoutError, auto_select_target, sdmetrics_ml_efficacy
+from .efficacy import (InsufficientHoldoutError, _predictive_signal, _quasi_identifier_group_col,
+                       auto_select_target, sdmetrics_ml_efficacy)
 from .entity import _normalize_key_name, _resolve_key_column, build_entity_hub, entity_key_tables
 from .link import _normalize_key_values, _real_parent_counts, link_relationships, link_table
 from .privacy import filter_close_records, filter_close_records_multitable, nearest_real_examples
@@ -179,6 +180,57 @@ def _c_sdmetrics_ml_efficacy_normal_case_unaffected():
                                 roles, "CODE", "classification", table_name="BIGTABLE")
     _assert(not out.empty and out["score"].notna().all(),
             f"expected a normally-scored, non-empty frame, got:\n{out}")
+
+
+def _versioned_dimension_fixture():
+    """A reference/dimension table shaped like OCCUPATION.csv: CODE is the
+    entity's own versioning key (multiple history-rows per code), CATEGORY
+    is a static per-code attribute (perfectly constant within a code, no
+    real relationship to anything else), SKILL genuinely varies WITHIN a
+    code and has a real, generalizable relationship to FLAG."""
+    codes, category, skill, flag = [], [], [], []
+    rng = np.random.default_rng(0)
+    for i in range(15):
+        rows = 6
+        codes += [f"C{i}"] * rows
+        category += [f"CAT{i % 4}"] * rows          # constant per code -- the leak
+        sk = rng.choice(["LOW", "HIGH"], rows)
+        skill += list(sk)
+        flag += [("Y" if (s == "HIGH" and rng.random() < 0.8) else
+                  ("Y" if (s == "LOW" and rng.random() < 0.1) else "N")) for s in sk]
+    return pd.DataFrame({"CODE": codes, "CATEGORY": category, "SKILL": skill, "FLAG": flag})
+
+
+@check("_quasi_identifier_group_col: finds the entity key when it near-determines the target")
+def _c_quasi_identifier_detects_entity_key():
+    df = _versioned_dimension_fixture()
+    roles = ColumnRoles(categorical=["CODE", "CATEGORY", "SKILL", "FLAG"])
+    feature_roles = ColumnRoles(categorical=["CODE", "SKILL", "FLAG"])
+    gcol = _quasi_identifier_group_col(df, "CATEGORY", feature_roles)
+    _assert(gcol == "CODE", f"CATEGORY is constant per CODE (the classic SCD leak) -- expected 'CODE', got {gcol}")
+
+
+@check("_quasi_identifier_group_col: finds nothing for a target with no near-deterministic feature")
+def _c_quasi_identifier_none_for_real_signal():
+    df = _versioned_dimension_fixture()
+    feature_roles = ColumnRoles(categorical=["CODE", "CATEGORY", "SKILL"])
+    gcol = _quasi_identifier_group_col(df, "FLAG", feature_roles)
+    _assert(gcol is None, f"FLAG has no near-deterministic feature (only a real, partial SKILL "
+                          f"relationship) -- expected None, got {gcol}")
+
+
+@check("_predictive_signal: entity-aware split rejects a target only 'predictable' via code memorization")
+def _c_predictive_signal_rejects_memorization():
+    df = _versioned_dimension_fixture()
+    feature_roles = ColumnRoles(categorical=["CODE", "SKILL", "FLAG"])
+    sig = _predictive_signal(df, "CATEGORY", feature_roles, "classification")
+    _assert(sig is not None, "expected a result, not None (enough rows/classes here)")
+    real, floor = sig
+    lift = real - floor
+    _assert(lift < 0.05,
+            f"CATEGORY is only 'predictable' by memorizing CODE (constant per code) -- a random row "
+            f"split lets that leak through; expected the entity-aware split to bring lift near zero, "
+            f"got real={real:.3f} floor={floor:.3f} lift={lift:.3f}")
 
 
 # ---------------------------------------------------------------------------

@@ -7,7 +7,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
-from .columns import ColumnRoles, _fit_mixed_encoder, _encode
+from .columns import ColumnRoles, _fit_mixed_encoder, _encode, group_diversity_reduction
 
 #: minimum macro-F1 / R^2 lift a target must clear over its noise floor
 #: before its efficacy ratio is trusted as signal rather than noise-over-noise.
@@ -20,6 +20,46 @@ _MIN_SIGNAL_LIFT = 0.05
 #: baseline; a few shuffled-label refits of the SAME tree measure how much
 #: apparent score this exact model/sample-size can manufacture from nothing.
 _SHUFFLE_REPEATS = 5
+#: how close a feature's group_diversity_reduction with the TARGET must sit
+#: to that feature's OWN ceiling (1 - 1/cardinality) before it's treated as a
+#: quasi-identifier for the signal check (see _quasi_identifier_group_col) --
+#: same numeric bar as best_refill_group_column's min_association, but
+#: measured as a RATIO of the feature's own ceiling rather than the raw
+#: score, since a low-cardinality feature (e.g. 2 categories, ceiling 0.5)
+#: can never reach a fixed raw threshold like 0.5 even at perfect
+#: determinism -- the ratio scales correctly regardless of cardinality.
+_QUASI_ID_TOLERANCE = 0.5
+
+
+def _quasi_identifier_group_col(
+    df: pd.DataFrame, target_col: str, feature_roles: ColumnRoles,
+) -> Optional[str]:
+    """A categorical feature whose group_diversity_reduction with
+    ``target_col`` sits within ``_QUASI_ID_TOLERANCE`` of that feature's own
+    ceiling is a quasi-identifier for it -- e.g. an SCD-versioned table's own
+    entity key, where every OTHER static attribute is basically fixed per
+    entity (an occupation code near-determines its own category, skill
+    level, etc.). A plain random row split lets a model "predict" the target
+    by memorizing that feature's value instead of learning anything general,
+    since multiple rows sharing that value routinely land on both sides of
+    the split. Returns the single BEST such feature (highest ratio to its
+    own ceiling), or ``None`` if nothing qualifies -- the normal case for a
+    table where rows genuinely are independent entities.
+    """
+    best_col, best_ratio = None, _QUASI_ID_TOLERANCE
+    for c in feature_roles.categorical:
+        if c not in df.columns:
+            continue
+        card = df[c].nunique(dropna=True)
+        if card <= 1 or card >= len(df):   # not a real grouping candidate
+            continue
+        ceiling = 1.0 - 1.0 / card
+        if ceiling <= 0:
+            continue
+        ratio = group_diversity_reduction(df, c, target_col) / ceiling
+        if ratio >= best_ratio:
+            best_col, best_ratio = c, ratio
+    return best_col
 
 
 class InsufficientHoldoutError(ValueError):
@@ -48,9 +88,24 @@ def _predictive_signal(
     column predicts this" from "nothing does", before committing a full
     synthesizer comparison -- or showing a ratio -- to a target that's really
     just independent noise.
+
+    On a table where multiple rows represent the same underlying entity
+    (an SCD-versioned dimension/reference table -- the normal case for this
+    schema), a plain random row split lets a quasi-identifier feature (e.g.
+    the entity's own versioning key, which near-determines every OTHER
+    static attribute) "predict" the target by memorizing a value it's
+    literally already seen for that same entity in training, not by
+    learning anything general. If :func:`_quasi_identifier_group_col` finds
+    such a feature, the split groups by IT instead (holding out whole
+    entities, never seen in training at all) so the signal check only
+    credits genuine generalization. Verified on OCCUPATION.csv: a random
+    split showed OCCUPATION_CATEGORY_CD "predictable" (macro-F1 0.244 vs a
+    0.087 noise floor, comfortably clearing the signal gate) purely via
+    OCCUPATION_TP_CD memorization; an entity-aware split drops that to
+    0.109 (lift ~0.02, below the gate) -- the honest answer.
     """
     from sklearn.metrics import f1_score, r2_score
-    from sklearn.model_selection import train_test_split
+    from sklearn.model_selection import GroupShuffleSplit, train_test_split
     from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 
     y = df[target_col]
@@ -58,12 +113,21 @@ def _predictive_signal(
     if m.sum() < 20:
         return None
     sub, y = df[m], y[m]
-    stratify = y.astype(str) if task == "classification" and y.nunique() > 1 else None
+
+    group_col = _quasi_identifier_group_col(sub, target_col, feature_roles) \
+        if task == "classification" else None
     try:
-        tr_idx, te_idx = train_test_split(sub.index, test_size=0.3, random_state=0,
-                                          stratify=stratify)
-    except ValueError:
-        return None  # e.g. a class with a single member -- can't judge safely
+        if group_col:
+            groups = sub[group_col]
+            gss = GroupShuffleSplit(n_splits=1, test_size=0.3, random_state=0)
+            tr_pos, te_pos = next(gss.split(sub, groups=groups))
+            tr_idx, te_idx = sub.index[tr_pos], sub.index[te_pos]
+        else:
+            stratify = y.astype(str) if task == "classification" and y.nunique() > 1 else None
+            tr_idx, te_idx = train_test_split(sub.index, test_size=0.3, random_state=0,
+                                              stratify=stratify)
+    except (ValueError, StopIteration):
+        return None  # e.g. a class with a single member, or too few groups to split -- can't judge safely
     try:
         enc, use_cols = _fit_mixed_encoder(sub.loc[tr_idx], feature_roles)
     except ValueError:
