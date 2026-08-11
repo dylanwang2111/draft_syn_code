@@ -33,6 +33,7 @@ from .efficacy import (InsufficientHoldoutError, _predictive_signal, _quasi_iden
 from .entity import (_normalize_key_name, _resolve_key_column, build_entity_hub,
                      derive_synthetic_hub_pool, entity_key_tables)
 from .link import _normalize_key_values, _real_parent_counts, link_relationships, link_table
+from .pii import apply_pii_plan, fake_series
 from .privacy import filter_close_records, filter_close_records_multitable, nearest_real_examples
 
 # imported from backend, not synth_eval -- _refill's conditional-grouping
@@ -977,6 +978,59 @@ def _c_refill_unseen_code_falls_back():
     out = _refill(synth, real, ["LABEL_DESC", "AUDIT_USER"], ["CODE_CD", "LABEL_DESC", "AUDIT_USER"],
                   seed=0, group_candidates=["CODE_CD"], min_group_size=10)
     _assert(out["LABEL_DESC"].notna().all(), "an unseen code must still get a real fallback value, not NaN")
+
+
+# ---------------------------------------------------------------------------
+# PII faking (synth_eval.pii) -- entity-consistent fake values on an
+# SCD-versioned table (several history rows per real customer)
+# ---------------------------------------------------------------------------
+
+@check("fake_series: rows sharing a group id get the SAME fake value and missing status")
+def _c_fake_series_entity_consistent():
+    # mirrors a real customer with several SCD-versioned CONTACT rows: same
+    # CONT_ID repeated, real name is either always null or always the same
+    # non-null value for that customer -- the fake name must follow that
+    # same shape, not re-roll independently per row (confirmed live: without
+    # this, the same real customer showed a different fake name per row)
+    group_ids = pd.Series([1, 1, 1, 2, 2, 3, 3, 3, 3])
+    like = pd.Series(["Real A", "Real A", "Real A", None, None, "Real C", "Real C", "Real C", "Real C"])
+    out = fake_series("name", len(group_ids), like=like, seed=0, column_name="CONTACT_NAME",
+                      group_ids=group_ids)
+    for g in group_ids.unique():
+        vals = out[group_ids == g]
+        _assert(vals.nunique(dropna=False) == 1,
+                f"entity {g}'s rows must all get the SAME fake value (or all-NaN), got {vals.tolist()}")
+
+
+@check("fake_series: a row with no group id still gets an independent draw, not crash or share")
+def _c_fake_series_ungrouped_row_independent():
+    group_ids = pd.Series([1, 1, np.nan, np.nan])
+    out = fake_series("name", len(group_ids), like=None, seed=0, column_name="CONTACT_NAME",
+                      group_ids=group_ids)
+    _assert(out.notna().all(), f"expected 4 non-null fake names (no missing rate given), got {out.tolist()}")
+    _assert(out.iloc[0] == out.iloc[1], "entity 1's two rows must share the same fake value")
+    _assert(len({out.iloc[2], out.iloc[3]}) == 2,
+            "two DIFFERENT ungrouped rows must not be forced to share a value")
+
+
+@check("fake_series: without group_ids, behaves exactly as before (row-independent)")
+def _c_fake_series_no_group_ids_unchanged():
+    out = fake_series("name", 20, like=None, seed=0, column_name="CONTACT_NAME")
+    _assert(out.nunique() > 1, "row-independent faking (no group_ids) must still vary row to row")
+
+
+@check("apply_pii_plan: threads group_col through so a table's own entity key ties fakes together")
+def _c_apply_pii_plan_entity_consistent():
+    df = pd.DataFrame({
+        "CONT_ID": [10, 10, 20, 20, 20],
+        "CONTACT_NAME": ["x", "y", "z", "w", "v"],   # whatever the refill bootstrap put here
+    })
+    real = pd.DataFrame({"CONT_ID": [10, 20], "CONTACT_NAME": ["Real A", "Real B"]})
+    out = apply_pii_plan(df, {"CONTACT_NAME": ("fake", "name")}, real, seed=0, group_col="CONT_ID")
+    _assert(out.loc[out["CONT_ID"] == 10, "CONTACT_NAME"].nunique() == 1,
+            "CONT_ID 10's two rows must share one faked name")
+    _assert(out.loc[out["CONT_ID"] == 20, "CONTACT_NAME"].nunique() == 1,
+            "CONT_ID 20's three rows must share one faked name")
 
 
 # ---------------------------------------------------------------------------

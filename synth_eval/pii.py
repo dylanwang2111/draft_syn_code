@@ -128,11 +128,23 @@ def detect_pii(df: pd.DataFrame, modelable: Optional[List[str]] = None,
 
 
 def fake_series(kind: str, n: int, like: Optional[pd.Series] = None,
-                seed: int = 0, column_name: str = "") -> pd.Series:
+                seed: int = 0, column_name: str = "",
+                group_ids: Optional[pd.Series] = None) -> pd.Series:
     """``n`` Faker values of ``kind``, preserving ``like``'s missing rate.
 
     Deterministic for a given (kind, n, seed, column_name).  ``column_name``
     refines names: FIRST/GIVEN -> first names, LAST/SURNAME -> last names.
+
+    ``group_ids`` (one id per row, e.g. a shared entity key like ``CONT_ID``
+    on an SCD-versioned table with several history rows per real customer)
+    makes this ENTITY-consistent instead of row-independent: every row
+    sharing the same id gets the SAME fake value and the SAME missing/
+    not-missing status, matching the real-world expectation that a
+    person's name doesn't change across their own history rows (confirmed
+    live: without this, the same real customer showed up with a different
+    fake name on every one of their own versioned rows). A row whose group
+    id is missing (no entity to tie it to) still gets an independent draw,
+    same as the ungrouped behavior below.
     """
     from faker import Faker
 
@@ -156,21 +168,47 @@ def fake_series(kind: str, n: int, like: Optional[pd.Series] = None,
         gen = fk.street_address
     else:  # unknown kind: opaque but harmless
         gen = lambda: fk.bothify("????####")  # noqa: E731
-    vals = np.array([gen() for _ in range(n)], dtype=object)
     miss = float(like.isna().mean()) if like is not None and len(like) else 0.0
+    rng = np.random.default_rng(seed)
+
+    if group_ids is not None and len(group_ids) == n:
+        gids = pd.Series(group_ids).reset_index(drop=True)
+        uniq = gids.dropna().unique()
+        val_map = {g: gen() for g in uniq}          # one fake value PER ENTITY
+        null_map = (dict(zip(uniq, rng.random(len(uniq)) < miss))
+                    if miss > 0 and len(uniq) else {})
+        vals = gids.map(val_map).to_numpy(dtype=object)   # NaN where gids is NaN
+        if null_map:
+            vals[gids.map(null_map).fillna(False).to_numpy(dtype=bool)] = np.nan
+        ungrouped = gids.isna().to_numpy()
+        if ungrouped.any():                          # no entity id -- independent draw
+            m = int(ungrouped.sum())
+            extra = np.array([gen() for _ in range(m)], dtype=object)
+            if miss > 0:
+                extra[rng.random(m) < miss] = np.nan
+            vals[ungrouped] = extra
+        return pd.Series(vals, dtype=object)
+
+    vals = np.array([gen() for _ in range(n)], dtype=object)
     if miss > 0 and n:
-        rng = np.random.default_rng(seed)
         vals[rng.random(n) < miss] = np.nan
     return pd.Series(vals, dtype=object)
 
 
 def apply_pii_plan(df: pd.DataFrame, plan: Dict[str, tuple], real: pd.DataFrame,
-                   seed: int = 0) -> pd.DataFrame:
+                   seed: int = 0, group_col: Optional[str] = None) -> pd.DataFrame:
     """Apply ``{col: (action, kind)}`` to one synthetic table.
 
     ``fake`` replaces the column's values; ``drop`` removes the column;
     anything else (``shuffle``) leaves the refilled bootstrap untouched.
+
+    ``group_col``, if given and present in ``df`` (e.g. the table's shared
+    entity key on an SCD-versioned table), makes every ``fake`` column
+    entity-consistent -- see :func:`fake_series`. Without it every row is
+    faked independently, which is fine for a table with one row per entity
+    but wrong for one with several history rows per real customer.
     """
+    group_ids = df[group_col] if group_col and group_col in df.columns else None
     for c, (action, kind) in (plan or {}).items():
         if c not in df.columns:
             continue
@@ -178,5 +216,5 @@ def apply_pii_plan(df: pd.DataFrame, plan: Dict[str, tuple], real: pd.DataFrame,
             df = df.drop(columns=[c])
         elif action == "fake":
             df[c] = fake_series(kind, len(df), real[c] if c in real.columns else None,
-                                seed, c).to_numpy()
+                                seed, c, group_ids=group_ids).to_numpy()
     return df

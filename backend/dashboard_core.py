@@ -1164,7 +1164,16 @@ def _run_job(cfg: dict, st: dict):
         for s in suite:
             for t in list(suite[s]):
                 if pii_plan.get(t):
-                    suite[s][t] = se.apply_pii_plan(suite[s][t], pii_plan[t], train[t], seed0)
+                    # the table's own shared entity key (e.g. CONT_ID), if it has
+                    # one -- keeps a faked name/email/etc. consistent across that
+                    # entity's own SCD-versioned rows instead of independently
+                    # re-rolled per row (confirmed live: the same real customer
+                    # showing a different fake name on every one of their own
+                    # history rows).
+                    gcol = next((k for k, children in entity_children_by_key.items()
+                                if t in children), None)
+                    suite[s][t] = se.apply_pii_plan(suite[s][t], pii_plan[t], train[t],
+                                                    seed0, group_col=gcol)
         # faked/dropped columns are deliberately NOT faithful to the real
         # marginals (that's the point) — take them out of the evaluation
         # metadata so QualityReport neither crashes on a dropped column nor
