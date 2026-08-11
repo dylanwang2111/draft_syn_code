@@ -11,13 +11,20 @@ from ._common import SYNTH_PALETTE, _color_for, _single_table_metadata
 from .privacy import filter_close_records, filter_close_records_multitable
 
 
-def build_single_table_synthesizer(name: str, single_meta, epochs: int = 300):
+def build_single_table_synthesizer(name: str, single_meta, epochs: int = 300,
+                                    tabsyn_params: Optional[Dict] = None):
     """Factory for SDV single-table synthesizers by (case-insensitive) name.
 
     No synthesizer constructor here accepts a seed directly (none of SDV's
     single-table classes take a ``random_state``/``seed`` kwarg) -- see
     :func:`_seed_synth` for how reproducibility is actually applied, after
     construction.
+
+    ``tabsyn_params``, if given, overrides TabSynSynthesizer's own
+    architecture-size defaults (``d_token``/``d_latent``/``nhead``/
+    ``vae_layers``/``denoiser_hidden``/``denoiser_depth``/``sample_steps``)
+    -- ignored by every other synthesizer name, so it's safe to pass through
+    unconditionally from the caller's run config.
     """
     from sdv.single_table import (
         CopulaGANSynthesizer,
@@ -41,7 +48,7 @@ def build_single_table_synthesizer(name: str, single_meta, epochs: int = 300):
     if key == "tabsyn":
         from .tabsyn import TabSynSynthesizer
 
-        return TabSynSynthesizer(single_meta, epochs=epochs)
+        return TabSynSynthesizer(single_meta, epochs=epochs, **(tabsyn_params or {}))
     raise ValueError(f"Unknown synthesizer '{name}'")
 
 
@@ -141,6 +148,7 @@ def generate_synthetic_suite(
     synthesizers: Sequence[str] = ("HMA", "GaussianCopula", "CTGAN", "TVAE"),
     scale: float = 1.0,
     epochs: int = 300,
+    tabsyn_params: Optional[Dict] = None,
     verbose: bool = True,
     constraints=None,
     should_cancel=None,
@@ -171,6 +179,11 @@ def generate_synthetic_suite(
     fitting so the synthetic data satisfies them by construction.  If adding a
     constraint fails, that synthesizer is fitted without it (with a warning)
     rather than aborting the run.
+
+    ``tabsyn_params`` overrides TabSyn's own architecture-size defaults (see
+    :func:`build_single_table_synthesizer`); ``None`` (the default) leaves
+    them as TabSynSynthesizer's own class defaults. Ignored when TabSyn
+    isn't among ``synthesizers``.
 
     ``timings``, if given, is filled in-place with wall-clock fit+sample
     seconds per synthesizer name (only for ones that actually succeeded,
@@ -279,7 +292,8 @@ def generate_synthetic_suite(
                         on_progress(f"Fitting {name} on {tname} ({len(df)} rows{epoch_note}) ...")
                     _seed_global(random_state)
                     single_meta = _single_table_metadata(metadata, tname)
-                    syn = build_single_table_synthesizer(name, single_meta, epochs=epochs)
+                    syn = build_single_table_synthesizer(name, single_meta, epochs=epochs,
+                                                          tabsyn_params=tabsyn_params)
                     _apply(syn, build_constraints(constraints, only_table=tname), f"{name}/{tname}")
                     syn.fit(df)
                     _seed_synth(syn, random_state)

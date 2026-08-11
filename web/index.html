@@ -118,6 +118,25 @@
             <input type="number" id="in-close-percentile" min="0.1" max="50" step="0.1" value="5" style="width:100%; margin-top:4px"></label>
         </div>
       </details>
+      <details class="biz-expander field" id="field-tabsyn-arch" style="display:none">
+        <summary>TabSyn architecture <span style="opacity:.7">(bigger = more capacity for wide/correlated columns, slower — blank = default)</span></summary>
+        <div class="biz-details" style="display:flex; flex-direction:column; gap:12px">
+          <label><span class="lbl-main" style="font-size:12.5px">Token width <i class="lbl-tech">d_token — per-column embedding size</i></span>
+            <input type="number" id="in-tabsyn-d-token" min="4" step="4" placeholder="64" style="width:100%; margin-top:4px"></label>
+          <label><span class="lbl-main" style="font-size:12.5px">Latent size <i class="lbl-tech">d_latent — per-column compressed representation; the main knob for wide/skewed categorical columns</i></span>
+            <input type="number" id="in-tabsyn-d-latent" min="1" step="1" placeholder="8" style="width:100%; margin-top:4px"></label>
+          <label><span class="lbl-main" style="font-size:12.5px">Attention heads <i class="lbl-tech">nhead — auto-corrected to the nearest divisor of token width if it doesn't divide evenly</i></span>
+            <input type="number" id="in-tabsyn-nhead" min="1" step="1" placeholder="8" style="width:100%; margin-top:4px"></label>
+          <label><span class="lbl-main" style="font-size:12.5px">VAE depth <i class="lbl-tech">vae_layers — transformer encoder/decoder layers</i></span>
+            <input type="number" id="in-tabsyn-vae-layers" min="1" step="1" placeholder="3" style="width:100%; margin-top:4px"></label>
+          <label><span class="lbl-main" style="font-size:12.5px">Diffusion width <i class="lbl-tech">denoiser_hidden — MLP hidden size</i></span>
+            <input type="number" id="in-tabsyn-denoiser-hidden" min="8" step="8" placeholder="384" style="width:100%; margin-top:4px"></label>
+          <label><span class="lbl-main" style="font-size:12.5px">Diffusion depth <i class="lbl-tech">denoiser_depth — MLP layers</i></span>
+            <input type="number" id="in-tabsyn-denoiser-depth" min="1" step="1" placeholder="4" style="width:100%; margin-top:4px"></label>
+          <label><span class="lbl-main" style="font-size:12.5px">Sampling steps <i class="lbl-tech">sample_steps — diffusion denoising steps at generation time</i></span>
+            <input type="number" id="in-tabsyn-sample-steps" min="1" step="1" placeholder="30" style="width:100%; margin-top:4px"></label>
+        </div>
+      </details>
     </div>
 
     <div class="panel" id="synthetic-panel" style="display:none">

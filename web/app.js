@@ -867,9 +867,11 @@ function renderRecipe(){
   $$("#synth-chips .chip").forEach(ch=>ch.addEventListener("click",()=>{
     const s=ch.dataset.s;
     selectedSynths.has(s)?selectedSynths.delete(s):selectedSynths.add(s);
-    ch.classList.toggle("on"); $("#btn-run").disabled=!selectedSynths.size; updateEpochsVisibility(); updateSummaries();
+    ch.classList.toggle("on"); $("#btn-run").disabled=!selectedSynths.size;
+    updateEpochsVisibility(); updateTabsynVisibility(); updateSummaries();
   }));
   updateEpochsVisibility();
+  updateTabsynVisibility();
   $("#target-fields").innerHTML=Object.entries(DATA.tables).map(([t,v])=>`
     <div class="tgt-row"><span title="${t}">${t}</span>
       <select id="target-${t}" title="(auto) picks a column to predict for ML-efficacy scoring; (none) skips this table entirely -- use it for dimension/lookup tables with nothing worth modeling">
@@ -913,6 +915,9 @@ function renderRecipe(){
 function updateScdVisibility(){ $("#field-scd").style.display=$("#in-entity").value?"block":"none"; }
 function updateEpochsVisibility(){
   $("#field-epochs").style.display=[...selectedSynths].some(s=>GAN_SYNTHS.has(s))?"block":"none";
+}
+function updateTabsynVisibility(){
+  $("#field-tabsyn-arch").style.display=selectedSynths.has("TabSyn")?"block":"none";
 }
 [["epochs",v=>v],["scale",v=>(+v).toFixed(2).replace(/0$/,"")]].forEach(([k,f])=>{
   $(`#in-${k}`).addEventListener("input",e=>{$(`#out-${k}`).textContent=f(e.target.value); updateSummaries();});
@@ -1038,6 +1043,20 @@ function collectSchema(){
   }
   return schema;
 }
+/* reads the TabSyn architecture fields -- blank stays unset so
+   TabSynSynthesizer's own class defaults apply, same "blank = auto"
+   convention as max_categorical_card above */
+function collectTabsynParams(){
+  const ids={d_token:"in-tabsyn-d-token", d_latent:"in-tabsyn-d-latent", nhead:"in-tabsyn-nhead",
+    vae_layers:"in-tabsyn-vae-layers", denoiser_hidden:"in-tabsyn-denoiser-hidden",
+    denoiser_depth:"in-tabsyn-denoiser-depth", sample_steps:"in-tabsyn-sample-steps"};
+  const out={};
+  for(const [k,id] of Object.entries(ids)){
+    const v=($(`#${id}`)||{}).value;
+    if(v) out[k]=+v;
+  }
+  return out;
+}
 $("#btn-run").addEventListener("click",async()=>{
   if(!DATA) return;
   const schema=collectSchema();
@@ -1054,7 +1073,8 @@ $("#btn-run").addEventListener("click",async()=>{
     epochs:+$("#in-epochs").value, scale:+$("#in-scale").value, holdout:HOLDOUT_FRAC,
     max_categorical_card:($("#in-max-cat-card")||{}).value?+$("#in-max-cat-card").value:null,
     min_target_rows:+($("#in-min-target-rows")||{}).value||30,
-    close_percentile:+($("#in-close-percentile")||{}).value||5};
+    close_percentile:+($("#in-close-percentile")||{}).value||5,
+    tabsyn_params:collectTabsynParams()};
   let r;
   try{ r=await apiFetch("/api/synthesize",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(cfg)}); }
   catch(e){ alert(BACKEND_HELP); return; }

@@ -423,20 +423,44 @@ class TabSynSynthesizer:
     stage roughly the same training depth as a single-stage synth like TVAE
     gets. The published TabSyn numbers used a much larger compute budget
     (thousands of epochs/steps) than this dashboard's epochs slider
-    (10-1000) is meant for; the model size below (small Transformer
-    tokenizer, small MLP denoiser) is picked to actually finish training in
-    that budget on the row/column counts this tool sees, not to reproduce
-    the paper's benchmark-scale results exactly. Total wall-clock roughly
-    doubles versus splitting the same epochs value across both stages.
+    (10-1000) is meant for; the model size below is picked to actually
+    finish training in that budget on the row/column counts this tool
+    sees, not to reproduce the paper's benchmark-scale results exactly.
+    Total wall-clock roughly doubles versus splitting the same epochs
+    value across both stages.
+
+    Defaults were bumped from an earlier, smaller size (``d_token=32,
+    d_latent=4, nhead=4, vae_layers=2, denoiser_hidden=256``) after a wide
+    (83-category), heavily-skewed reference column showed up gray/red in
+    Column Pair Trends against its sibling columns even once epochs were no
+    longer the bottleneck -- a fixed small VAE latent has to compress every
+    column's information into ``d_latent`` floats regardless of how many
+    epochs it trains for, so more distinct values (and more OTHER columns
+    competing for the same shared token width) genuinely need more
+    capacity, not more time. Confirmed on a 15-column synthetic fixture (one
+    83-category column plus several genuinely-correlated and independent
+    siblings, 3000 rows, 2 seeds): the bigger size measurably improved
+    pairwise association preservation with a correlated sibling column
+    (mean pair-TVComplement 0.450 -> 0.495) and overall marginal shape
+    (TVComplement 0.814 -> 0.828) at no meaningful wall-clock cost in that
+    test. The improvement is real but modest, not a full fix -- see the
+    module docstring's caveat about this not being the paper's
+    benchmark-scale compute budget.
     """
 
     def __init__(self, single_meta=None, epochs: int = 300,
-                 d_token: int = 32, d_latent: int = 4, nhead: int = 4,
-                 vae_layers: int = 2, denoiser_hidden: int = 256, denoiser_depth: int = 4,
+                 d_token: int = 64, d_latent: int = 8, nhead: int = 8,
+                 vae_layers: int = 3, denoiser_hidden: int = 384, denoiser_depth: int = 4,
                  sample_steps: int = 30):
         self._sdtypes = _sdtypes_from_single_meta(single_meta)
         self.epochs = epochs
-        self.d_token, self.d_latent, self.nhead = d_token, d_latent, nhead
+        self.d_token = d_token
+        self.d_latent = d_latent
+        # nn.TransformerEncoderLayer requires d_model % nhead == 0; a UI/chat
+        # caller can pass any combination, so fall back to the largest valid
+        # divisor <= the requested nhead instead of crashing mid-fit on a
+        # mismatched pair (e.g. a d_token not a multiple of the old nhead=4).
+        self.nhead = next((h for h in range(min(nhead, d_token), 0, -1) if d_token % h == 0), 1)
         self.vae_layers = vae_layers
         self.denoiser_hidden, self.denoiser_depth = denoiser_hidden, denoiser_depth
         self.sample_steps = sample_steps

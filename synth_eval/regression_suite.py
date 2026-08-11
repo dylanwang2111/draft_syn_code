@@ -893,6 +893,48 @@ def _c_tabsyn_reproducible():
     _assert(out1.equals(out2), "same seed via the real suite.py seeding flow must reproduce identically")
 
 
+@check("TabSynSynthesizer: nhead not dividing d_token falls back to a valid divisor instead of crashing")
+def _c_tabsyn_nhead_autocorrect():
+    from .tabsyn import TabSynSynthesizer
+
+    class _FakeMeta:
+        def to_dict(self):
+            return {"columns": {"AMOUNT": {"sdtype": "numerical"}}}
+
+    # 48 % 8 == 0 (fine); a caller-supplied combo like d_token=50, nhead=8
+    # does NOT divide evenly -- nn.TransformerEncoderLayer would raise
+    # instead of silently doing something wrong, so this must self-correct
+    # at construction time, before fit() ever builds the model.
+    syn = TabSynSynthesizer(_FakeMeta(), d_token=50, nhead=8)
+    _assert(50 % syn.nhead == 0, f"nhead={syn.nhead} must evenly divide d_token=50")
+    _assert(syn.nhead <= 8, f"expected the largest valid divisor <= the requested 8, got {syn.nhead}")
+
+
+@check("build_single_table_synthesizer: threads tabsyn_params through, ignores them for other synths")
+def _c_build_single_table_tabsyn_params():
+    from .suite import build_single_table_synthesizer
+
+    class _FakeMeta:
+        def to_dict(self):
+            return {"columns": {"AMOUNT": {"sdtype": "numerical"}}}
+
+    syn = build_single_table_synthesizer("TabSyn", _FakeMeta(), epochs=5,
+                                          tabsyn_params={"d_token": 16, "d_latent": 4})
+    _assert(syn.d_token == 16 and syn.d_latent == 4,
+            f"tabsyn_params must override the constructor defaults, got d_token={syn.d_token} d_latent={syn.d_latent}")
+    # a non-TabSyn synth must not choke on an irrelevant tabsyn_params -- it's
+    # a run-level config field, not something every caller filters per-synth.
+    # GaussianCopulaSynthesizer validates its metadata at construction time
+    # (unlike TabSyn's own duck-typed _FakeMeta above), so this needs a real
+    # SDV SingleTableMetadata rather than the stub.
+    from sdv.metadata import SingleTableMetadata
+    real_meta = SingleTableMetadata()
+    real_meta.add_column("AMOUNT", sdtype="numerical")
+    gc = build_single_table_synthesizer("GaussianCopula", real_meta,
+                                         tabsyn_params={"d_token": 16})
+    _assert(gc is not None, "tabsyn_params must be silently ignored by non-TabSyn synthesizers")
+
+
 # ---------------------------------------------------------------------------
 # runner
 # ---------------------------------------------------------------------------

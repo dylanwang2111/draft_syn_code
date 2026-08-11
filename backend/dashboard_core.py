@@ -796,6 +796,14 @@ def _run_job(cfg: dict, st: dict):
         max_categorical_card = int(_mcc_cfg) if _mcc_cfg else None  # None -> auto per table
         min_target_rows = int(cfg.get("min_target_rows") or 30)
         close_percentile = float(cfg.get("close_percentile") or 5.0)
+        # TabSyn architecture size (see TabSynSynthesizer's docstring for why
+        # the defaults were bumped) -- only fields the user actually set
+        # override the class defaults; blank/omitted fields fall through.
+        _tp_cfg = cfg.get("tabsyn_params") or {}
+        tabsyn_params = {k: int(_tp_cfg[k]) for k in
+                          ("d_token", "d_latent", "nhead", "vae_layers",
+                           "denoiser_hidden", "denoiser_depth", "sample_steps")
+                          if _tp_cfg.get(k)} or None
         tables = st["tables"]
         tables_meta = _metadata_from_request(cfg.get("schema", {}), cfg.get("relationships", []), st,
                                               tables=tables, max_categorical_card=max_categorical_card)
@@ -976,7 +984,8 @@ def _run_job(cfg: dict, st: dict):
                         single_meta = _build_metadata(_reduce_meta(tables_meta, keep), [])
                         suite.update(se.generate_synthetic_suite(
                             reduced_train, single_meta, synthesizers=others,
-                            scale=cfg["scale"], epochs=cfg["epochs"], verbose=False,
+                            scale=cfg["scale"], epochs=cfg["epochs"], tabsyn_params=tabsyn_params,
+                            verbose=False,
                             constraints=cfg.get("constraints") or [], should_cancel=cancelled,
                             timings=gen_timings, roles=roles,
                             close_filter_report=close_filter_report,
@@ -985,7 +994,8 @@ def _run_job(cfg: dict, st: dict):
                 else:
                     suite = se.generate_synthetic_suite(
                         fit_tables, fit_metadata, synthesizers=fit_synths,
-                        scale=cfg["scale"], epochs=cfg["epochs"], verbose=False,
+                        scale=cfg["scale"], epochs=cfg["epochs"], tabsyn_params=tabsyn_params,
+                        verbose=False,
                         constraints=cfg.get("constraints") or [], should_cancel=cancelled,
                         roles=roles, close_filter_report=close_filter_report,
                         filter_close_percentile=close_percentile,
