@@ -416,13 +416,18 @@ class TabSynSynthesizer:
     filter, refill/PII) alongside GaussianCopula/CTGAN/TVAE/CopulaGAN without
     special-casing.
 
-    ``epochs`` is split evenly between the two training stages (VAE, then
-    the diffusion model on the VAE's frozen latents) -- the published TabSyn
-    numbers used a much larger compute budget (thousands of epochs/steps)
-    than this dashboard's epochs slider (10-1000) is meant for; the model
-    size below (small Transformer tokenizer, small MLP denoiser) is picked
-    to actually finish training in that budget on the row/column counts this
-    tool sees, not to reproduce the paper's benchmark-scale results exactly.
+    ``epochs`` is used IN FULL by each of the two training stages (VAE, then
+    the diffusion model on the VAE's frozen latents) -- epochs=350 means 350
+    passes of VAE training followed by 350 passes of diffusion training, not
+    350 total split between them, so a comparable epochs value gives each
+    stage roughly the same training depth as a single-stage synth like TVAE
+    gets. The published TabSyn numbers used a much larger compute budget
+    (thousands of epochs/steps) than this dashboard's epochs slider
+    (10-1000) is meant for; the model size below (small Transformer
+    tokenizer, small MLP denoiser) is picked to actually finish training in
+    that budget on the row/column counts this tool sees, not to reproduce
+    the paper's benchmark-scale results exactly. Total wall-clock roughly
+    doubles versus splitting the same epochs value across both stages.
     """
 
     def __init__(self, single_meta=None, epochs: int = 300,
@@ -466,9 +471,9 @@ class TabSynSynthesizer:
             self._fitted = True  # nothing to model -- every column is passthrough
             return
 
-        half = max(1, self.epochs // 2)
+        stage_epochs = max(1, self.epochs)
         self._vae = _build_vae(self._specs, self.d_token, self.d_latent, self.nhead, self.vae_layers)
-        _train_vae(self._vae, df, self._specs, half, self._device)
+        _train_vae(self._vae, df, self._specs, stage_epochs, self._device)
 
         import torch as _t
         with _t.no_grad():
@@ -481,7 +486,7 @@ class TabSynSynthesizer:
 
         self._latent_dim = z_norm.shape[1]
         self._denoiser = _build_denoiser(self._latent_dim, self.denoiser_hidden, self.denoiser_depth)
-        _train_denoiser(self._denoiser, z_norm, half, self._device)
+        _train_denoiser(self._denoiser, z_norm, stage_epochs, self._device)
         self._fitted = True
 
     def sample(self, num_rows: int) -> pd.DataFrame:

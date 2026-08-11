@@ -266,13 +266,13 @@ def generate_synthetic_suite(
                     if verbose:
                         print(f"[{name}] fitting {tname} ({len(df)} rows) ...")
                     if on_progress:
-                        # TabSyn splits the configured budget evenly across its
-                        # two training stages (VAE, then diffusion -- see
-                        # TabSynSynthesizer.fit) -- say so up front, otherwise
-                        # the per-epoch log line ("TabSyn·VAE 80/175" for
-                        # epochs=350) reads as a bug instead of by design.
-                        half = max(1, epochs // 2)
-                        epoch_note = (f", epochs={epochs} ({half} VAE + {half} diffusion)"
+                        # TabSyn trains two stages (VAE, then diffusion -- see
+                        # TabSynSynthesizer.fit), each for the FULL configured
+                        # epochs -- say so up front, otherwise seeing the same
+                        # number twice in the per-epoch log line ("TabSyn·VAE
+                        # 80/350" then later "TabSyn·diffusion 80/350") reads
+                        # like it's stuck repeating instead of on stage 2.
+                        epoch_note = (f", epochs={epochs} each (VAE + diffusion)"
                                       if name.upper() == "TABSYN"
                                       else f", epochs={epochs}" if name.upper() in
                                       {"CTGAN", "TVAE", "COPULAGAN"} else "")
