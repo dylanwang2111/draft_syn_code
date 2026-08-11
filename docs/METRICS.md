@@ -262,7 +262,7 @@ One 0–1 score per synthesizer per axis, averaged over tables:
 | **column_fidelity** | mean QualityReport overall score — itself the mean of Column Shapes and Column Pair Trends |
 | **referential_integrity** | sdmetrics `CardinalityShapeSimilarity` — see below. `NaN` when no relationships are defined |
 | **fidelity** | (2 × column_fidelity + referential_integrity) / 3, or column_fidelity alone when there are no relationships |
-| **privacy** | mean of the four protection scores [ 1 − 2·\|MIA AUC − 0.5\| , NewRowSynthesis , CategoricalCAP , clip(nearest-record distance ÷ bootstrap ceiling, 0, 1) ] |
+| **privacy** | mean of the four protection scores [ 1 − 2·\|MIA AUC − 0.5\| , NewRowSynthesis-vs-baseline , CategoricalCAP-vs-baseline , clip(nearest-record distance ÷ bootstrap ceiling, 0, 1) ], where NewRowSynthesis/CategoricalCAP each use `1 − max(0, baseline − score)` when a real-holdout baseline exists (the raw score otherwise) — the same "how far below the achievable ceiling" gap the PASS/WARN/FAIL verdict already judges by, not the raw number. A reference table with few distinct value combinations can have a real, genuinely low ceiling (e.g. `0.087`) even for real, unseen rows; scoring the raw synthetic number directly would tank the composite for a property of the *table*, not something the synthesizer got wrong, even where the per-check verdict correctly reads WARN rather than FAIL. The **displayed** raw `new_row_synthesis`/`categorical_cap` numbers (e.g. in the summary card's `mean(... , new-row , ...)` breakdown) are unaffected — only the composite score is baseline-adjusted |
 | **utility_tstr** | mean over (table × metric) of clip(TSTR score / TRTR score, 0, 1) |
 | **overall** | mean of fidelity, privacy and utility_tstr |
 

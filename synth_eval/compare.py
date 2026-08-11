@@ -579,6 +579,16 @@ def compute_summary(
       closest synthetic row is at or beyond the ceiling (no worse than real
       unseen data gets from pure chance) and a score near 0 means it's
       landing right on top of a real row).
+      NewRowSynthesis and CategoricalCAP use ``1 - max(0, baseline - score)``
+      when a real-holdout baseline is available -- the SAME "how far below
+      the achievable ceiling" gap the PASS/WARN/FAIL verdict already judges
+      by (see synth_eval.privacy.privacy_report), not the raw score. A table
+      with few distinct value combinations has a genuinely low ceiling even
+      for real, unseen rows; scoring the raw number would silently punish a
+      synthesizer for a property of the table it evaluated fine against
+      (verdict: PASS/WARN) while tanking the composite score as if it were
+      a real problem. Falls back to the raw score when no baseline exists,
+      same as the verdict does.
     * utility  = mean over table x metric of clip(synth score / real score, 0, 1)
       (TSTR / TRTR).
     """
@@ -592,20 +602,43 @@ def compute_summary(
         fidelity = columns if (st is None or np.isnan(st_score)) else (2.0 * columns + st_score) / 3.0
 
         # ---- privacy: four protection scores, higher = safer ----
+        # new_rows/cap keep the RAW score (for display, matching what the
+        # per-check verdict text quotes); new_row_prot/cap_prot are what
+        # actually feeds the composite -- see below.
         mia, new_rows, nrs_base, cap, cap_base, nearest = [], [], [], [], [], []
+        new_row_prot, cap_prot = [], []
         for rep in (privacy_all.get(s) or {}).values():
             auc = rep.get("membership_inference", {}).get("auc")
             if auc is not None and not (isinstance(auc, float) and np.isnan(auc)):
                 mia.append(float(auc))
             sdm = rep.get("sdmetrics", {})
             if sdm.get("NewRowSynthesis") is not None:
-                new_rows.append(float(np.clip(sdm["NewRowSynthesis"], 0.0, 1.0)))
-            if sdm.get("NewRowSynthesis_baseline") is not None:
-                nrs_base.append(float(np.clip(sdm["NewRowSynthesis_baseline"], 0.0, 1.0)))
+                nrs = float(np.clip(sdm["NewRowSynthesis"], 0.0, 1.0))
+                new_rows.append(nrs)
+                base = sdm.get("NewRowSynthesis_baseline")
+                # Judged the same way the PASS/WARN/FAIL verdict already is:
+                # against how far BELOW the real-holdout ceiling this landed,
+                # not the raw score. A table with few distinct value
+                # combinations has a genuinely low ceiling even for real,
+                # unseen rows (real "looks like a duplicate" there too) --
+                # scoring the raw number would punish a synthesizer for a
+                # property of the table, not something it got wrong. Only
+                # penalize landing BELOW the ceiling; beating it is full
+                # credit, same as the verdict's own gap = base - score.
+                if base is not None:
+                    nrs_base.append(float(np.clip(base, 0.0, 1.0)))
+                    new_row_prot.append(1.0 - max(0.0, nrs_base[-1] - nrs))
+                else:
+                    new_row_prot.append(nrs)   # no baseline -- fall back to the raw score
             if sdm.get("CategoricalCAP") is not None:
-                cap.append(float(np.clip(sdm["CategoricalCAP"], 0.0, 1.0)))
-            if sdm.get("CategoricalCAP_baseline") is not None:
-                cap_base.append(float(np.clip(sdm["CategoricalCAP_baseline"], 0.0, 1.0)))
+                c = float(np.clip(sdm["CategoricalCAP"], 0.0, 1.0))
+                cap.append(c)
+                base = sdm.get("CategoricalCAP_baseline")
+                if base is not None:   # same baseline-relative treatment as NewRowSynthesis above
+                    cap_base.append(float(np.clip(base, 0.0, 1.0)))
+                    cap_prot.append(1.0 - max(0.0, cap_base[-1] - c))
+                else:
+                    cap_prot.append(c)
             nr = rep.get("nearest_record_examples") or {}
             ceiling, min_dist = nr.get("holdout_bootstrap_min_p05"), nr.get("min_distance")
             if ceiling is not None and min_dist is not None and ceiling > 0:
@@ -613,7 +646,7 @@ def compute_summary(
         mia_auc = _mean(mia)
         mia_prot = float("nan") if np.isnan(mia_auc) else max(0.0, 1.0 - 2.0 * abs(mia_auc - 0.5))
         nearest_prot = _mean(nearest)
-        privacy = _mean([mia_prot, _mean(new_rows), _mean(cap), nearest_prot])
+        privacy = _mean([mia_prot, _mean(new_row_prot), _mean(cap_prot), nearest_prot])
 
         # ---- utility: TSTR vs the real-trained baseline on the same holdout ----
         # NB the score is the mean of the *per-panel ratios*, not the ratio of the

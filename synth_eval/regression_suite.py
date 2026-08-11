@@ -27,7 +27,7 @@ import pandas as pd
 
 from .columns import (ColumnRoles, auto_categorical_threshold, best_refill_group_column,
                       classify_columns, group_diversity_reduction, suffix_sdtype_overrides)
-from .compare import shapes_heatmap_data, structure_scores
+from .compare import compute_summary, shapes_heatmap_data, structure_scores
 from .efficacy import (InsufficientHoldoutError, _predictive_signal, _quasi_identifier_group_col,
                        auto_select_target, sdmetrics_ml_efficacy)
 from .entity import (_normalize_key_name, _resolve_key_column, build_entity_hub,
@@ -609,6 +609,46 @@ def _c_structure_scores_baseline_defaults_none():
     out = structure_scores(ri_rows, cardinality, derived_parent=False)
     _assert(out["SomeSynth"]["cardinality_shape_baseline"] is None,
             "a caller that doesn't pass a baseline must not see one appear from nowhere")
+
+
+@check("compute_summary: NewRowSynthesis near a low real-holdout ceiling doesn't tank the privacy score")
+def _c_privacy_score_judges_newrow_against_baseline():
+    # Regression for a real case: a reference table with few distinct value
+    # combinations has a genuinely low achievable NewRowSynthesis ceiling
+    # even for real, unseen rows (0.087 in the live case that triggered
+    # this) -- a synthetic score of 0.000 there is WARN (0.087 below
+    # ceiling), not a real problem. The composite privacy score must judge
+    # it the same way the verdict does (gap from the ceiling), not average
+    # in the raw 0.000 as if the ceiling were 1.0.
+    quality_scores = {"S": {"T": {"overall": 0.9}}}
+    privacy_all = {"S": {"T": {
+        "membership_inference": {"auc": 0.5},
+        "sdmetrics": {"NewRowSynthesis": 0.0, "NewRowSynthesis_baseline": 0.087,
+                      "CategoricalCAP": 0.9, "CategoricalCAP_baseline": 0.9},
+        "nearest_record_examples": {},
+    }}}
+    out = compute_summary(quality_scores, privacy_all, None)
+    privacy = out["S"]["privacy"]["score"]
+    _assert(privacy > 0.85,
+            f"expected the near-ceiling NewRowSynthesis (gap=0.087) to barely dent the privacy "
+            f"score, got {privacy:.3f} -- the raw 0.000 must not be averaged in directly")
+    _assert(out["S"]["privacy"]["new_row_synthesis"] == 0.0,
+            "the DISPLAYED raw new_row_synthesis number must stay the true raw score, "
+            "only the composite score should be baseline-adjusted")
+
+
+@check("compute_summary: no baseline falls back to the raw NewRowSynthesis/CategoricalCAP score")
+def _c_privacy_score_no_baseline_uses_raw():
+    quality_scores = {"S": {"T": {"overall": 0.9}}}
+    privacy_all = {"S": {"T": {
+        "membership_inference": {"auc": 0.5},
+        "sdmetrics": {"NewRowSynthesis": 0.4, "CategoricalCAP": 0.6},
+        "nearest_record_examples": {},
+    }}}
+    out = compute_summary(quality_scores, privacy_all, None)
+    # mean(mia_prot=1.0, new_row=0.4, cap=0.6, nearest=nan->dropped) == mean(1.0, 0.4, 0.6)
+    _assert(abs(out["S"]["privacy"]["score"] - (1.0 + 0.4 + 0.6) / 3) < 1e-9,
+            f"without a baseline the composite must fall back to the raw scores, got {out['S']['privacy']['score']:.3f}")
 
 
 @check("shapes_heatmap_data: carries an error reason for an unscoreable (not just unevaluated) cell")
