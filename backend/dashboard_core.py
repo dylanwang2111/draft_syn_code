@@ -1266,6 +1266,51 @@ def _run_job(cfg: dict, st: dict):
                                 noted.add((t, entity_key))
                     suite[s][t] = df
 
+        # Automatic SCD repair for every OTHER entity-keyed table: scd_eff/
+        # scd_end/scd_cur above are ONE column-name triple for the whole
+        # upload, so a table versioned under different column names (or a
+        # second table versioned independently of the configured one)
+        # silently gets skipped entirely -- confirmed live: a production
+        # run left PERSON_NAME with two rows sharing one entity both
+        # holding an open ("9999-12-31") end date, i.e. two "current"
+        # versions at once, because nothing had been configured for that
+        # table's own (START_DT, END_DT). Detected straight off each
+        # table's own real data instead (never guessed from names), same
+        # principle as the refill-side date-pair detection above. Skips
+        # any table the manual config above already reached, so nothing
+        # is repaired twice.
+        if entity_keys:
+            auto_noted = set()
+            for t, rdf in train.items():
+                for entity_key in entity_keys:
+                    if entity_key not in rdf.columns:
+                        continue
+                    if scd_eff and scd_end and scd_eff in rdf.columns and scd_end in rdf.columns:
+                        continue  # already covered by the manual config above
+                    pair = se.detect_scd_window_pair(rdf, entity_key, list(rdf.columns))
+                    if not pair:
+                        continue
+                    low, high = pair
+                    mirror = se.find_mirror_pair(rdf, low, high, list(rdf.columns))
+                    for s in suite:
+                        df = suite[s].get(t)
+                        if df is None or entity_key not in df.columns \
+                                or low not in df.columns or high not in df.columns:
+                            continue
+                        df, note = se.repair_scd_timeline(df, entity_key, low, high)
+                        if mirror and mirror[0] in df.columns and mirror[1] in df.columns:
+                            df, _ = se.repair_scd_timeline(df, entity_key, mirror[0], mirror[1])
+                        suite[s][t] = df
+                        key = (t, entity_key, low, high)
+                        if note and key not in auto_noted:
+                            say(f"⚠ SCD timeline ({t} · {entity_key} · {low}/{high}): {note}")
+                            auto_noted.add(key)
+                        elif not note and key not in auto_noted:
+                            extra = f" (and mirrored to {mirror[0]}/{mirror[1]})" if mirror else ""
+                            say(f"SCD timeline auto-repaired for {t}: non-overlapping windows per "
+                                f"{entity_key}, detected as {low}/{high}{extra}")
+                            auto_noted.add(key)
+
         # Entity-level cross-table correlation: do a customer's attributes across
         # tables (marital status in PERSON vs province in CONTACT) hang together
         # like real?  Single-table Column Pair Trends can't see across tables and

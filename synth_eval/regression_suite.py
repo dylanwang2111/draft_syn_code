@@ -34,7 +34,10 @@ from .entity import (_normalize_key_name, _resolve_key_column, build_entity_hub,
                      derive_synthetic_hub_pool, entity_key_tables)
 from .link import _normalize_key_values, _real_parent_counts, link_relationships, link_table
 from .pii import apply_pii_plan, fake_series
-from .scd import detect_ordered_date_pairs
+from .scd import (
+    detect_ordered_date_pairs, detect_scd_window_pair, find_mirror_pair,
+    repair_scd_timeline,
+)
 from .privacy import filter_close_records, filter_close_records_multitable, nearest_real_examples
 
 # imported from backend, not synth_eval -- _refill's conditional-grouping
@@ -987,6 +990,92 @@ def _c_detect_ordered_date_pairs_not_disjoint():
     _assert(len(involving_eff) >= 2,
             f"EFFECTIVE_DT genuinely orders against BOTH CREATED_DT and END_DT -- expected it in >=2 "
             f"pairs, not forced into just one, got {pairs}")
+
+
+@check("detect_scd_window_pair: picks the real version-boundary pair over an unrelated ordered audit pair")
+def _c_detect_scd_window_pair_finds_boundary():
+    rng = np.random.default_rng(0)
+    n_entities = 30
+    rows = []
+    for eid in range(n_entities):
+        n_versions = rng.integers(1, 4)
+        starts = sorted(pd.Timestamp("2015-01-01") + pd.Timedelta(days=int(d))
+                         for d in rng.integers(0, 3000, n_versions))
+        for i, start in enumerate(starts):
+            end = starts[i + 1] if i + 1 < len(starts) else pd.Timestamp("9999-12-31")
+            created = start - pd.Timedelta(days=1)   # ordered but NOT a version-boundary pair
+            updated = start + pd.Timedelta(hours=int(rng.integers(1, 999999)))  # ~unique per row
+            rows.append({"ENTITY_ID": eid, "START_DT": start, "END_DT": end,
+                         "CREATED_DT": created, "UPDATED_DT": updated})
+    real = pd.DataFrame(rows)
+    pair = detect_scd_window_pair(real, "ENTITY_ID", list(real.columns))
+    _assert(pair == ("START_DT", "END_DT"),
+            f"expected the real version-boundary pair (END_DT has a repeated 'open' sentinel, "
+            f"UPDATED_DT is ~unique per row), got {pair}")
+
+
+@check("detect_scd_window_pair: None when the entity has no multi-row versioning to repair")
+def _c_detect_scd_window_pair_none_when_single_row():
+    real = pd.DataFrame({
+        "ENTITY_ID": range(50),
+        "START_DT": pd.date_range("2020-01-01", periods=50, freq="D"),
+        "END_DT": [pd.Timestamp("9999-12-31")] * 50,
+    })
+    pair = detect_scd_window_pair(real, "ENTITY_ID", list(real.columns))
+    _assert(pair is None, f"every entity has exactly one row -- no timeline to repair, got {pair}")
+
+
+@check("find_mirror_pair: finds a duplicate audit pair that mirrors the business pair value-for-value")
+def _c_find_mirror_pair_finds_duplicate():
+    n = 100
+    start = pd.date_range("2020-01-01", periods=n, freq="D")
+    end = start + pd.Timedelta(days=30)
+    real = pd.DataFrame({
+        "START_DT": start, "END_DT": end,
+        "IDP_EFFECTIVE_DATE": start, "IDP_END_DATE": end,   # exact mirror
+        "UNRELATED_DT": start + pd.Timedelta(days=5),        # ordered but not a mirror
+    })
+    mirror = find_mirror_pair(real, "START_DT", "END_DT", list(real.columns))
+    _assert(mirror == ("IDP_EFFECTIVE_DATE", "IDP_END_DATE"),
+            f"expected the value-identical mirror pair, got {mirror}")
+
+
+@check("detect_scd_window_pair + repair_scd_timeline: fixes two 'open' rows sharing one entity")
+def _c_scd_auto_repair_fixes_duplicate_open_rows():
+    # Reproduces the reported bug: entity-hub relinking regroups rows from
+    # DIFFERENT original entities under one shared (synthetic) key, so each
+    # row's own independently-generated "still open" end date survives --
+    # two rows now claim to be the current version of the same entity.
+    rng = np.random.default_rng(0)
+    n_entities, n_versions = 20, 3
+    real_rows = []
+    for eid in range(n_entities):
+        starts = sorted(pd.Timestamp("2015-01-01") + pd.Timedelta(days=int(d))
+                         for d in rng.integers(0, 3000, n_versions))
+        for i, start in enumerate(starts):
+            end = starts[i + 1] if i + 1 < len(starts) else pd.Timestamp("9999-12-31")
+            real_rows.append({"ENTITY_ID": eid, "START_DT": start, "END_DT": end})
+    real = pd.DataFrame(real_rows)
+
+    # synthetic: same rows, but ENTITY_ID randomly regrouped -> multiple
+    # independently-"open" rows collide under the same entity
+    synth = real.copy()
+    synth["ENTITY_ID"] = rng.integers(0, 10, size=len(synth))
+
+    def open_dupes(df):
+        sizes = df.groupby("ENTITY_ID").size()
+        multi = df[df["ENTITY_ID"].isin(sizes[sizes > 1].index)]
+        open_counts = multi[multi["END_DT"] == pd.Timestamp("9999-12-31")].groupby("ENTITY_ID").size()
+        return int((open_counts > 1).sum())
+
+    before = open_dupes(synth)
+    _assert(before > 0, "test setup should reproduce the bug before repair")
+
+    pair = detect_scd_window_pair(real, "ENTITY_ID", list(real.columns))
+    repaired, note = repair_scd_timeline(synth, "ENTITY_ID", pair[0], pair[1])
+    _assert(not note, f"repair should succeed on real, parseable dates, got note: {note!r}")
+    after = open_dupes(repaired)
+    _assert(after == 0, f"expected zero entities with >1 open row after repair, got {after}")
 
 
 @check("_merge_ordered_date_clusters: unifies a pair split across two different refill clusters")

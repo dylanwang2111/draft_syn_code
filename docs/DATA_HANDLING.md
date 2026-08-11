@@ -139,6 +139,63 @@ Two layers, in order:
 
 ---
 
+## SCD timeline repair (`synth_eval.scd`)
+
+A synthesizer generates each version row of an SCD-2 table independently, so
+one entity's effective/end windows can overlap, leave gaps, or — the failure
+mode this section is about — leave more than one row looking "current" at
+once. `synth_eval.repair_scd_timeline` fixes this per entity: sort by
+effective date, tile the windows (each version's end = the next version's
+start), leave only the last version open.
+
+**Manual config.** The UI's Schema tab lets a run specify one
+effective-column / end-column / current-flag-column name triple
+(`scd_effective`, `scd_end`, `scd_current`) applied to every table that
+happens to carry those exact column names.
+
+**Automatic, per table (`detect_scd_window_pair`, `find_mirror_pair`).** The
+manual triple is *one* set of names for the whole upload — a table versioned
+under different column names (or a second table versioned independently of
+whichever one was configured) is silently skipped. Confirmed live: a run
+where PERSONNAME's own `(START_DT, END_DT)` was never configured, and a
+relinked, hub-fabricated entity ended up with two rows both holding an open
+(`9999-12-31`) end date — two "current" versions of the same entity at once.
+
+So every entity-keyed table not already covered by the manual config gets an
+automatic pass:
+
+1. `detect_scd_window_pair(real, entity_key, cols)` finds the table's own
+   version-boundary pair, straight off its real data, never guessed from
+   column names. Two conditions, both required: (a) `entity_key` has genuine
+   multi-row (versioned) entities in the real data — nothing to repair
+   otherwise; (b) among `detect_ordered_date_pairs`' candidates, the "high"
+   column must carry a dominant, repeated value — a real "still open"
+   sentinel that a true end-date column lands on for a meaningful share of
+   rows, unlike a per-row audit timestamp (created-at, updated-at), which is
+   ~always distinct per row and has no such spike. Confirmed on real data:
+   `END_DT`/`IDP_END_DATE` both cluster 93% of rows on one value;
+   `LAST_UPDATE_DT`'s most common value covers 0.1%.
+2. `find_mirror_pair(real, low, high, cols)` checks for another column pair
+   that duplicates the chosen one value-for-value — a common ETL pattern
+   (e.g. a data-warehouse load-audit pair mirroring a business start/end
+   pair exactly). Repairing only the primary pair would trade one
+   inconsistency (two open rows) for another (the repaired pair and its
+   untouched mirror now disagreeing on the same row), so the mirror gets
+   tiled identically.
+
+Entity groups too small to have any real versioning, or where no candidate
+column shows a genuine open-sentinel spike, are left alone rather than
+forcing a flag column to mean something it measurably doesn't — a first
+version of this checked `USE_STANDARD_IND`-style "current name" flags for
+exactly-one-`Y`-per-entity, but real PERSONNAME data shows 88/114 multi-row
+entities already carry more than one `Y` even before synthesis, so treating
+that as a violation to correct would just be inventing a cleanliness the
+source system itself doesn't have. The date-window tiling (no two rows open
+at once) is the well-defined, generalizable invariant; a flag column's
+business meaning is not assumed.
+
+---
+
 ## PII handling (`synth_eval.pii`, `apply_pii_plan`)
 
 The skipped id/date/name/audit columns above aren't discarded — they're refilled

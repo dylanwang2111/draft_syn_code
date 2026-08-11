@@ -128,6 +128,83 @@ def detect_ordered_date_pairs(
     return [(low, high) for low, high, _, _ in candidates]
 
 
+def detect_scd_window_pair(
+    real: pd.DataFrame, entity_key: str, cols: Sequence[str],
+    min_entities: int = 5, min_open_frac: float = 0.05,
+) -> Optional[Tuple[str, str]]:
+    """Find the ``(effective, end)`` pair among ``cols`` that is THIS
+    table's own SCD-2 version window for ``entity_key`` -- as opposed to
+    some other pair that also happens to satisfy ``low <= high`` (e.g. two
+    unrelated audit timestamps like created-at/updated-at).
+
+    ``detect_ordered_date_pairs`` alone can't tell those apart: it only
+    checks ordering. Two extra, real-data-measured signals narrow it down:
+
+    1. ``entity_key`` must actually have versioned (multi-row) entities in
+       ``real`` -- a table with at most one row per entity has no timeline
+       to repair, so there's nothing to detect a window for.
+    2. the "high"/end column must carry a dominant, repeated value: a real
+       "still open" sentinel (e.g. 9999-12-31) that a genuine end-date
+       column lands on for a meaningful share of rows, precisely because
+       "not yet closed" is a common state -- whereas a per-row audit
+       timestamp is ~always distinct per row and has no such spike.
+       Confirmed directly on real PERSONNAME data: END_DT/IDP_END_DATE
+       both cluster 93% of rows on one value; LAST_UPDATE_DT's most common
+       value covers 0.1% of rows.
+
+    Never guesses from column names -- the next uploaded schema's own
+    versioning columns won't share this one's naming convention. Returns
+    the first ``detect_ordered_date_pairs`` candidate (already sorted,
+    most confident first) that also clears the sentinel check, or ``None``.
+    """
+    if entity_key not in real.columns:
+        return None
+    sizes = real.groupby(entity_key).size()
+    if int((sizes >= 2).sum()) < min_entities:
+        return None
+    for low, high in detect_ordered_date_pairs(real, cols):
+        s = real[high].dropna()
+        if s.empty:
+            continue
+        top_frac = float(s.value_counts().iloc[0]) / len(s)
+        if top_frac >= min_open_frac:
+            return (low, high)
+    return None
+
+
+def find_mirror_pair(
+    real: pd.DataFrame, low: str, high: str, cols: Sequence[str],
+    min_match: float = 0.99,
+) -> Optional[Tuple[str, str]]:
+    """Find another ``(low2, high2)`` pair among ``cols`` that duplicates
+    ``(low, high)`` value-for-value -- e.g. a data-warehouse load-audit
+    pair (``IDP_EFFECTIVE_DATE``/``IDP_END_DATE``) that mirrors a business
+    pair (``START_DT``/``END_DT``) exactly, a common ETL pattern. Confirmed
+    directly: on real PERSONNAME data the two pairs agree on 100% of rows.
+
+    Repairing ``(low, high)`` without also repairing its mirror would trade
+    one inconsistency (two "open" rows) for another (the repaired pair and
+    its untouched mirror now disagreeing on the same row). Matched by
+    value, not name, so it generalizes to any schema's own duplicate
+    columns. Returns ``None`` if no column pairs both sides closely enough.
+    """
+    def _best_match(col: str) -> Optional[str]:
+        best, best_score = None, 0.0
+        for c in cols:
+            if c == col or c == low or c == high or c not in real.columns:
+                continue
+            both = real[col].notna() & real[c].notna()
+            if int(both.sum()) < 20:
+                continue
+            score = float((real[col][both].astype(str) == real[c][both].astype(str)).mean())
+            if score >= min_match and score > best_score:
+                best, best_score = c, score
+        return best
+
+    low2, high2 = _best_match(low), _best_match(high)
+    return (low2, high2) if low2 and high2 else None
+
+
 def repair_scd_timeline(
     df: pd.DataFrame,
     entity_key: str,
