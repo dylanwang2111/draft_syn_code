@@ -1284,9 +1284,20 @@ function themeColors(){
   const cs=getComputedStyle(document.documentElement);
   const g=(n,d)=>(cs.getPropertyValue(n)||d).trim();
   return {ink:g("--ink","#122c42"), line:g("--line","#d5e2f0"),
-          soft:g("--line-soft","#e7eef7")};
+          soft:g("--line-soft","#e7eef7"),
+          fail:g("--fail","#e31837"), warn:g("--warn","#cf8a12"), pass:g("--pass","#1a8f5a")};
 }
-const RDYLGN=[[0,"#a50026"],[0.25,"#f46d43"],[0.5,"#fee08b"],[0.75,"#a6d96a"],[1,"#1a9850"]];
+// score heatmap colorscale, built from the SAME fail/warn/pass tokens every
+// verdict badge and delta badge already uses elsewhere in the report -- not a
+// separate palette. Also fixes a real legibility gap: the generic RdYlGn this
+// replaced used a muted brick-red (#a50026) at the low end, which in dark mode
+// sits close enough to the null-cell grey (--line, shown through blank/
+// not-evaluated cells) to read as borderline colorblind-unsafe (measured via
+// the dataviz skill's validator: CVD separation ΔE 7.2, in the "needs
+// secondary encoding" floor band). --fail is a much more saturated red and
+// clears that same check at ΔE 25.6 -- a "red" cell now reads unambiguously
+// as red next to a grey "not evaluated" one, in both themes.
+const scoreScale=c=>[[0,c.fail],[0.5,c.warn],[1,c.pass]];
 
 /* heatmap placeholder (shapes/pairs); PNG fig fallback.
    `cap` is the caption; `idkey` (defaults to cap) makes the DOM id unique when
@@ -1330,7 +1341,7 @@ function renderHeatmap(el,kind,data,c){
     const e=rawErr[i]?.[j];
     return e ? `col ${x[j]}<br>${y[i]}: not computable<br>${e}` : `col ${x[j]}<br>${y[i]}: not evaluated`;
   })) : null;
-  const trace={type:"heatmap", z, x, y, zmin:0, zmax:1, colorscale:RDYLGN, xgap:1, ygap:1,
+  const trace={type:"heatmap", z, x, y, zmin:0, zmax:1, colorscale:scoreScale(c), xgap:1, ygap:1,
     hoverongaps:!!text, ...(text?{text}:{}),
     hovertemplate:(text?"%{text}<extra></extra>"
       :kind==="shapes"?"col %{x}<br>%{y}: %{z:.3f}<extra></extra>":"%{x} × %{y}: %{z:.3f}<extra></extra>"),
@@ -1407,7 +1418,14 @@ function restylePlotly(){
     const upd={"font.color":c.ink, "plot_bgcolor": heatmap ? c.line : "rgba(0,0,0,0)"};
     if(heatmap){ upd["xaxis.gridcolor"]=c.soft; upd["yaxis.gridcolor"]=c.soft; }
     else{ for(const a of ["xaxis","xaxis2","xaxis3","yaxis","yaxis2","yaxis3"]) upd[a+".gridcolor"]=c.soft; }
-    try{ window.Plotly.relayout(el, upd); }catch(e){}
+    try{
+      window.Plotly.relayout(el, upd);
+      // colorscale lives on the trace, not the layout -- relayout above
+      // won't touch it, so a theme toggle would otherwise leave cells
+      // colored with the OTHER theme's fail/warn/pass while the chrome
+      // around them switches.
+      if(heatmap) window.Plotly.restyle(el, {colorscale:[scoreScale(c)]}, [0]);
+    }catch(e){}
   }
 }
 
