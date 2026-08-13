@@ -4,6 +4,7 @@ Endpoints (single local user; state kept in memory):
     GET  /                      -> the dashboard SPA
     POST /api/upload            -> multipart CSVs; returns preview + detected metadata
     POST /api/sample            -> load bundled sdg/seed/*.csv instead of uploading
+    POST /api/scd_preview       -> per-table auto-detected SCD effective/end columns for an entity key
     POST /api/synthesize        -> start synthesis + evaluation in a worker thread
     GET  /api/progress          -> live progress log for the running job
     GET  /api/results           -> full evaluation report (JSON + base64 figures)
@@ -33,7 +34,8 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .dashboard_core import (
-    _detect, _read_csv_robust, _session_for, _sid, _start_job, _tables_payload, _validate_relationships,
+    _detect, _read_csv_robust, _scd_preview, _session_for, _sid, _start_job, _tables_payload,
+    _validate_relationships,
 )
 from . import chat_assistant
 
@@ -83,6 +85,15 @@ def validate_model(cfg: dict, request: Request):
     if tables is None:
         return JSONResponse({"error": "upload data first"}, status_code=400)
     return {"results": _validate_relationships(tables, cfg)}
+
+@app.post("/api/scd_preview")
+def scd_preview(cfg: dict, request: Request):
+    tables = _session_for(_sid(request))["tables"]
+    if tables is None:
+        return JSONResponse({"error": "upload data first"}, status_code=400)
+    entity_key = (cfg.get("entity_key") or "").strip()
+    return {"tables": _scd_preview(tables, entity_key) if entity_key else {}}
+
 
 @app.post("/api/synthesize")
 async def synthesize(cfg: dict, request: Request):

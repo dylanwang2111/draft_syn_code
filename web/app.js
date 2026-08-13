@@ -695,7 +695,7 @@ $("#dm-hub-gen").addEventListener("click",()=>{
 function syncEntity(){ const sel=$("#in-entity");
   for(const h of MODEL.hubs) if(![...sel.options].some(o=>o.value===h.key))
     sel.insertAdjacentHTML("beforeend",`<option value="${esc(h.key)}">${esc(h.key)}</option>`);
-  sel.value=(MODEL.hubs[0]&&MODEL.hubs[0].key)||""; updateScdVisibility();
+  sel.value=(MODEL.hubs[0]&&MODEL.hubs[0].key)||""; updateScdVisibility(); refreshScdAuto();
 }
 function renderStructureMirror(){
   const host=$("#structure-mirror"); if(!host) return;
@@ -783,6 +783,14 @@ function collectPii(){
   const out={};
   $$("#pii-rows .pii-row").forEach(r=>{
     (out[r.dataset.t]=out[r.dataset.t]||{})[r.dataset.c]=r.querySelector(".pii-pol").value;
+  });
+  return out;
+}
+function collectScd(){
+  const out={};
+  $$("#scd-fields [data-t]").forEach(r=>{
+    const eff=r.querySelector(".scd-eff").value, end=r.querySelector(".scd-end").value;
+    if(eff && end) out[r.dataset.t]={effective:eff, end:end, current:r.querySelector(".scd-cur").value||null};
   });
   return out;
 }
@@ -898,21 +906,62 @@ function renderRecipe(){
   // can select any of them.
   $("#in-entity").innerHTML=`<option value=""></option>`+
     sharedKeys().map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join("");
-  // SCD timeline columns: all column names (date-ish first), effective/end pre-selected
-  const allCols=[...new Set(Object.values(DATA.tables).flatMap(v=>v.columns.map(c=>c.name)))];
-  const dateish=c=>/(_dt|_date|eff|end|start|expiry|since|left)/i.test(c);
-  const ordered=allCols.slice().sort((a,b)=>(dateish(b)-dateish(a))||a.localeCompare(b));
-  const effSug=ordered.find(c=>/eff|effective|start|since|from/i.test(c))||"";
-  const endSug=ordered.find(c=>/(^|_)end|expire|expiry|left|thru/i.test(c))||"";
-  const opt=(ph,sel)=>`<option value="">${ph}</option>`+
-    ordered.map(c=>`<option value="${esc(c)}" ${c===sel?"selected":""}>${esc(c)}</option>`).join("");
-  $("#in-scd-eff").innerHTML=opt("effective-date column…",effSug);
-  $("#in-scd-end").innerHTML=opt("end-date column…",endSug);
-  $("#in-scd-cur").innerHTML=opt("current-flag column (optional)…","");
+  // SCD timeline columns: one row per table, its own columns only. Server-side
+  // auto-detection (se.detect_scd_window_pair) picks these off each table's
+  // real data already -- these selects are a manual override for when it
+  // misses, so they default to blank ("let auto-detect handle it"), never a
+  // pre-selected guess that would silently out-rank a working detector.
+  renderScdFields();
   updateScdVisibility();
+  refreshScdAuto();
   $("#btn-run").disabled=!selectedSynths.size;
 }
 function updateScdVisibility(){ $("#field-scd").style.display=$("#in-entity").value?"block":"none"; }
+// per-table SCD selects: option text shows what auto-detect actually found
+// (DATA.scdAuto, refreshed by refreshScdAuto below) so leaving a row on
+// "(auto)" isn't a black box -- rebuilt on every call, so any selection the
+// user already made is captured first and re-applied after.
+function renderScdFields(){
+  const prev={};
+  $$("#scd-fields [data-t]").forEach(r=>{
+    prev[r.dataset.t]={eff:r.querySelector(".scd-eff").value, end:r.querySelector(".scd-end").value,
+      cur:r.querySelector(".scd-cur").value};
+  });
+  const auto=(DATA&&DATA.scdAuto)||{};
+  $("#scd-fields").innerHTML=Object.entries(DATA.tables).map(([t,v])=>{
+    const cols=v.columns.map(c=>c.name).slice().sort((a,b)=>a.localeCompare(b));
+    let effPh="(auto) effective…", endPh="(auto) end…";
+    if(t in auto){
+      const a=auto[t];
+      effPh = a ? `(auto: ${esc(a.effective)})` : "(auto: none found)";
+      endPh = a ? `(auto: ${esc(a.end)})` : "(auto: none found)";
+    }
+    const p=prev[t]||{};
+    const opt=(ph,sel)=>`<option value="">${ph}</option>`+
+      cols.map(c=>`<option value="${esc(c)}" ${c===sel?"selected":""}>${esc(c)}</option>`).join("");
+    return `<div class="tgt-row" style="grid-template-columns:96px 1fr 1fr 1fr" data-t="${esc(t)}">
+      <span title="${esc(t)}">${esc(t)}</span>
+      <select class="scd-eff">${opt(effPh,p.eff)}</select>
+      <select class="scd-end">${opt(endPh,p.end)}</select>
+      <select class="scd-cur">${opt("current flag (optional)…",p.cur)}</select></div>`;
+  }).join("");
+}
+let _scdAutoKey=null;
+async function refreshScdAuto(){
+  if(!DATA) return;
+  const key=$("#in-entity").value;
+  if(!key){ DATA.scdAuto={}; _scdAutoKey=null; renderScdFields(); return; }
+  if(key===_scdAutoKey) return;   // already fetched for this key, rows already reflect it
+  _scdAutoKey=key;
+  try{
+    const r=await apiFetch("/api/scd_preview",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({entity_key:key})});
+    const j=await r.json();
+    if(key!==$("#in-entity").value) return;   // entity key changed again while this was in flight
+    DATA.scdAuto=j.tables||{};
+  }catch(e){ DATA.scdAuto={}; }
+  renderScdFields();
+}
 function updateEpochsVisibility(){
   $("#field-epochs").style.display=[...selectedSynths].some(s=>GAN_SYNTHS.has(s))?"block":"none";
 }
@@ -1068,7 +1117,7 @@ $("#btn-run").addEventListener("click",async()=>{
   const cfg={schema, relationships:MODEL.rels.slice(), targets, cap_sensitive, constraints:collectConstraints(),
     pii:collectPii(),
     entity_keys:MODEL.hubs.map(h=>h.key), entity_children:Object.fromEntries(MODEL.hubs.map(h=>[h.key,h.children.slice()])),
-    scd_effective:$("#in-scd-eff").value||"", scd_end:$("#in-scd-end").value||"", scd_current:$("#in-scd-cur").value||"",
+    scd:collectScd(),
     synths:[...selectedSynths],
     epochs:+$("#in-epochs").value, scale:+$("#in-scale").value, holdout:HOLDOUT_FRAC,
     max_categorical_card:($("#in-max-cat-card")||{}).value?+$("#in-max-cat-card").value:null,
@@ -1227,7 +1276,6 @@ function flushMeters(scope){ const sel=(scope?scope+" ":"")+".m-fill";
 
 /* ---------------- interactive charts (Plotly, PNG fallback) ---------------- */
 const HAS_PLOTLY=typeof window.Plotly!=="undefined";
-const RDYLGN=[[0,"#a50026"],[0.25,"#f46d43"],[0.5,"#fee08b"],[0.75,"#a6d96a"],[1,"#1a9850"]];
 let PLOT_QUEUE=[];            // pending {id,type,data,extra} to render after innerHTML
 const PLOTLY_REG=[];         // {id, heatmap} of rendered charts, for theme restyle
 function safeId(s){return "pl_"+s.replace(/[^A-Za-z0-9]/g,"_");}
@@ -1238,6 +1286,7 @@ function themeColors(){
   return {ink:g("--ink","#122c42"), line:g("--line","#d5e2f0"),
           soft:g("--line-soft","#e7eef7")};
 }
+const RDYLGN=[[0,"#a50026"],[0.25,"#f46d43"],[0.5,"#fee08b"],[0.75,"#a6d96a"],[1,"#1a9850"]];
 
 /* heatmap placeholder (shapes/pairs); PNG fig fallback.
    `cap` is the caption; `idkey` (defaults to cap) makes the DOM id unique when
@@ -1923,6 +1972,36 @@ function renderReport(res){
           <td class="score-cell">${cell(e.statistic)}</td></tr>`; }
       riH+=`</tbody></table>`;
     }
+  }
+  /* --- SCD timeline duration fidelity: unconditional on relationships being
+     defined -- a single standalone entity-versioned table can have this
+     without any cross-table link existing at all. --- */
+  const scdFid=res.scd_duration_fidelity||{};
+  const scdTables=Object.keys(scdFid);
+  if(scdTables.length){
+    riH+=head("SCD timeline duration fidelity",
+      "The repair above only guarantees a correctly-ordered, non-overlapping timeline per entity — it does "
+      + "NOT guarantee the SPACING between one entity's own successive versions looks real, since that "
+      + "spacing comes from wherever the effective dates came from (independent per-row generation, often "
+      + "regrouped into entities after the fact), which repair has no visibility into. This compares real vs. "
+      + "synthetic closed-version duration (end − start) with a KS test, shown here as 1 − KS statistic so "
+      + "higher still means closer to real: 1.0 = the two duration distributions are indistinguishable, lower "
+      + "means this entity's own version spacing has drifted from real even though the timeline itself is "
+      + "structurally valid.")
+      +`<table class="rep"><thead><tr><th>table</th><th>synthesizer</th>
+        <th style="text-align:right">duration similarity</th>
+        <th style="text-align:right">real median (days)</th>
+        <th style="text-align:right">synthetic median (days)</th></tr></thead><tbody>`;
+    for(const t of scdTables){
+      for(const s of Object.keys(scdFid[t])){
+        const e=scdFid[t][s], sim=1-e.ks_stat;
+        riH+=`<tr><td class="mono dim">${esc(t)}</td><td class="mono">${dot(s)}${esc(s)}</td>
+          <td class="score-cell"><span style="color:${meterColor(sim)}">${fmt(sim)}</span></td>
+          <td class="score-cell">${fmt(e.real_median_days,0)}</td>
+          <td class="score-cell">${fmt(e.synth_median_days,0)}</td></tr>`;
+      }
+    }
+    riH+=`</tbody></table>`;
   }
   $("#sec-ri").innerHTML=riH;
 

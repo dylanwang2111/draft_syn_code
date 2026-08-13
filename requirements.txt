@@ -2,6 +2,8 @@
 pandas
 numpy
 scikit-learn
+scipy         # already pulled in transitively via scikit-learn; imported directly for the
+              # SCD duration-fidelity KS-test (synth_eval.scd.scd_duration_fidelity)
 matplotlib
 seaborn
 sdv          # pulls in ctgan + torch, needed for CTGAN/TVAE/CopulaGAN (torch also used directly by TabSyn, synth_eval/tabsyn.py)

@@ -36,7 +36,7 @@ from .link import _normalize_key_values, _real_parent_counts, link_relationships
 from .pii import apply_pii_plan, fake_series
 from .scd import (
     detect_ordered_date_pairs, detect_scd_window_pair, find_mirror_pair,
-    repair_scd_timeline,
+    repair_scd_timeline, scd_duration_fidelity,
 )
 from .privacy import filter_close_records, filter_close_records_multitable, nearest_real_examples
 
@@ -1025,6 +1025,34 @@ def _c_detect_scd_window_pair_none_when_single_row():
     _assert(pair is None, f"every entity has exactly one row -- no timeline to repair, got {pair}")
 
 
+@check("detect_scd_window_pair: also recognizes NULL as the 'open' signal, not just a repeated sentinel")
+def _c_detect_scd_window_pair_null_open():
+    # Same shape as the sentinel-based test above, except END_DT uses the
+    # (equally common) convention of leaving "still open" rows NULL instead
+    # of writing a repeated sentinel date -- gate 2 must catch this via
+    # missingness, since dropping NULLs first (as the sentinel-dominance
+    # check does) would make this column look like ~unique closed-row
+    # values with no dominant one, indistinguishable from a decoy.
+    rng = np.random.default_rng(1)
+    n_entities = 30
+    rows = []
+    for eid in range(n_entities):
+        n_versions = rng.integers(1, 4)
+        starts = sorted(pd.Timestamp("2015-01-01") + pd.Timedelta(days=int(d))
+                         for d in rng.integers(0, 3000, n_versions))
+        for i, start in enumerate(starts):
+            end = starts[i + 1] if i + 1 < len(starts) else pd.NaT
+            created = start - pd.Timedelta(days=1)
+            updated = start + pd.Timedelta(hours=int(rng.integers(1, 999999)))
+            rows.append({"ENTITY_ID": eid, "START_DT": start, "END_DT": end,
+                         "CREATED_DT": created, "UPDATED_DT": updated})
+    real = pd.DataFrame(rows)
+    pair = detect_scd_window_pair(real, "ENTITY_ID", list(real.columns))
+    _assert(pair == ("START_DT", "END_DT"),
+            f"END_DT marks 'still open' with NULL rather than a repeated date -- expected it still "
+            f"recognized as the version-boundary pair, got {pair}")
+
+
 @check("find_mirror_pair: finds a duplicate audit pair that mirrors the business pair value-for-value")
 def _c_find_mirror_pair_finds_duplicate():
     n = 100
@@ -1076,6 +1104,68 @@ def _c_scd_auto_repair_fixes_duplicate_open_rows():
     _assert(not note, f"repair should succeed on real, parseable dates, got note: {note!r}")
     after = open_dupes(repaired)
     _assert(after == 0, f"expected zero entities with >1 open row after repair, got {after}")
+
+
+@check("scd_duration_fidelity: near-0 KS stat when synthetic durations match real exactly")
+def _c_scd_duration_fidelity_identical():
+    rng = np.random.default_rng(2)
+    rows = []
+    for eid in range(20):
+        starts = sorted(pd.Timestamp("2015-01-01") + pd.Timedelta(days=int(d))
+                         for d in rng.integers(0, 3000, 3))
+        for i, start in enumerate(starts):
+            end = starts[i + 1] if i + 1 < len(starts) else pd.Timestamp("9999-12-31")
+            rows.append({"ENTITY_ID": eid, "START_DT": start, "END_DT": end})
+    real = pd.DataFrame(rows)
+    res = scd_duration_fidelity(real, real.copy(), "ENTITY_ID", "START_DT", "END_DT")
+    _assert(res is not None, "expected a result -- there's plenty of closed-row data here")
+    _assert(res["ks_stat"] < 1e-9,
+            f"comparing real against an exact copy of itself should give KS stat 0, got {res['ks_stat']}")
+
+
+@check("scd_duration_fidelity: flags a real divergence from arbitrarily relinked entities")
+def _c_scd_duration_fidelity_flags_relinking():
+    # Same relinking simulation as the auto-repair test above: correctly
+    # repaired (no structural violation) but the entity grouping is
+    # arbitrary, so the SPACING between one entity's own versions no longer
+    # reflects real inter-version durations even though the timeline itself
+    # is now valid.
+    rng = np.random.default_rng(2)
+    n_entities, n_versions = 20, 3
+    real_rows = []
+    for eid in range(n_entities):
+        starts = sorted(pd.Timestamp("2015-01-01") + pd.Timedelta(days=int(d))
+                         for d in rng.integers(0, 3000, n_versions))
+        for i, start in enumerate(starts):
+            end = starts[i + 1] if i + 1 < len(starts) else pd.Timestamp("9999-12-31")
+            real_rows.append({"ENTITY_ID": eid, "START_DT": start, "END_DT": end})
+    real = pd.DataFrame(real_rows)
+
+    synth = real.copy()
+    synth["ENTITY_ID"] = rng.integers(0, 6, size=len(synth))   # arbitrary relinking
+    repaired, note = repair_scd_timeline(synth, "ENTITY_ID", "START_DT", "END_DT")
+    _assert(not note, f"repair should succeed, got note: {note!r}")
+
+    res = scd_duration_fidelity(real, repaired, "ENTITY_ID", "START_DT", "END_DT")
+    _assert(res is not None, "expected a result -- both sides have plenty of closed rows")
+    _assert(res["ks_stat"] > 0.1,
+            f"relinking should visibly disturb the duration distribution even after a "
+            f"structurally-correct repair, got KS stat {res['ks_stat']}")
+
+
+@check("scd_duration_fidelity: None when either side has too few closed rows to compare")
+def _c_scd_duration_fidelity_none_when_sparse():
+    # plain date strings, not pre-parsed via pd.to_datetime -- 9999-12-31
+    # overflows datetime64[ns] construction (see _parse's own docstring);
+    # scd_duration_fidelity's internal _parse call handles that recovery,
+    # a raw pd.to_datetime([...]) on the whole column up front does not.
+    real = pd.DataFrame({
+        "ENTITY_ID": [1, 1, 2, 2],
+        "START_DT": ["2020-01-01", "2021-01-01", "2020-06-01", "2021-06-01"],
+        "END_DT": ["2021-01-01", "9999-12-31", "2021-06-01", "9999-12-31"],
+    })
+    res = scd_duration_fidelity(real, real.copy(), "ENTITY_ID", "START_DT", "END_DT", min_closed=10)
+    _assert(res is None, f"only 2 closed rows on each side, well under min_closed=10, got {res}")
 
 
 @check("_merge_ordered_date_clusters: unifies a pair split across two different refill clusters")

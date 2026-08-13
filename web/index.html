@@ -69,10 +69,12 @@
       <button class="mini-btn" id="btn-open-model" style="margin-top:10px">Open Data Model →</button>
       <div class="field" id="field-scd" style="display:none; margin-top:14px">
         <div class="sub-label">SCD timeline (effective / end / current)</div>
-        <div class="tgt-row" style="grid-template-columns:1fr 1fr"><select id="in-scd-eff"></select><select id="in-scd-end"></select></div>
-        <select id="in-scd-cur" style="margin-top:6px"></select>
-        <p class="hint">needs the entity key + real date columns. Rewrites each entity's versions
-          into non-overlapping, contiguous windows and marks one current row.</p></div>
+        <p class="hint">Tables are auto-detected from their own real data (needs the entity key
+          + real date columns) — override any table below only if auto-detection picks the
+          wrong columns or misses one. Rewrites each entity's versions into non-overlapping,
+          contiguous windows and marks one current row.</p>
+        <div id="scd-fields"></div>
+      </div>
     </div>
 
     <div class="panel collapsed" id="constraint-panel" style="display:none">

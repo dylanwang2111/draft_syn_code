@@ -148,33 +148,47 @@ once. `synth_eval.repair_scd_timeline` fixes this per entity: sort by
 effective date, tile the windows (each version's end = the next version's
 start), leave only the last version open.
 
-**Manual config.** The UI's Schema tab lets a run specify one
-effective-column / end-column / current-flag-column name triple
-(`scd_effective`, `scd_end`, `scd_current`) applied to every table that
-happens to carry those exact column names.
+**Manual config, per table.** The UI's Schema tab lets a run specify an
+effective-column / end-column / current-flag-column selection *per table*
+(`cfg["scd"] = {table: {effective, end, current}}`, mirroring the per-table
+PII-policy config). This used to be one name triple applied identically to
+every table regardless of that table's own naming — which meant a table
+versioned under different column names than whichever one was configured
+was silently skipped, and there was no way to cover two independently-named
+SCD tables in the same upload at once. Left blank, a table falls through to
+automatic detection below; the manual selection exists only as an override
+for when auto-detection picks the wrong pair or misses one — it always wins
+over the automatic pass for whichever `(table, entity_key)` it covers.
+Each row's placeholder text shows what auto-detection actually found for
+that table (`POST /api/scd_preview`, which just calls
+`detect_scd_window_pair` directly against the entity key currently chosen in
+the Data Model tab) — so a correct auto pick is visible without opening the
+dropdown, and leaving it on "(auto)" is a genuine no-op, since it's the same
+detector that runs for real at synthesis time.
 
-**Automatic, per table (`detect_scd_window_pair`, `find_mirror_pair`).** The
-manual triple is *one* set of names for the whole upload — a table versioned
-under different column names (or a second table versioned independently of
-whichever one was configured) is silently skipped. Confirmed live: a run
-where PERSONNAME's own `(START_DT, END_DT)` was never configured, and a
-relinked, hub-fabricated entity ended up with two rows both holding an open
-(`9999-12-31`) end date — two "current" versions of the same entity at once.
-
-So every entity-keyed table not already covered by the manual config gets an
-automatic pass:
+**Automatic, per table (`detect_scd_window_pair`, `find_mirror_pair`).**
+Every entity-keyed table not covered by a manual override gets an automatic
+pass. This is what closed the original gap: confirmed live, a run where
+PERSONNAME's own `(START_DT, END_DT)` was never configured left a relinked,
+hub-fabricated entity with two rows both holding an open (`9999-12-31`) end
+date — two "current" versions of the same entity at once.
 
 1. `detect_scd_window_pair(real, entity_key, cols)` finds the table's own
    version-boundary pair, straight off its real data, never guessed from
    column names. Two conditions, both required: (a) `entity_key` has genuine
    multi-row (versioned) entities in the real data — nothing to repair
    otherwise; (b) among `detect_ordered_date_pairs`' candidates, the "high"
-   column must carry a dominant, repeated value — a real "still open"
-   sentinel that a true end-date column lands on for a meaningful share of
-   rows, unlike a per-row audit timestamp (created-at, updated-at), which is
-   ~always distinct per row and has no such spike. Confirmed on real data:
-   `END_DT`/`IDP_END_DATE` both cluster 93% of rows on one value;
-   `LAST_UPDATE_DT`'s most common value covers 0.1%.
+   column must carry an "open" signal for a meaningful share of rows —
+   either of two conventions, checked independently since a source system
+   can use either: a dominant, repeated sentinel value (a true end-date
+   column lands on it for many rows, unlike a per-row audit timestamp like
+   created-at/updated-at, which is ~always distinct per row and has no such
+   spike — confirmed on real data: `END_DT`/`IDP_END_DATE` both cluster 93%
+   of rows on one value, `LAST_UPDATE_DT`'s most common value covers 0.1%),
+   or NULL meaning "still open" instead of a sentinel — equally common in
+   practice, and checked as its own signal because dropping NULLs first (as
+   the sentinel check does) would make a NULL-convention column look like a
+   sparse, unrelated column with no dominant value among what's left.
 2. `find_mirror_pair(real, low, high, cols)` checks for another column pair
    that duplicates the chosen one value-for-value — a common ETL pattern
    (e.g. a data-warehouse load-audit pair mirroring a business start/end
@@ -193,6 +207,31 @@ that as a violation to correct would just be inventing a cleanliness the
 source system itself doesn't have. The date-window tiling (no two rows open
 at once) is the well-defined, generalizable invariant; a flag column's
 business meaning is not assumed.
+
+**Duration fidelity (`scd_duration_fidelity`).** Repair above only
+guarantees *structural* correctness — a tiled, non-overlapping timeline,
+one open row per entity. It says nothing about whether the *spacing*
+between one entity's own successive versions looks real, because that
+spacing comes from wherever the effective dates came from — independently
+synthesizer-generated per row, then in many pipelines regrouped into
+entities post-hoc by relinking — and repair has no visibility into either.
+Confirmed directly: simulating relinking on real PERSONNAME data and then
+running the existing, structurally-correct repair still leaves post-repair
+durations (`end − effective`, closed rows only) diverging from real ones at
+KS stat 0.215 (p=0.008) — correctness and this kind of distributional
+fidelity are different questions, and a table can have the former without
+the latter.
+
+`scd_duration_fidelity(real, synth, entity_key, effective_col, end_col)`
+measures this directly: a two-sample KS test between real and synthetic
+closed-row durations, for whichever pair `detect_scd_window_pair` found (or
+whatever was manually configured) — reported per table per synthesizer
+(`results["scd_duration_fidelity"]`, and the "SCD timeline duration
+fidelity" table in the report's Referential Integrity section, shown as
+`1 − KS stat` so higher still reads as closer to real). `None` when either
+side has fewer than `min_closed` (default 10) closed rows — too little to
+trust a distribution comparison. This is a *measurement*, not a fix: it
+exists to make an already-real gap visible rather than to close it.
 
 ---
 

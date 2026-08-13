@@ -262,6 +262,29 @@ def _tables_payload(st: dict):
     return out
 
 
+def _scd_preview(tables: dict, entity_key: str) -> dict:
+    """Per table, the (effective, end) column pair ``se.detect_scd_window_pair``
+    would pick for ``entity_key`` right now -- exactly the same detector the
+    synthesis run itself uses, so this is a genuine preview, not a separate
+    guess that could disagree with what actually runs later. Lets the UI show
+    "this is what auto-detect found" next to the manual-override selects
+    instead of leaving them a black box the user has to trust blind.
+
+    ``None`` per table means either the table doesn't carry this entity key
+    at all, or it does but nothing cleared detection's gates (e.g. too few
+    versioned entities) -- the caller can't tell which from this return value
+    alone but doesn't need to: either way there's nothing to prefill.
+    """
+    out = {}
+    for t, df in tables.items():
+        col = se._resolve_key_column(df, entity_key)
+        if col is None:
+            continue
+        pair = se.detect_scd_window_pair(df, col, list(df.columns))
+        out[t] = {"effective": pair[0], "end": pair[1]} if pair else None
+    return out
+
+
 def _build_metadata(tables_meta: dict, relationships: list[dict]):
     from sdv.metadata import Metadata
 
@@ -1245,19 +1268,37 @@ def _run_job(cfg: dict, st: dict):
 
         # SCD timeline repair: per entity, tile non-overlapping effective/end
         # windows and mark one current row (needs an entity key + real dates).
-        scd_eff = (cfg.get("scd_effective") or "").strip()
-        scd_end = (cfg.get("scd_end") or "").strip()
-        scd_cur = (cfg.get("scd_current") or "").strip() or None
-        if entity_keys and scd_eff and scd_end:
+        # `scd_overrides` is per-table -- {table: {effective, end, current}} --
+        # mirroring the pii_cfg convention below, since a single column-name
+        # triple applied to every table can't cover tables versioned under
+        # different names. This is only a manual escape hatch: the
+        # auto-detect block right after covers every table on its own, this
+        # block exists for when auto-detection picks the wrong pair or misses.
+        scd_overrides = cfg.get("scd") or {}
+        manual_covered = set()   # (table, entity_key) pairs already repaired manually
+        # whichever (entity_key, effective, end) actually got applied per table
+        # (manual or auto) -- used below to measure duration fidelity against
+        # that SAME pair, post-repair.
+        scd_pairs_by_table = {}
+        if entity_keys and scd_overrides:
             noted = set()
-            for s in suite:
-                for t in list(suite[s]):
-                    df = suite[s][t]
+            for t, override in scd_overrides.items():
+                scd_eff = (override.get("effective") or "").strip()
+                scd_end = (override.get("end") or "").strip()
+                scd_cur = (override.get("current") or "").strip() or None
+                if not (scd_eff and scd_end):
+                    continue
+                for s in suite:
+                    df = suite[s].get(t)
+                    if df is None:
+                        continue
                     # a table versions against at most one hub key in practice,
                     # but this loops every configured key so it isn't assumed
                     for entity_key in entity_keys:
                         if entity_key in df.columns and scd_eff in df.columns and scd_end in df.columns:
                             df, note = se.repair_scd_timeline(df, entity_key, scd_eff, scd_end, scd_cur)
+                            manual_covered.add((t, entity_key))
+                            scd_pairs_by_table[t] = (entity_key, scd_eff, scd_end)
                             key = (t, entity_key, note)
                             if note and key not in noted:
                                 say(f"⚠ SCD timeline ({t} · {entity_key}): {note}"); noted.add(key)
@@ -1266,31 +1307,35 @@ def _run_job(cfg: dict, st: dict):
                                 noted.add((t, entity_key))
                     suite[s][t] = df
 
-        # Automatic SCD repair for every OTHER entity-keyed table: scd_eff/
-        # scd_end/scd_cur above are ONE column-name triple for the whole
-        # upload, so a table versioned under different column names (or a
-        # second table versioned independently of the configured one)
-        # silently gets skipped entirely -- confirmed live: a production
-        # run left PERSON_NAME with two rows sharing one entity both
-        # holding an open ("9999-12-31") end date, i.e. two "current"
-        # versions at once, because nothing had been configured for that
-        # table's own (START_DT, END_DT). Detected straight off each
-        # table's own real data instead (never guessed from names), same
-        # principle as the refill-side date-pair detection above. Skips
-        # any table the manual config above already reached, so nothing
-        # is repaired twice.
+        # Automatic SCD repair for every OTHER entity-keyed table: the manual
+        # overrides above only cover whatever the user explicitly picked, so
+        # a table versioned under different column names -- or simply never
+        # configured -- silently got skipped entirely before this existed --
+        # confirmed live: a production run left PERSON_NAME with two rows
+        # sharing one entity both holding an open ("9999-12-31") end date,
+        # i.e. two "current" versions at once, because nothing had been
+        # configured for that table's own (START_DT, END_DT). Detected
+        # straight off each table's own real data instead (never guessed
+        # from names), same principle as the refill-side date-pair detection
+        # above. Skips any (table, entity_key) the manual overrides above
+        # already reached, so nothing is repaired twice. Also records the
+        # first successful (effective, current) column guess per table for
+        # the cross-table correlation step below, so tables covered only by
+        # auto-detection (no manual override) still get an effective-date
+        # column to determine "current" from there too.
+        auto_eff_by_table = {}
         if entity_keys:
             auto_noted = set()
             for t, rdf in train.items():
                 for entity_key in entity_keys:
-                    if entity_key not in rdf.columns:
+                    if entity_key not in rdf.columns or (t, entity_key) in manual_covered:
                         continue
-                    if scd_eff and scd_end and scd_eff in rdf.columns and scd_end in rdf.columns:
-                        continue  # already covered by the manual config above
                     pair = se.detect_scd_window_pair(rdf, entity_key, list(rdf.columns))
                     if not pair:
                         continue
                     low, high = pair
+                    auto_eff_by_table.setdefault(t, low)
+                    scd_pairs_by_table.setdefault(t, (entity_key, low, high))
                     mirror = se.find_mirror_pair(rdf, low, high, list(rdf.columns))
                     for s in suite:
                         df = suite[s].get(t)
@@ -1311,6 +1356,29 @@ def _run_job(cfg: dict, st: dict):
                                 f"{entity_key}, detected as {low}/{high}{extra}")
                             auto_noted.add(key)
 
+        # SCD duration fidelity: repair above only guarantees STRUCTURAL
+        # correctness (tiled windows, one open row) -- it says nothing about
+        # whether the SPACING between one entity's own successive versions
+        # looks real, since that spacing comes from wherever the effective
+        # dates came from (independent per-row generation, often regrouped
+        # into entities post-hoc by relinking), which repair has no
+        # visibility into. Confirmed on real data: a correctly-repaired but
+        # arbitrarily-relinked table can still diverge from real durations
+        # at KS stat 0.215 (p=0.008) -- see se.scd_duration_fidelity. Only
+        # computed for tables that actually got a pair applied above
+        # (manual or auto), against that SAME pair, post-repair.
+        scd_fidelity = {}
+        for t, (entity_key, low, high) in scd_pairs_by_table.items():
+            if t not in train:
+                continue
+            for s, tabs in suite.items():
+                df = tabs.get(t)
+                if df is None:
+                    continue
+                res = se.scd_duration_fidelity(train[t], df, entity_key, low, high)
+                if res:
+                    scd_fidelity.setdefault(t, {})[s] = res
+
         # Entity-level cross-table correlation: do a customer's attributes across
         # tables (marital status in PERSON vs province in CONTACT) hang together
         # like real?  Single-table Column Pair Trends can't see across tables and
@@ -1320,8 +1388,17 @@ def _run_job(cfg: dict, st: dict):
         # n/a here rather than being scored (see synth_eval.cross_table).
         cross_table = {}
         if entity_keys:
-            cur_flags = {t: scd_cur for t in tables} if scd_cur else None
-            eff_cols = {t: scd_eff for t in tables} if scd_eff else None
+            # per table: a manual override's effective/current column wins,
+            # else fall back to whatever auto-detection found for that table
+            # (no auto-detected current flag -- that invariant is deliberately
+            # not auto-enforced, see docs/DATA_HANDLING.md).
+            eff_cols = dict(auto_eff_by_table)
+            eff_cols.update({t: (ov.get("effective") or "").strip()
+                              for t, ov in scd_overrides.items() if (ov.get("effective") or "").strip()})
+            cur_flags = {t: (ov.get("current") or "").strip()
+                          for t, ov in scd_overrides.items() if (ov.get("current") or "").strip()}
+            eff_cols = eff_cols or None
+            cur_flags = cur_flags or None
             for s, tabs in suite.items():
                 cross_table[s] = _merge_cross_table([
                     se.entity_cross_table_trends(train, tabs, entity_key, roles, cur_flags, eff_cols)
@@ -1520,6 +1597,7 @@ def _run_job(cfg: dict, st: dict):
             "cardinality": cardinality,
             "cardinality_baseline": cardinality_baseline,  # what a real holdout scores, same shape
             "cross_table": cross_table,
+            "scd_duration_fidelity": scd_fidelity,
             "relationships_modeled": rels_ok and bool(rels),
             "linked_synths": linked_synths,
             "gen_seconds": {s: gen_timings.get(s) for s in suite},

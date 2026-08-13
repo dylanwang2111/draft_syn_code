@@ -143,19 +143,31 @@ def detect_scd_window_pair(
     1. ``entity_key`` must actually have versioned (multi-row) entities in
        ``real`` -- a table with at most one row per entity has no timeline
        to repair, so there's nothing to detect a window for.
-    2. the "high"/end column must carry a dominant, repeated value: a real
-       "still open" sentinel (e.g. 9999-12-31) that a genuine end-date
-       column lands on for a meaningful share of rows, precisely because
-       "not yet closed" is a common state -- whereas a per-row audit
-       timestamp is ~always distinct per row and has no such spike.
-       Confirmed directly on real PERSONNAME data: END_DT/IDP_END_DATE
-       both cluster 93% of rows on one value; LAST_UPDATE_DT's most common
-       value covers 0.1% of rows.
+    2. the "high"/end column must carry an "open" signal for a meaningful
+       share of rows -- precisely because "not yet closed" is a common
+       state for real entities, most of which are still on their latest
+       version. Two conventions are recognized, since a source system can
+       use either:
+       (a) a dominant, repeated sentinel value (e.g. 9999-12-31) -- a
+           genuine end-date column lands on it for many rows, whereas a
+           per-row audit timestamp is ~always distinct per row and has no
+           such spike. Confirmed directly on real PERSONNAME data:
+           END_DT/IDP_END_DATE both cluster 93% of rows on one value;
+           LAST_UPDATE_DT's most common value covers 0.1% of rows.
+       (b) NULL meaning "still open" instead of a sentinel value -- an
+           equally common convention this project's own seed data doesn't
+           happen to use, but the next uploaded schema's might. Checked as
+           its own signal (not folded into the value-dominance count)
+           because a NULL-convention end column can otherwise look exactly
+           like a sparse, mostly-missing, unrelated column once its NULLs
+           are set aside -- the missingness itself, not a repeated value
+           among what's left, is what marks it as "open" here.
 
     Never guesses from column names -- the next uploaded schema's own
     versioning columns won't share this one's naming convention. Returns
     the first ``detect_ordered_date_pairs`` candidate (already sorted,
-    most confident first) that also clears the sentinel check, or ``None``.
+    most confident first) that also clears either open-signal check, or
+    ``None``.
     """
     if entity_key not in real.columns:
         return None
@@ -163,11 +175,13 @@ def detect_scd_window_pair(
     if int((sizes >= 2).sum()) < min_entities:
         return None
     for low, high in detect_ordered_date_pairs(real, cols):
-        s = real[high].dropna()
-        if s.empty:
+        col = real[high]
+        if col.empty:
             continue
-        top_frac = float(s.value_counts().iloc[0]) / len(s)
-        if top_frac >= min_open_frac:
+        null_frac = float(col.isna().mean())
+        s = col.dropna()
+        top_frac = float(s.value_counts().iloc[0]) / len(s) if not s.empty else 0.0
+        if top_frac >= min_open_frac or null_frac >= min_open_frac:
             return (low, high)
     return None
 
@@ -203,6 +217,73 @@ def find_mirror_pair(
 
     low2, high2 = _best_match(low), _best_match(high)
     return (low2, high2) if low2 and high2 else None
+
+
+def scd_duration_fidelity(
+    real: pd.DataFrame, synth: pd.DataFrame, entity_key: str,
+    effective_col: str, end_col: str, min_closed: int = 10,
+) -> Optional[dict]:
+    """How well does ``synth``'s inter-version duration (``end - effective``,
+    closed rows only) match ``real``'s, for the SCD pair
+    ``(effective_col, end_col)``?
+
+    ``repair_scd_timeline``'s tiling (a version's end = the next version's
+    effective date) is structurally correct -- it mirrors genuine real
+    closed-row semantics exactly -- but it says nothing about whether the
+    SPACING between one entity's own successive versions looks real. That
+    spacing comes from wherever the effective dates themselves came from:
+    independently synthesizer-generated per row, then in many pipelines
+    regrouped into entities post-hoc (entity-hub relinking), neither of
+    which has any visibility into "how far apart should this entity's
+    versions be". Repair has no way to fix what it's never told.
+
+    Confirmed directly: on real PERSONNAME data, simulating relinking
+    (`CONT_ID` reassigned at random) and then running the existing,
+    structurally-correct repair still leaves post-repair durations
+    diverging from real ones at KS stat 0.215 (p=0.008) -- correctness and
+    this kind of distributional fidelity are different questions, and a
+    table can have the former without the latter.
+
+    Only closed rows count -- the one open (still-current) row per entity
+    has no real duration yet by definition, so it's excluded on both sides
+    the same way ``repair_scd_timeline`` identifies it: whichever end value
+    is the max (the open sentinel), or NaT under the NULL-open convention
+    (already excluded by requiring both columns non-null).
+
+    Returns ``{ks_stat, ks_pvalue, real_median_days, synth_median_days,
+    n_real, n_synth}`` -- ``ks_stat`` near 0 means the two duration
+    distributions look alike, near 1 means they don't -- or ``None`` if
+    either side has fewer than ``min_closed`` closed rows to compare, too
+    little to trust a distribution comparison from.
+    """
+    from scipy import stats
+
+    def _closed_days(df: pd.DataFrame) -> Optional[pd.Series]:
+        if entity_key not in df.columns or effective_col not in df.columns or end_col not in df.columns:
+            return None
+        eff = _parse(df[effective_col])
+        end = _parse(df[end_col])
+        valid = eff.notna() & end.notna()
+        if int(valid.sum()) < 2:
+            return None
+        open_value = end[valid].max()
+        closed = valid & (end < open_value)
+        return (end[closed] - eff[closed]).dt.days.astype(float)
+
+    real_days, synth_days = _closed_days(real), _closed_days(synth)
+    if real_days is None or synth_days is None \
+            or len(real_days) < min_closed or len(synth_days) < min_closed:
+        return None
+
+    ks = stats.ks_2samp(real_days, synth_days)
+    return {
+        "ks_stat": float(ks.statistic),
+        "ks_pvalue": float(ks.pvalue),
+        "real_median_days": float(real_days.median()),
+        "synth_median_days": float(synth_days.median()),
+        "n_real": int(len(real_days)),
+        "n_synth": int(len(synth_days)),
+    }
 
 
 def repair_scd_timeline(
