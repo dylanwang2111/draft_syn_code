@@ -1612,21 +1612,21 @@ function bizDims(res,s){
   const sum=(res.summary||{})[s]||{};
   const fid=num((sum.fidelity||{}).score), util=num((sum.utility||{}).score), priv=num((sum.privacy||{}).score);
   return [
-    {name:"Realism", q:"Does it look like real data?", score:fid, verdict:scoreVerdict(fid,0.8,0.6)},
-    {name:"Safety", q:"Could it be traced to a real customer?", score:priv, verdict:safetyVerdict(res,s)},
-    {name:"Usefulness", q:"Can teams use it like real data?", score:util, verdict:scoreVerdict(util,0.85,0.7)},
+    {name:"Realism", tech:"Fidelity", q:"Does it look like real data?", score:fid, verdict:scoreVerdict(fid,0.8,0.6)},
+    {name:"Safety", tech:"Privacy", q:"Could it be traced to a real customer?", score:priv, verdict:safetyVerdict(res,s)},
+    {name:"Usefulness", tech:"Utility", q:"Can teams use it like real data?", score:util, verdict:scoreVerdict(util,0.85,0.7)},
   ];
 }
 const bizPct=d=>d.score!=null?Math.round(d.score*100)+"%":"—";
 function bizDimRow(d){
   const pct=d.score!=null?Math.round(d.score*100):0;
-  return `<div class="bizdim"><div class="bizdim-name">${d.name}<small>${esc(d.q)}</small></div>
+  return `<div class="bizdim"><div class="bizdim-name">${d.name} <i class="lbl-tech">(${d.tech})</i><small>${esc(d.q)}</small></div>
     <div class="bizdim-track"><div class="bizdim-fill" style="width:${pct}%;background:${meterColor(d.score||0)}"></div></div>
     <div class="bizdim-val">${bizPct(d)}</div>${verdictBadge(d.verdict)}</div>`;
 }
 // compact variant for the narrow per-generator cards: name + score + verdict
 function bizDimMini(d){
-  return `<div class="bizdim-mini"><span>${d.name}</span>
+  return `<div class="bizdim-mini"><span>${d.name} <i class="lbl-tech">(${d.tech})</i></span>
     <span class="bm-r"><span class="bm-pct">${bizPct(d)}</span>${verdictBadge(d.verdict)}</span></div>`;
 }
 // concrete go/no-go per use case, from the dimension verdicts
@@ -2181,6 +2181,17 @@ function renderReport(res){
       + "synthetic-to-real distance found, graded against how close real records get to each other by pure "
       + "chance — see the Nearest-record check panel below for the actual matched row pair.")}`})
     +fig(res.figures.privacy,"NewRowSynthesis (ideal 1) · Membership-Inference attacker AUC (ideal 0.5) · CategoricalCAP (ideal 1)");
+  if(VIEW==="business") pv+=`<p class="biz-note">What each check below is asking:</p>
+    <div class="pm-grid">
+      <div class="pm-item"><b>Can someone tell who was in the real data? <span class="pm-tech">(membership inference)</span></b>
+        <span>Tries to guess whether a specific real customer's record was used to build this data. PASS means the guess is no better than a coin flip.</span></div>
+      <div class="pm-item"><b>Are any rows just copies? <span class="pm-tech">(new row synthesis)</span></b>
+        <span>Checks whether synthetic rows are genuinely new or are exact copies of a real record. PASS means the rows aren't copies.</span></div>
+      <div class="pm-item"><b>Can a hidden detail be guessed? <span class="pm-tech">(categorical CAP)</span></b>
+        <span>If someone already knows a bit about a person, this checks whether the synthetic data makes it any easier to guess something else about them, like income or marital status. PASS means it doesn't.</span></div>
+      <div class="pm-item"><b>Is any synthetic row too close to a real one? <span class="pm-tech">(nearest record)</span></b>
+        <span>Finds the synthetic row that sits closest to any real record and checks it's no closer than real records normally sit to each other. PASS means nothing sits suspiciously close.</span></div>
+    </div>`;
   // flatten, then sort synthesizer → table → check so each synth reads as one block
   const pvRows=[];
   for(const [s,tabs] of Object.entries(res.privacy)) for(const [t,rep] of Object.entries(tabs))
