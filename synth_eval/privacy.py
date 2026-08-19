@@ -248,6 +248,27 @@ def nearest_real_examples(
     return out
 
 
+def _within_expected_reject_rate(n_bad: int, n_input: int, percentile: float) -> bool:
+    """True if the observed reject fraction is at or below what the
+    percentile-based threshold itself implies is "normal".
+
+    The threshold is defined as the Nth percentile of real-to-real
+    nearest-neighbor distances, so on a synthesizer that faithfully
+    reproduces the real data's own neighbor structure, roughly
+    ``percentile``% of rows landing below it is expected BY CONSTRUCTION --
+    it isn't evidence of a privacy problem, just of a low-cardinality/
+    low-dimensional modelable feature space where many real rows already
+    sit on top of each other (e.g. a handful of demographic type-code
+    columns shared by hundreds of people). Paying for a resample-and-refill
+    round to chase that down below its own noise floor isn't worth the
+    cost, especially for a multi-table synthesizer where a "resample" means
+    redrawing the entire joint sample.
+    """
+    if n_input <= 0:
+        return True
+    return (n_bad / n_input) <= (percentile / 100.0)
+
+
 def filter_close_records(
     real: pd.DataFrame,
     synth: pd.DataFrame,
@@ -270,6 +291,12 @@ def filter_close_records(
     checked the same way, for up to ``max_attempts`` rounds; if the model
     keeps producing close rows even after that, the output is short by that
     many rows rather than keeping the risky ones just to hit a row count.
+
+    If the initial reject fraction is already at or below what the
+    ``percentile`` threshold itself implies is normal (see
+    ``_within_expected_reject_rate``), the refill is skipped entirely and
+    the output ships short by that (small) amount -- resampling to chase a
+    rate the threshold's own definition predicts isn't worth the cost.
 
     Unlike nearest_real_examples (which grades a MINIMUM over many scanned
     rows against a same-size-sample bootstrap ceiling, to correct for the
@@ -313,25 +340,33 @@ def filter_close_records(
     kept = current[~bad]
 
     attempts = 0
-    while len(kept) < len(current) and resample_fn is not None and attempts < max_attempts:
-        need = len(current) - len(kept)
-        attempts += 1
-        try:
-            extra = resample_fn(max(need * 2, 10))
-        except Exception:
-            break
-        if extra is None or len(extra) == 0:
-            break
-        extra = extra.reset_index(drop=True)
-        good_extra = extra[~_reject_mask(extra)].head(need)
-        report["n_resampled"] += len(good_extra)
-        kept = pd.concat([kept, good_extra], ignore_index=True)
+    if report["n_rejected"] and _within_expected_reject_rate(report["n_rejected"], len(current), percentile):
+        report["note"] = (
+            f"{report['n_rejected']} row(s) ({report['n_rejected'] / len(current):.1%}) rejected, "
+            f"at or below the {percentile:.0f}th-percentile threshold's own expected rate -- shipped "
+            f"without resampling rather than paying for a refill that isn't evidence of a real problem"
+        )
+    else:
+        while len(kept) < len(current) and resample_fn is not None and attempts < max_attempts:
+            need = len(current) - len(kept)
+            attempts += 1
+            try:
+                extra = resample_fn(max(need * 2, 10))
+            except Exception:
+                break
+            if extra is None or len(extra) == 0:
+                break
+            extra = extra.reset_index(drop=True)
+            good_extra = extra[~_reject_mask(extra)].head(need)
+            report["n_resampled"] += len(good_extra)
+            kept = pd.concat([kept, good_extra], ignore_index=True)
+
+        if len(kept) < len(current):
+            report["note"] = (f"could not fully refill after {attempts} resample attempt(s) -- "
+                               f"output is {len(current) - len(kept)} row(s) short of the request "
+                               f"rather than keeping rows that failed the check")
 
     report["n_output"] = len(kept)
-    if len(kept) < len(current):
-        report["note"] = (f"could not fully refill after {attempts} resample attempt(s) -- "
-                           f"output is {len(current) - len(kept)} row(s) short of the request "
-                           f"rather than keeping rows that failed the check")
     return {"data": kept.reset_index(drop=True), "report": report}
 
 
@@ -413,6 +448,15 @@ def filter_close_records_multitable(
     rows only" API, so each retry resamples everything and keeps just what's
     needed, discarding the rest. ``max_attempts`` defaults lower than the
     single-table filter's because of that extra cost per retry.
+
+    Because that retry is a full joint resample, it's skipped entirely (the
+    root ships short by the rejected rows instead) when the initial reject
+    fraction is already at or below what ``percentile`` itself implies is
+    normal -- see ``_within_expected_reject_rate``. This is the common case
+    on a low-cardinality/mostly-categorical table, where a nonzero reject
+    rate reflects the encoded feature space naturally collapsing many real
+    rows onto each other, not a synthesizer memorizing individuals, and
+    isn't worth an extra full HMA sample to chase.
     """
     from sklearn.neighbors import NearestNeighbors
 
@@ -486,7 +530,9 @@ def filter_close_records_multitable(
 
         n_resampled = 0
         attempts = 0
-        while len(current[root]) < n_input and resample_fn is not None and attempts < max_attempts:
+        skip_refill = n_bad and _within_expected_reject_rate(n_bad, n_input, percentile)
+        while (not skip_refill and len(current[root]) < n_input
+               and resample_fn is not None and attempts < max_attempts):
             attempts += 1
             try:
                 fresh = resample_fn()
@@ -517,13 +563,21 @@ def filter_close_records_multitable(
                     n_resampled += len(good)
                     current[root] = pd.concat([current[root], good], ignore_index=True)
 
+        if skip_refill:
+            note = (f"{n_bad} row(s) ({n_bad / n_input:.1%}) rejected, at or below the "
+                    f"{percentile:.0f}th-percentile threshold's own expected rate -- shipped without "
+                    f"a fresh full-batch resample (expensive for a multi-table synthesizer) rather "
+                    f"than paying for a refill that isn't evidence of a real problem")
+        elif len(current[root]) >= n_input:
+            note = ""
+        else:
+            note = (f"could not fully refill after {attempts} resample attempt(s) -- "
+                    f"output is {n_input - len(current[root])} row(s) short")
+
         report["tables"][root] = {
             "n_input": n_input, "n_rejected": n_bad, "n_resampled": n_resampled,
             "n_output": len(current[root]), "cascaded_removed": cascaded_removed,
-            "threshold": threshold,
-            "note": "" if len(current[root]) >= n_input else
-                    f"could not fully refill after {attempts} resample attempt(s) -- "
-                    f"output is {n_input - len(current[root])} row(s) short",
+            "threshold": threshold, "note": note,
         }
 
     return {"data": current, "report": report}

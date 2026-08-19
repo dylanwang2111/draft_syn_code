@@ -118,6 +118,16 @@ with a fresh draw from the same fitted model, for up to a few retry rounds. If t
 model can't produce enough clean replacements, the output comes back short rather
 than keeping a risky row just to hit a row count.
 
+The retry itself is skipped (rejected rows are simply dropped, no refill) when the
+reject rate is already at or below what the percentile threshold predicts is normal
+— e.g. at the default 5th percentile, up to ~5% of rows failing is expected by
+construction on a low-cardinality/mostly-categorical table, where many real rows
+already sit on top of each other in the modelable feature space; that's not
+evidence the model is memorizing individuals, and isn't worth the cost of another
+full sample to chase, especially for HMA where a retry means redrawing the entire
+joint multi-table batch. Only a reject rate *above* that expected floor triggers
+the resample loop.
+
 Runs automatically for every synthesizer. For single-table models
 (GaussianCopula/CTGAN/TVAE/CopulaGAN/TabSyn) it's a straightforward per-table filter. For
 HMA, rows are linked across tables by shared keys, so removing one has to cascade

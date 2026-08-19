@@ -782,6 +782,81 @@ def _c_filter_multitable_hub_root():
     _assert("CHILD" in out["report"]["tables"], "hub child fell through unchecked (the bug this guards against)")
 
 
+def _low_reject_fixture(n: int = 200, seed: int = 1):
+    """Real data plus synth that's almost entirely far away, with exactly 2
+    near-exact copies -- a ~1% reject rate, comfortably under the default
+    5th-percentile threshold's own expected rate."""
+    rng = np.random.default_rng(seed)
+    real = pd.DataFrame({
+        "AMOUNT": rng.normal(loc=100, scale=20, size=n),
+        "FLAG_CD": rng.choice(["A", "B"], size=n),
+    })
+    roles = ColumnRoles(numeric=["AMOUNT"], categorical=["FLAG_CD"])
+    synth = pd.DataFrame({
+        "AMOUNT": rng.normal(loc=1000, scale=5, size=n),
+        "FLAG_CD": rng.choice(["A", "B"], size=n),
+    })
+    synth.loc[0, ["AMOUNT", "FLAG_CD"]] = real.loc[0, ["AMOUNT", "FLAG_CD"]]
+    synth.loc[1, ["AMOUNT", "FLAG_CD"]] = real.loc[1, ["AMOUNT", "FLAG_CD"]]
+    return real, synth, roles
+
+
+@check("filter_close_records: reject rate within the threshold's own expected rate skips the resample")
+def _c_filter_close_skip_low_reject():
+    real, synth, roles = _low_reject_fixture()
+    calls = [0]
+
+    def resample_fn(n_needed, _calls=calls):
+        _calls[0] += 1
+        return real.sample(n_needed, random_state=2)
+
+    out = filter_close_records(real, synth, roles, resample_fn=resample_fn, percentile=5.0)
+    report = out["report"]
+    _assert(report["n_rejected"] > 0, "fixture should reject the 2 near-duplicates")
+    _assert(calls[0] == 0, "expected resample_fn to be skipped under a reject rate within the threshold's own expected rate")
+    _assert(report["n_output"] == len(synth) - report["n_rejected"],
+            "expected output short by exactly the rejected rows, no refill")
+    _assert("expected rate" in report["note"], f"expected a skip-explaining note, got: {report['note']!r}")
+
+
+@check("filter_close_records: reject rate above the threshold's expected rate still resamples")
+def _c_filter_close_high_reject_still_resamples():
+    real, synth, roles = _close_fixture()  # ~50% reject rate
+    calls = [0]
+
+    def resample_fn(n_needed, _calls=calls):
+        _calls[0] += 1
+        rng = np.random.default_rng(99)
+        return pd.DataFrame({
+            "AMOUNT": rng.normal(loc=1000, scale=5, size=n_needed),
+            "FLAG_CD": rng.choice(["A", "B"], size=n_needed),
+        })
+
+    out = filter_close_records(real, synth, roles, resample_fn=resample_fn, percentile=1.0)
+    _assert(calls[0] > 0, "expected resample_fn to be called when reject rate exceeds the threshold's expected rate")
+    _assert(out["report"]["n_resampled"] > 0, "expected some rows to be successfully resampled")
+
+
+@check("filter_close_records_multitable: reject rate within the expected rate skips the full-batch resample")
+def _c_filter_multitable_skip_low_reject():
+    real, synth, roles_df = _low_reject_fixture()
+    real_tables = {"ROOT": real}
+    synth_tables = {"ROOT": synth}
+    roles = {"ROOT": roles_df}
+    calls = [0]
+
+    def resample_fn(_synth=synth, _calls=calls):
+        _calls[0] += 1
+        return {"ROOT": _synth}
+
+    out = filter_close_records_multitable(real_tables, synth_tables, roles, [],
+                                           resample_fn=resample_fn, percentile=5.0)
+    tbl_report = out["report"]["tables"]["ROOT"]
+    _assert(tbl_report["n_rejected"] > 0, "fixture should reject the 2 near-duplicates")
+    _assert(calls[0] == 0, "expected the full-batch resample to be skipped under a low reject rate")
+    _assert("expensive for a multi-table" in tbl_report["note"], f"expected a skip-explaining note, got: {tbl_report['note']!r}")
+
+
 @check("nearest_real_examples: percentile changes the reported ceiling, not just cosmetically")
 def _c_nearest_percentile():
     real, synth, roles = _close_fixture()
