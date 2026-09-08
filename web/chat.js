@@ -204,8 +204,9 @@ document.addEventListener("keydown",e=>{
 function applyPlanSync(sync){
   if(!sync) return;
   const rels=sync.relationships||[], hubKey=sync.entity_key||"", hubChildren=sync.entity_children||[];
+  const curHubKey=(MODEL.hub&&MODEL.hub.key)||"", curHubChildren=(MODEL.hub&&MODEL.hub.children)||[];
   const relChanged=JSON.stringify(MODEL.rels)!==JSON.stringify(rels)
-    || MODEL.hub.key!==hubKey || JSON.stringify(MODEL.hub.children)!==JSON.stringify(hubChildren);
+    || curHubKey!==hubKey || JSON.stringify(curHubChildren)!==JSON.stringify(hubChildren);
   if(relChanged){
     MODEL.rels=rels.slice();
     MODEL.hub={key:hubKey, children:hubChildren.slice()};
