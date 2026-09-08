@@ -209,20 +209,32 @@ def _matrix_to_z(mat):
     return [[None if pd.isna(v) else float(v) for v in row] for row in mat.values]
 
 
-def shapes_heatmap_data(shape_scores) -> Optional[dict]:
+def shapes_heatmap_data(shape_scores, shape_errors=None) -> Optional[dict]:
     """Interactive-chart data for the per-column shape-score heatmap.
 
-    Returns {"x": data columns, "y": synthesizers, "z": [[score]]} — the same
-    wide orientation as the PNG — or None.  Consumed by the dashboard's Plotly
-    renderer; the PNG remains an offline fallback.
+    Returns {"x": data columns, "y": synthesizers, "z": [[score]], "err":
+    [[reason or None]]} — the same wide orientation as the PNG — or None.
+    Consumed by the dashboard's Plotly renderer; the PNG remains an offline
+    fallback.
+
+    A blank (null) ``z`` cell can mean two very different things: the
+    column simply wasn't evaluated, or sdmetrics tried and couldn't even
+    compute a similarity at all (``IncomputableMetricError`` — e.g. a very
+    sparse real column whose synthetic side came back 100% null, a genuine
+    generation failure, not a "nothing to see here" gap). ``shape_errors``
+    (``{synth: {column: reason}}``, same keys as ``shape_scores``) carries
+    that reason through so the UI can tell the two apart instead of
+    rendering an unexplained blank cell either way.
     """
     if not shape_scores:
         return None
     mat = pd.DataFrame(shape_scores).T          # rows = synths, cols = data columns
     if mat.empty:
         return None
+    err_mat = pd.DataFrame(shape_errors or {}).T.reindex(index=mat.index, columns=mat.columns)
+    err = [[(None if pd.isna(v) else str(v)) for v in row] for row in err_mat.values]
     return {"x": [str(c) for c in mat.columns], "y": [str(i) for i in mat.index],
-            "z": _matrix_to_z(mat)}
+            "z": _matrix_to_z(mat), "err": err}
 
 
 def pair_trends_heatmap_data(details) -> Optional[dict]:
@@ -467,8 +479,21 @@ def _mean(vals) -> float:
     return float(np.mean(vals)) if vals else float("nan")
 
 
-def structure_scores(ri_rows, cardinality=None, derived_parent=False) -> Dict[str, Dict[str, float]]:
+def structure_scores(ri_rows, cardinality=None, derived_parent=False,
+                      cardinality_baseline: Optional[float] = None) -> Dict[str, Dict[str, float]]:
     """Per-synthesizer referential-integrity score, plus its diagnostics.
+
+    ``cardinality_baseline``, when given, is what a REAL holdout scores on
+    CardinalityShapeSimilarity against the real training rows (same idea as
+    NewRowSynthesis/CategoricalCAP's real-holdout baselines in
+    ``synth_eval.privacy``): unlike a column's marginal shape, a table's real
+    child-per-parent fan-out can be genuinely lopsided (a handful of common
+    values absorbing most children, most values rare) -- on that kind of
+    distribution even a real holdout won't score close to 1.0 against the
+    training split, so a synthesizer's own score means little without this
+    for context. One number for the whole run (a property of the real data,
+    not of any synthesizer), attached to every synth's row so each can be
+    read against it.
 
     Column Shapes / Column Pair Trends only look inside one table, so a
     synthesizer can score a perfect QualityReport while getting the cross-table
@@ -518,6 +543,7 @@ def structure_scores(ri_rows, cardinality=None, derived_parent=False) -> Dict[st
         out[s] = {
             "score": float("nan") if shape is None else float(shape),   # cardinality shape ONLY
             "cardinality_shape": (None if shape is None else float(shape)),
+            "cardinality_shape_baseline": cardinality_baseline,
             # diagnostics — shown, not scored (see the docstring)
             "fk_validity": fk_v,
             "fk_by_construction": bool(derived_parent),
@@ -535,6 +561,7 @@ def compute_summary(
     ri_rows=None,
     cardinality=None,
     derived_parent: bool = False,
+    cardinality_baseline: Optional[float] = None,
 ) -> Dict[str, dict]:
     """Per-synthesizer scorecard: one headline 0-1 number per dimension plus the
     components it is made of, so every report tab can show the same arithmetic.
@@ -544,12 +571,28 @@ def compute_summary(
       similarity, see :func:`structure_scores`) at half their weight ->
       (2*columns + ri) / 3.  With no relationships defined, fidelity is the
       column score alone.
-    * privacy  = mean of three 0-1 protection scores
-      (1-2|MIA AUC-0.5|, NewRowSynthesis, CategoricalCAP).
+    * privacy  = mean of four 0-1 protection scores
+      (1-2|MIA AUC-0.5|, NewRowSynthesis, CategoricalCAP,
+      nearest-record: clip(closest synthetic-to-real distance / the real-
+      holdout bootstrap ceiling, 0, 1) -- same ratio the nearest_record
+      PASS/WARN/FAIL verdict already uses, so a score of 1 means the
+      closest synthetic row is at or beyond the ceiling (no worse than real
+      unseen data gets from pure chance) and a score near 0 means it's
+      landing right on top of a real row).
+      NewRowSynthesis and CategoricalCAP use ``1 - max(0, baseline - score)``
+      when a real-holdout baseline is available -- the SAME "how far below
+      the achievable ceiling" gap the PASS/WARN/FAIL verdict already judges
+      by (see synth_eval.privacy.privacy_report), not the raw score. A table
+      with few distinct value combinations has a genuinely low ceiling even
+      for real, unseen rows; scoring the raw number would silently punish a
+      synthesizer for a property of the table it evaluated fine against
+      (verdict: PASS/WARN) while tanking the composite score as if it were
+      a real problem. Falls back to the raw score when no baseline exists,
+      same as the verdict does.
     * utility  = mean over table x metric of clip(synth score / real score, 0, 1)
       (TSTR / TRTR).
     """
-    struct = structure_scores(ri_rows, cardinality, derived_parent)
+    struct = structure_scores(ri_rows, cardinality, derived_parent, cardinality_baseline)
     out: Dict[str, dict] = {}
     for s in quality_scores:
         tabs = quality_scores[s].values()
@@ -558,24 +601,52 @@ def compute_summary(
         st_score = st["score"] if st else float("nan")
         fidelity = columns if (st is None or np.isnan(st_score)) else (2.0 * columns + st_score) / 3.0
 
-        # ---- privacy: three protection scores, higher = safer ----
-        mia, new_rows, nrs_base, cap, cap_base = [], [], [], [], []
+        # ---- privacy: four protection scores, higher = safer ----
+        # new_rows/cap keep the RAW score (for display, matching what the
+        # per-check verdict text quotes); new_row_prot/cap_prot are what
+        # actually feeds the composite -- see below.
+        mia, new_rows, nrs_base, cap, cap_base, nearest = [], [], [], [], [], []
+        new_row_prot, cap_prot = [], []
         for rep in (privacy_all.get(s) or {}).values():
             auc = rep.get("membership_inference", {}).get("auc")
             if auc is not None and not (isinstance(auc, float) and np.isnan(auc)):
                 mia.append(float(auc))
             sdm = rep.get("sdmetrics", {})
             if sdm.get("NewRowSynthesis") is not None:
-                new_rows.append(float(np.clip(sdm["NewRowSynthesis"], 0.0, 1.0)))
-            if sdm.get("NewRowSynthesis_baseline") is not None:
-                nrs_base.append(float(np.clip(sdm["NewRowSynthesis_baseline"], 0.0, 1.0)))
+                nrs = float(np.clip(sdm["NewRowSynthesis"], 0.0, 1.0))
+                new_rows.append(nrs)
+                base = sdm.get("NewRowSynthesis_baseline")
+                # Judged the same way the PASS/WARN/FAIL verdict already is:
+                # against how far BELOW the real-holdout ceiling this landed,
+                # not the raw score. A table with few distinct value
+                # combinations has a genuinely low ceiling even for real,
+                # unseen rows (real "looks like a duplicate" there too) --
+                # scoring the raw number would punish a synthesizer for a
+                # property of the table, not something it got wrong. Only
+                # penalize landing BELOW the ceiling; beating it is full
+                # credit, same as the verdict's own gap = base - score.
+                if base is not None:
+                    nrs_base.append(float(np.clip(base, 0.0, 1.0)))
+                    new_row_prot.append(1.0 - max(0.0, nrs_base[-1] - nrs))
+                else:
+                    new_row_prot.append(nrs)   # no baseline -- fall back to the raw score
             if sdm.get("CategoricalCAP") is not None:
-                cap.append(float(np.clip(sdm["CategoricalCAP"], 0.0, 1.0)))
-            if sdm.get("CategoricalCAP_baseline") is not None:
-                cap_base.append(float(np.clip(sdm["CategoricalCAP_baseline"], 0.0, 1.0)))
+                c = float(np.clip(sdm["CategoricalCAP"], 0.0, 1.0))
+                cap.append(c)
+                base = sdm.get("CategoricalCAP_baseline")
+                if base is not None:   # same baseline-relative treatment as NewRowSynthesis above
+                    cap_base.append(float(np.clip(base, 0.0, 1.0)))
+                    cap_prot.append(1.0 - max(0.0, cap_base[-1] - c))
+                else:
+                    cap_prot.append(c)
+            nr = rep.get("nearest_record_examples") or {}
+            ceiling, min_dist = nr.get("holdout_bootstrap_min_p05"), nr.get("min_distance")
+            if ceiling is not None and min_dist is not None and ceiling > 0:
+                nearest.append(float(np.clip(min_dist / ceiling, 0.0, 1.0)))
         mia_auc = _mean(mia)
         mia_prot = float("nan") if np.isnan(mia_auc) else max(0.0, 1.0 - 2.0 * abs(mia_auc - 0.5))
-        privacy = _mean([mia_prot, _mean(new_rows), _mean(cap)])
+        nearest_prot = _mean(nearest)
+        privacy = _mean([mia_prot, _mean(new_row_prot), _mean(cap_prot), nearest_prot])
 
         # ---- utility: TSTR vs the real-trained baseline on the same holdout ----
         # NB the score is the mean of the *per-panel ratios*, not the ratio of the
@@ -635,7 +706,8 @@ def compute_summary(
             "privacy": {"score": privacy, "mia_auc": mia_auc, "mia_protection": mia_prot,
                         "new_row_synthesis": _mean(new_rows),
                         "new_row_baseline": _mean(nrs_base), "categorical_cap": _mean(cap),
-                        "categorical_cap_baseline": _mean(cap_base)},
+                        "categorical_cap_baseline": _mean(cap_base),
+                        "nearest_record_protection": nearest_prot},
             "utility": {"score": utility, "synth": u_synth, "real": u_real,
                         "gap": (float("nan") if np.isnan(u_synth) or np.isnan(u_real)
                                 else u_real - u_synth),
@@ -653,6 +725,7 @@ def compute_leaderboard(
     ri_rows=None,
     cardinality=None,
     derived_parent: bool = False,
+    cardinality_baseline: Optional[float] = None,
 ) -> pd.DataFrame:
     """One row per synthesizer with 0-1 scores: fidelity / privacy / utility.
 
@@ -661,7 +734,7 @@ def compute_leaderboard(
     integrity counted inside ``fidelity`` (see :func:`structure_scores`).
     """
     summary = compute_summary(quality_scores, privacy_all, efficacy_table, ri_rows,
-                              cardinality, derived_parent)
+                              cardinality, derived_parent, cardinality_baseline)
     rows = []
     for s, v in summary.items():
         rows.append({

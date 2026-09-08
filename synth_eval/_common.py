@@ -63,6 +63,7 @@ SYNTH_PALETTE = {
     "CTGAN": "#d62728",
     "TVAE": "#9467bd",
     "CopulaGAN": "#ff7f0e",
+    "TabSyn": "#17becf",
 }
 
 

@@ -37,6 +37,11 @@
     <button class="tbtn primary" id="btn-run" disabled>▶ Synthesize</button>
     <button class="tbtn danger" id="btn-cancel" style="display:none">■ Cancel</button>
     <span class="status-dot" id="status-dot" title="idle"></span>
+    <button class="tbtn icon" id="btn-chat" title="Toggle assistant" aria-label="Toggle assistant">
+      <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7"
+        stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>
+    </button>
     <button class="tbtn icon" id="btn-theme" title="Toggle dark mode" aria-label="Toggle dark mode"></button>
   </div>
 </div>
@@ -57,24 +62,26 @@
 
     <div class="panel collapsed" id="structure-panel" style="display:none">
       <div class="panel-h"><h2><span class="step">1 ·</span> Structure &amp; keys</h2><span class="panel-sum" id="sum-structure"></span></div>
-      <p class="hint">Relationships and the entity-key hub are edited visually in the
-        <b>Data Model</b> tab. This is a summary of what's set there.</p>
+      <p class="hint">How your tables connect, and the shared-ID hub that links them, are set
+        visually in the <b>Data Model</b> tab. This is a summary of what's there.</p>
       <div id="structure-mirror"></div>
       <select id="in-entity" style="display:none"><option value="">(none)</option></select>
       <button class="mini-btn" id="btn-open-model" style="margin-top:10px">Open Data Model →</button>
       <div class="field" id="field-scd" style="display:none; margin-top:14px">
         <div class="sub-label">SCD timeline (effective / end / current)</div>
-        <div class="tgt-row" style="grid-template-columns:1fr 1fr"><select id="in-scd-eff"></select><select id="in-scd-end"></select></div>
-        <select id="in-scd-cur" style="margin-top:6px"></select>
-        <p class="hint">needs the entity key + real date columns. Rewrites each entity's versions
-          into non-overlapping, contiguous windows and marks one current row.</p></div>
+        <p class="hint">Tables are auto-detected from their own real data (needs the entity key
+          + real date columns) — override any table below only if auto-detection picks the
+          wrong columns or misses one. Rewrites each entity's versions into non-overlapping,
+          contiguous windows and marks one current row.</p>
+        <div id="scd-fields"></div>
+      </div>
     </div>
 
     <div class="panel collapsed" id="constraint-panel" style="display:none">
       <div class="panel-h"><h2><span class="step">2 ·</span> Constraints</h2><span class="panel-sum" id="sum-constraints"></span></div>
       <div id="constraint-rows"></div>
       <button class="mini-btn" id="btn-add-constraint">+ add constraint</button>
-      <p class="hint">rules enforced during synthesis (SDV cag), e.g. EFFECTIVE_DATE ≤ END_DATE.</p>
+      <p class="hint">Business rules the output must always satisfy, e.g. effective date ≤ end date.</p>
     </div>
 
     <div class="panel collapsed" id="pii-panel" style="display:none">
@@ -87,21 +94,51 @@
 
     <div class="panel collapsed" id="synth-panel" style="display:none">
       <div class="panel-h"><h2><span class="step">4 ·</span> Synthesizers</h2><span class="panel-sum" id="sum-synths"></span></div>
-      <div class="field" style="margin-top:0"><div class="chips" id="synth-chips"></div>
-        <p class="hint">HMA = multi-table; the rest are single-table. CTGAN/TVAE/CopulaGAN are neural (slower).</p></div>
+      <div class="field" style="margin-top:0"><div id="synth-chips"></div>
+        <p class="hint">CTGAN/TVAE/CopulaGAN/TabSyn are neural (slower).
+          <a href="#" class="link-inline" id="link-how-works">How do these work?</a></p></div>
     </div>
 
     <div class="panel collapsed" id="params-panel" style="display:none">
       <div class="panel-h"><h2><span class="step">5 ·</span> Run parameters</h2><span class="panel-sum" id="sum-params"></span></div>
-      <div class="field" style="margin-top:0"><label>Sample scale ×rows <output id="out-scale">1.0</output></label>
+      <div class="field" style="margin-top:0"><label><span class="lbl-main">How many rows to generate <i class="lbl-tech">scale × real rows</i></span> <output id="out-scale">1.0</output></label>
         <input type="range" id="in-scale" min="0.25" max="2" step="0.25" value="1"></div>
       <div class="field" id="field-epochs" style="display:none">
-        <label>Neural epochs (CTGAN / TVAE / CopulaGAN) <output id="out-epochs">60</output></label>
-        <input type="range" id="in-epochs" min="10" max="600" step="10" value="60"></div>
-      <div class="field"><label>Holdout fraction (privacy / TSTR) <output id="out-holdout">0.25</output></label>
-        <input type="range" id="in-holdout" min="0.10" max="0.40" step="0.05" value="0.25"></div>
-      <div class="field"><label>ML-efficacy target / table</label><div id="target-fields"></div></div>
-      <div class="field"><label>Privacy attack: sensitive column / table</label><div id="cap-fields"></div></div>
+        <label><span class="lbl-main">Training passes — neural models <i class="lbl-tech">epochs · CTGAN / TVAE / CopulaGAN / TabSyn</i></span> <output id="out-epochs">300</output></label>
+        <input type="range" id="in-epochs" min="10" max="1000" step="10" value="300"></div>
+      <div class="field"><label><span class="lbl-main">What the usefulness test predicts <i class="lbl-tech">ML-efficacy target / table</i></span></label><div id="target-fields"></div></div>
+      <div class="field"><label><span class="lbl-main">Sensitive field the safety test guesses <i class="lbl-tech">privacy attack column / table</i></span></label><div id="cap-fields"></div></div>
+      <details class="biz-expander field">
+        <summary>Advanced thresholds <span style="opacity:.7">(tune for a different data scale)</span></summary>
+        <div class="biz-details" style="display:flex; flex-direction:column; gap:12px">
+          <label><span class="lbl-main" style="font-size:12.5px">Max distinct values for a categorical column <i class="lbl-tech">above this, treated as id-like and skipped — blank = auto-detect per table</i></span>
+            <input type="number" id="in-max-cat-card" min="2" step="1" placeholder="auto" style="width:100%; margin-top:4px">
+            <p class="hint" id="auto-cat-card-hint" style="margin-top:4px"></p></label>
+          <label><span class="lbl-main" style="font-size:12.5px">Min rows to auto-pick an ML-efficacy target <i class="lbl-tech">below this, a table is skipped as too small to score meaningfully</i></span>
+            <input type="number" id="in-min-target-rows" min="1" step="1" value="30" style="width:100%; margin-top:4px"></label>
+          <label><span class="lbl-main" style="font-size:12.5px">Privacy filter strictness <i class="lbl-tech">percentile — lower is stricter, catches more rows</i></span>
+            <input type="number" id="in-close-percentile" min="0.1" max="50" step="0.1" value="5" style="width:100%; margin-top:4px"></label>
+        </div>
+      </details>
+      <details class="biz-expander field" id="field-tabsyn-arch" style="display:none">
+        <summary>TabSyn architecture <span style="opacity:.7">(bigger = more capacity for wide/correlated columns, slower — blank = default)</span></summary>
+        <div class="biz-details" style="display:flex; flex-direction:column; gap:12px">
+          <label><span class="lbl-main" style="font-size:12.5px">Token width <i class="lbl-tech">d_token — per-column embedding size</i></span>
+            <input type="number" id="in-tabsyn-d-token" min="4" step="4" placeholder="64" style="width:100%; margin-top:4px"></label>
+          <label><span class="lbl-main" style="font-size:12.5px">Latent size <i class="lbl-tech">d_latent — per-column compressed representation; the main knob for wide/skewed categorical columns</i></span>
+            <input type="number" id="in-tabsyn-d-latent" min="1" step="1" placeholder="8" style="width:100%; margin-top:4px"></label>
+          <label><span class="lbl-main" style="font-size:12.5px">Attention heads <i class="lbl-tech">nhead — auto-corrected to the nearest divisor of token width if it doesn't divide evenly</i></span>
+            <input type="number" id="in-tabsyn-nhead" min="1" step="1" placeholder="8" style="width:100%; margin-top:4px"></label>
+          <label><span class="lbl-main" style="font-size:12.5px">VAE depth <i class="lbl-tech">vae_layers — transformer encoder/decoder layers</i></span>
+            <input type="number" id="in-tabsyn-vae-layers" min="1" step="1" placeholder="3" style="width:100%; margin-top:4px"></label>
+          <label><span class="lbl-main" style="font-size:12.5px">Diffusion width <i class="lbl-tech">denoiser_hidden — MLP hidden size</i></span>
+            <input type="number" id="in-tabsyn-denoiser-hidden" min="8" step="8" placeholder="384" style="width:100%; margin-top:4px"></label>
+          <label><span class="lbl-main" style="font-size:12.5px">Diffusion depth <i class="lbl-tech">denoiser_depth — MLP layers</i></span>
+            <input type="number" id="in-tabsyn-denoiser-depth" min="1" step="1" placeholder="4" style="width:100%; margin-top:4px"></label>
+          <label><span class="lbl-main" style="font-size:12.5px">Sampling steps <i class="lbl-tech">sample_steps — diffusion denoising steps at generation time</i></span>
+            <input type="number" id="in-tabsyn-sample-steps" min="1" step="1" placeholder="30" style="width:100%; margin-top:4px"></label>
+        </div>
+      </details>
     </div>
 
     <div class="panel" id="synthetic-panel" style="display:none">
@@ -109,6 +146,7 @@
       <div id="synth-list"></div>
     </div>
   </aside>
+  <div class="resizer" id="resize-left" title="Drag to resize"></div>
 
   <!-- ============ RIGHT ============ -->
   <main class="right">
@@ -139,13 +177,13 @@
           <button class="mini-btn" id="dm-autolayout" style="margin:0">Auto-layout</button>
         </div>
         <div class="dm-hub">
-          <span class="lbl">Entity-key hub</span>
+          <span class="lbl">Shared ID <span class="lbl-tech">entity-key hub</span></span>
           <select id="dm-hub-key"><option value="">(choose a shared key…)</option></select>
           <span class="lbl">children</span>
           <div class="dm-childs" id="dm-hub-childs"></div>
-          <button class="mini-btn" id="dm-hub-gen" style="margin:0" disabled>Generate hub</button>
-          <button class="mini-btn" id="dm-hub-clear" style="margin:0; display:none">Remove hub</button>
+          <button class="mini-btn" id="dm-hub-gen" style="margin:0" disabled>Add ID hub</button>
         </div>
+        <div class="dm-hub-list" id="dm-hub-list"></div>
         <div class="dm-validate" id="dm-validate"></div>
         <div class="dm-canvas-wrap">
           <div class="dm-canvas" id="dm-canvas">
@@ -192,6 +230,13 @@
           </div>
           <nav class="rep-nav" id="rep-nav">
             <button class="rep-fold" id="rep-fold" title="Collapse panel" aria-label="Collapse panel">›</button>
+            <div class="rep-nav-view">
+              <div class="viewtoggle" id="view-toggle" role="tablist" aria-label="Report detail level">
+                <button class="vt-btn active" data-view="business" role="tab">Business</button>
+                <button class="vt-btn" data-view="technical" role="tab">Technical</button>
+              </div>
+              <i class="ihelp" id="view-hint" data-tip="Plain-language summary. Switch to Technical for the full metrics.">i</i>
+            </div>
             <button class="rep-navbtn active" data-sec="sec-overview" title="Leaderboard">
               <svg class="ic" viewBox="0 0 24 24"><path d="M5 20v-6M12 20V5M19 20v-9"/></svg><span class="txt">Leaderboard</span></button>
             <button class="rep-navbtn group" data-sec="sec-quality" title="Fidelity">
@@ -206,6 +251,8 @@
               <svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3.6"/></svg><span class="txt">Utility</span></button>
             <button class="rep-navbtn" data-sec="sec-privacy" title="Privacy">
               <svg class="ic" viewBox="0 0 24 24"><path d="M12 3l7 3v5c0 4.6-3 7.7-7 9-4-1.3-7-4.4-7-9V6z"/></svg><span class="txt">Privacy</span></button>
+            <button class="rep-navbtn" id="btn-export" style="margin-top:auto" title="Export this report (PDF or HTML)">
+              <svg class="ic" viewBox="0 0 24 24"><path d="M12 3v13m0 0l-4.5-4.5M12 16l4.5-4.5"/><path d="M5 20h14"/></svg><span class="txt">Export</span></button>
           </nav>
         </div>
       </div>
@@ -214,8 +261,245 @@
       <span class="jobbar-lbl" id="jobbar-lbl"></span></div>
     <div class="console" id="console"></div>
   </main>
+  <div class="resizer" id="resize-chat" title="Drag to resize"></div>
+
+  <!-- ============ CHAT ============ -->
+  <aside class="chatdock" id="chatdock">
+    <div class="chatdock-head">
+      <span class="chatdock-title"><span class="chatdock-dot"></span>Assistant</span>
+      <div class="chatdock-head-actions">
+        <button class="chatdock-size" id="chatdock-size" title="Shrink to a side panel" aria-label="Shrink to a side panel"></button>
+        <button class="chatdock-close" id="chatdock-close" title="Hide assistant" aria-label="Hide assistant">›</button>
+      </div>
+    </div>
+    <div class="chat-log" id="chat-log"></div>
+    <div class="composer" id="chat-composer">
+      <form class="composer-row" id="chat-composer-form">
+        <label class="attach-icon" id="chat-attach-btn" title="Attach CSV files">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+        </label>
+        <input type="text" id="chat-text-input" class="text-input" autocomplete="off"
+          placeholder="Attach CSV files to begin, or ask a question…">
+        <button type="submit" class="send-btn" id="chat-send-btn" title="Send" aria-label="Send">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+        </button>
+      </form>
+    </div>
+  </aside>
+</div>
+
+<div class="modal-backdrop" id="docs-backdrop">
+  <div class="modal" id="docs-modal" role="dialog" aria-modal="true" aria-label="How the synthesizers work">
+    <button class="modal-close" id="docs-close" aria-label="Close">&times;</button>
+    <div class="doc-wrap">
+      <div class="blk-head"><h3>How the synthesizers work</h3></div>
+      <p class="doc-lead">Every synthesizer below does the same two things in a different way: <b>fit</b>
+        (learn a model of the real table(s)) and <b>sample</b> (draw brand-new rows from that model, never
+        copies, always freshly generated). The two statistical models learn distributions and correlations
+        directly, so they're fast and their output is easy to reason about; the neural models learn a network
+        that produces rows, which can capture more complex, non-linear relationships at the cost of a training
+        loop.</p>
+
+      <div class="doc-card" id="doc-gaussiancopula" style="border-left-color:#2ca02c">
+        <div class="doc-card-h"><span class="dot" style="background:#2ca02c"></span><h3>Gaussian Copula</h3></div>
+        <div class="doc-tag">Single-table, FK-linked · statistical · fastest</div>
+        <ol class="doc-steps">
+          <li><b>Fit each column's own shape.</b> Learn a univariate distribution (Beta, Gamma, Gaussian,
+            truncated, or an empirical curve) that best matches each column alone, ignoring every other
+            column.</li>
+          <li><b>Convert real values to percentiles.</b> Using that per-column curve, turn every value into
+            "where does this fall in the distribution": a number between 0 and 1.</li>
+          <li><b>Convert percentiles to normal scores.</b> Pass each percentile through the inverse
+            standard-normal curve so every column now looks like the same bell curve, with row-to-row
+            relationships preserved.</li>
+          <li><b>Learn the correlation matrix.</b> Now that every column sits on the same scale, measure how
+            they move together (e.g. age ↔ income).</li>
+          <li><b>Sample new correlated points.</b> Draw fresh rows from a multivariate normal distribution
+            shaped by that correlation matrix.</li>
+          <li><b>Invert back to real units.</b> normal score → percentile → each column's own inverse
+            distribution → a realistic value in its original scale.</li>
+        </ol>
+        <div class="doc-foot"><b>Best for:</b> a clean single table where you mainly need correct per-column
+          shapes plus linear/rank correlation preserved, near-instantly and with no training loop.
+          <b>Trade-off:</b> only captures linear/rank relationships; a 3-way interaction between columns can
+          slip through. When tables are linked, its foreign keys are relinked to the synthetic parent's
+          rows afterward (matching the real per-parent count), so referential integrity holds too, just
+          without HMA's joint cross-table modeling.</div>
+      </div>
+
+      <div class="doc-card" id="doc-hma" style="border-left-color:#1f77b4">
+        <div class="doc-card-h"><span class="dot" style="background:#1f77b4"></span><h3>HMA (Hierarchical Modeling Algorithm)</h3></div>
+        <div class="doc-tag">Multi-table · statistical · preserves keys</div>
+        <ol class="doc-steps">
+          <li><b>Walk the table tree from the leaves up.</b> Starting at child tables, augment each parent
+            row with summary statistics of its children: how many children it has, and the mean/covariance
+            of their numeric columns.</li>
+          <li><b>Fit a Gaussian Copula per table</b>, with those extra "child-shape" columns baked in, so a
+            parent's copula model implicitly encodes what its children usually look like.</li>
+          <li><b>Recurse up multiple levels.</b> Grandparents inherit shape statistics from parents (which
+            already encode their own children), all the way to the root table.</li>
+          <li><b>Sample top-down.</b> Generate the root table first, including its sampled "child-shape"
+            parameters.</li>
+          <li><b>Generate children per parent.</b> For each sampled parent row, use its own sampled
+            child-shape parameters to decide how many child rows to create, and draw them already stamped
+            with that parent's key.</li>
+          <li><b>Recurse down</b> for grandchildren, and so on, until every table is generated.</li>
+        </ol>
+        <div class="doc-foot"><b>Best for:</b> multiple linked tables where foreign-key relationships must
+          hold, because every child row is generated already carrying a valid parent key, so referential
+          integrity holds by construction, not by luck. <b>Trade-off:</b> more moving parts than a single
+          copula fit, so it's slower and the dead-zone during "Modeling Tables" can take a while on wide
+          schemas.</div>
+      </div>
+
+      <div class="doc-card" id="doc-ctgan" style="border-left-color:#d62728">
+        <div class="doc-card-h"><span class="dot" style="background:#d62728"></span><h3>CTGAN</h3></div>
+        <div class="doc-tag">Single-table, FK-linked · neural (GAN) · captures non-linear structure</div>
+        <ol class="doc-steps">
+          <li><b>Preprocess numeric columns.</b> Fit a Gaussian-mixture model per numeric column and
+            represent each value as (which "mode" it belongs to, how far into that mode); this handles
+            lumpy, multi-modal columns a single bell curve can't.</li>
+          <li><b>Preprocess categorical columns.</b> One-hot encode them, and rebalance sampling
+            ("training-by-sampling") so rare categories are shown to the model often enough to be learned,
+            not drowned out by the dominant ones.</li>
+          <li><b>Train two competing networks.</b> A <i>Generator</i> turns random noise (plus a condition
+            on one column's value) into a fake row; a <i>Critic</i> tries to tell real rows from the
+            Generator's fake ones.</li>
+          <li><b>Adversarial training loop.</b> Every epoch the Critic gets better at spotting fakes and the
+            Generator gets better at fooling it, repeated for many epochs until the Generator's rows are
+            statistically indistinguishable.</li>
+          <li><b>Sample.</b> After training, discard the Critic; feed the Generator fresh random noise
+            (plus conditions) to produce as many new rows as you want.</li>
+        </ol>
+        <div class="doc-foot"><b>Best for:</b> tables with skewed, multi-modal numeric columns or complex
+          non-linear joint patterns a copula can't see. <b>Trade-off:</b> needs real training time (epochs),
+          and is less predictable/interpretable than a statistical model. When tables are linked, its foreign
+          keys are relinked to the synthetic parent's rows afterward (matching the real per-parent count), so
+          referential integrity holds too, just without HMA's joint cross-table modeling.</div>
+      </div>
+
+      <div class="doc-card" id="doc-tvae" style="border-left-color:#9467bd">
+        <div class="doc-card-h"><span class="dot" style="background:#9467bd"></span><h3>TVAE</h3></div>
+        <div class="doc-tag">Single-table, FK-linked · neural (VAE) · steadier training</div>
+        <ol class="doc-steps">
+          <li><b>Same preprocessing as CTGAN:</b> mode-specific normalization for numeric columns, one-hot
+            for categorical.</li>
+          <li><b>Encode.</b> A neural <i>Encoder</i> compresses each real row into a small latent vector (a
+            mean and spread in a compressed space).</li>
+          <li><b>Decode.</b> A neural <i>Decoder</i> tries to reconstruct the original row from that latent
+            vector.</li>
+          <li><b>Train on two goals at once:</b> minimize reconstruction error (the rebuilt row should match
+            the original) while keeping the latent space close to a clean standard-normal shape, so it's easy
+            to sample from later.</li>
+          <li><b>Sample.</b> After training, skip the Encoder entirely: draw a random latent vector from a
+            standard normal and run it through the Decoder to get a new row.</li>
+        </ol>
+        <div class="doc-foot"><b>Best for:</b> similar cases to CTGAN, but trains faster and more stably (no
+          adversarial min-max game, so no mode collapse). <b>Trade-off:</b> can produce slightly softer,
+          blurrier distribution edges than CTGAN's sharper mode fidelity. Same FK-relinking as CTGAN when
+          tables are linked.</div>
+      </div>
+
+      <div class="doc-card" id="doc-copulagan" style="border-left-color:#ff7f0e">
+        <div class="doc-card-h"><span class="dot" style="background:#ff7f0e"></span><h3>CopulaGAN</h3></div>
+        <div class="doc-tag">Single-table, FK-linked · hybrid (copula + GAN)</div>
+        <ol class="doc-steps">
+          <li><b>CDF-transform numeric columns.</b> Like Gaussian Copula's percentile step, convert each
+            numeric column to a uniform 0-1 scale using its own empirical distribution first, taming skew
+            and long tails before anything else sees the data.</li>
+          <li><b>Hand off to CTGAN.</b> Run the same mode-specific normalization and conditional
+            Generator/Critic adversarial training as CTGAN, but on these pre-tamed columns.</li>
+          <li><b>Sample</b> via the trained Generator, exactly as in CTGAN.</li>
+          <li><b>Invert the CDF transform</b> to convert each generated uniform value back to the original
+            column's real scale.</li>
+        </ol>
+        <div class="doc-foot"><b>Best for:</b> a middle ground: the calibrated, well-behaved marginals of a
+          copula, plus more of the GAN's ability to capture complex joint structure than a pure Gaussian
+          Copula gets alone. <b>Trade-off:</b> still a full GAN training loop under the hood, so it's as slow
+          as CTGAN. Same FK-relinking as CTGAN when tables are linked.</div>
+      </div>
+
+      <div class="doc-card" id="doc-tabsyn" style="border-left-color:#17becf">
+        <div class="doc-card-h"><span class="dot" style="background:#17becf"></span><h3>TabSyn</h3></div>
+        <div class="doc-tag">Single-table, FK-linked · neural (VAE + diffusion) · two training stages</div>
+        <ol class="doc-steps">
+          <li><b>Tokenize each column.</b> Turn every numeric value and every category into its own small
+            vector ("token"), the same width for every column regardless of type.</li>
+          <li><b>Stage 1 — learn a compact space (VAE).</b> A small Transformer reads a row's tokens together
+            and compresses them into a per-column latent code; a matching decoder tries to reconstruct the
+            original row from that code, training the two together until reconstruction is reliable.</li>
+          <li><b>Encode the whole real table</b> into that latent space once training stabilizes — every real
+            row now has a compact numeric fingerprint.</li>
+          <li><b>Stage 2 — learn to generate fingerprints (diffusion).</b> A second, smaller network learns to
+            turn pure random noise into a realistic latent fingerprint through a series of denoising steps,
+            trained on the fingerprints from the step above.</li>
+          <li><b>Sample.</b> Draw random noise, run it through the trained denoiser to get a new fingerprint,
+            then run that through Stage 1's decoder to get a brand-new row.</li>
+        </ol>
+        <div class="doc-foot"><b>Best for:</b> tables where earlier synthesizers seem to be losing a
+          relationship between columns that clearly holds in the real data (e.g. two columns that logically
+          go together but come out mismatched) — the two-stage design is built specifically to preserve
+          those tangled-together relationships better than a single model trying to do everything at once.
+          <b>Trade-off:</b> the slowest and newest of the six here, with two training stages instead of one
+          and less of a track record than the others; sized for this dashboard's data volumes rather than
+          the scale it was originally benchmarked at, so treat it as the ambitious option to try when the
+          others visibly aren't capturing something, not the default. Same FK-relinking as CTGAN when tables
+          are linked.</div>
+      </div>
+
+      <h4 class="block-title">At a glance</h4>
+      <table class="rep">
+        <thead><tr><th>Synthesizer</th><th>Scope</th><th>Approach</th><th>Relative speed</th>
+          <th>Preserves FK relationships</th><th>Non-linear structure</th></tr></thead>
+        <tbody>
+          <tr><td class="mono"><span class="dot" style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#2ca02c;margin-right:7px"></span>GaussianCopula</td>
+            <td>single-table, FK-linked</td><td>statistical (copula)</td><td>fastest</td><td>yes, relinked after fitting</td><td>limited (linear/rank only)</td></tr>
+          <tr><td class="mono"><span class="dot" style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#1f77b4;margin-right:7px"></span>HMA</td>
+            <td>multi-table</td><td>statistical (recursive copula)</td><td>fast to moderate</td><td>yes, by construction</td><td>limited (per table, same as above)</td></tr>
+          <tr><td class="mono"><span class="dot" style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#d62728;margin-right:7px"></span>CTGAN</td>
+            <td>single-table, FK-linked</td><td>neural (GAN)</td><td>slow (needs epochs)</td><td>yes, relinked after fitting</td><td>yes</td></tr>
+          <tr><td class="mono"><span class="dot" style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#9467bd;margin-right:7px"></span>TVAE</td>
+            <td>single-table, FK-linked</td><td>neural (VAE)</td><td>moderate to slow</td><td>yes, relinked after fitting</td><td>yes (softer than CTGAN)</td></tr>
+          <tr><td class="mono"><span class="dot" style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#ff7f0e;margin-right:7px"></span>CopulaGAN</td>
+            <td>single-table, FK-linked</td><td>hybrid (copula + GAN)</td><td>slow</td><td>yes, relinked after fitting</td><td>yes</td></tr>
+          <tr><td class="mono"><span class="dot" style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#17becf;margin-right:7px"></span>TabSyn</td>
+            <td>single-table, FK-linked</td><td>neural (VAE + diffusion)</td><td>slowest</td><td>yes, relinked after fitting</td><td>yes (best at tangled column relationships)</td></tr>
+        </tbody>
+      </table>
+      <p class="hint">See <b>docs/METRICS.md</b> for how each of these is scored (fidelity / privacy / utility) once
+        you run a synthesis.</p>
+    </div>
+  </div>
+</div>
+
+<!-- shown while the chat assistant has popped out the Schema or Data Model
+     tab for editing (server signals this via a "focus" field) -- hidden by
+     default, see .chat-savebar in style.css -->
+<div class="chat-savebar" id="chat-savebar">
+  <span id="chat-savebar-label">Editing the schema.</span>
+  <button class="tbtn primary" id="chat-savebar-save">Save &amp; continue</button>
+  <a class="link-inline" id="chat-savebar-cancel">Cancel</a>
+</div>
+
+<!-- the assistant's general open_config_panel tool: brings whichever
+     left-sidebar config panel (Structure & keys / Constraints / PII
+     handling / Synthesizers / Run parameters) the user needs into the
+     middle of the screen, highlighted -- the REAL panel element gets
+     moved in here (not a clone), so every control still works exactly as
+     it does in the sidebar, see openConfigPanel() in chat.js -->
+<div class="modal-backdrop" id="config-backdrop">
+  <div class="modal config-modal" id="config-modal" role="dialog" aria-modal="true" aria-label="Configuration">
+    <button class="modal-close" id="config-modal-close" aria-label="Close">&times;</button>
+    <div id="config-modal-body"></div>
+    <div class="config-modal-foot">
+      <button class="tbtn primary" id="config-modal-done">Done, continue</button>
+    </div>
+  </div>
 </div>
 
 <script src="/static/app.js"></script>
+<script src="/static/chat.js"></script>
 </body>
 </html>

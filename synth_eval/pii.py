@@ -42,6 +42,36 @@ _RE_POSTAL = re.compile(r"^([A-Za-z]\d[A-Za-z]\s?\d[A-Za-z]\d|\d{5}(-\d{4})?)$")
 _RE_STREET = re.compile(r"^\d+\s+\S+.*\b(ST|STREET|AVE|AVENUE|RD|ROAD|DR|DRIVE|BLVD|"
                         r"CRES|CRESCENT|CT|COURT|WAY|LANE|PL|PLACE|TRAIL|CIR)\b\.?$", re.I)
 
+#: low bar -- only needs to rule out columns that are clearly NOT person names
+#: (job titles, product names, ...), not confirm every real name column.
+_NAME_CONFIRM_THRESHOLD = 0.15
+
+
+def _confirms_person_name(sample: pd.Series) -> bool:
+    """Check sampled values against Faker's own name corpus (content, not
+    column name) -- catches columns like OCCUPATION_NAME ("Registered Nurse")
+    that trip the ``NAME`` token but hold something else entirely. Generalizes
+    across schemas since it never depends on this dataset's naming
+    conventions, only the values themselves.
+    """
+    from faker.providers.person.en_US import Provider as _PersonProvider
+
+    vals = sample.dropna().astype(str).str.strip()
+    if len(vals) < 5:
+        return True  # too little data to rule anything out -- trust the token
+    first_names = {n.upper() for n in _PersonProvider.first_names}
+    last_names = {n.upper() for n in _PersonProvider.last_names}
+
+    def is_name(v: str) -> bool:
+        toks = [t.upper() for t in v.split() if t]
+        if not toks:
+            return False
+        if len(toks) == 1:
+            return toks[0] in first_names or toks[0] in last_names
+        return toks[0] in first_names or toks[-1] in last_names
+
+    return float(vals.map(is_name).mean()) >= _NAME_CONFIRM_THRESHOLD
+
 
 def _value_kind(sample: pd.Series) -> Optional[str]:
     """Classify a column by the *shape* of its values (>=60% of a sample must match)."""
@@ -79,6 +109,12 @@ def detect_pii(df: pd.DataFrame, modelable: Optional[List[str]] = None,
         kind = next((k for k, toks in _TOKENS if any(t in cu for t in toks)), None)
         if kind in _STR_ONLY and df[c].dtype != object:
             kind = None                      # numeric column can't be a name/email/street
+        if kind == "name" and df[c].dtype == object:
+            s = df[c].head(2000)
+            n_notna = s.notna().sum()
+            sample = s.sample(min(sample_n, n_notna), random_state=0) if n_notna else s
+            if not _confirms_person_name(sample):
+                kind = None                  # column-name token, but values aren't person names
         if kind is None and c not in modelable and df[c].dtype == object:
             try:
                 kind = _value_kind(df[c].head(2000).sample(
@@ -92,11 +128,23 @@ def detect_pii(df: pd.DataFrame, modelable: Optional[List[str]] = None,
 
 
 def fake_series(kind: str, n: int, like: Optional[pd.Series] = None,
-                seed: int = 0, column_name: str = "") -> pd.Series:
+                seed: int = 0, column_name: str = "",
+                group_ids: Optional[pd.Series] = None) -> pd.Series:
     """``n`` Faker values of ``kind``, preserving ``like``'s missing rate.
 
     Deterministic for a given (kind, n, seed, column_name).  ``column_name``
     refines names: FIRST/GIVEN -> first names, LAST/SURNAME -> last names.
+
+    ``group_ids`` (one id per row, e.g. a shared entity key like ``CONT_ID``
+    on an SCD-versioned table with several history rows per real customer)
+    makes this ENTITY-consistent instead of row-independent: every row
+    sharing the same id gets the SAME fake value and the SAME missing/
+    not-missing status, matching the real-world expectation that a
+    person's name doesn't change across their own history rows (confirmed
+    live: without this, the same real customer showed up with a different
+    fake name on every one of their own versioned rows). A row whose group
+    id is missing (no entity to tie it to) still gets an independent draw,
+    same as the ungrouped behavior below.
     """
     from faker import Faker
 
@@ -120,21 +168,47 @@ def fake_series(kind: str, n: int, like: Optional[pd.Series] = None,
         gen = fk.street_address
     else:  # unknown kind: opaque but harmless
         gen = lambda: fk.bothify("????####")  # noqa: E731
-    vals = np.array([gen() for _ in range(n)], dtype=object)
     miss = float(like.isna().mean()) if like is not None and len(like) else 0.0
+    rng = np.random.default_rng(seed)
+
+    if group_ids is not None and len(group_ids) == n:
+        gids = pd.Series(group_ids).reset_index(drop=True)
+        uniq = gids.dropna().unique()
+        val_map = {g: gen() for g in uniq}          # one fake value PER ENTITY
+        null_map = (dict(zip(uniq, rng.random(len(uniq)) < miss))
+                    if miss > 0 and len(uniq) else {})
+        vals = gids.map(val_map).to_numpy(dtype=object)   # NaN where gids is NaN
+        if null_map:
+            vals[gids.map(null_map).fillna(False).to_numpy(dtype=bool)] = np.nan
+        ungrouped = gids.isna().to_numpy()
+        if ungrouped.any():                          # no entity id -- independent draw
+            m = int(ungrouped.sum())
+            extra = np.array([gen() for _ in range(m)], dtype=object)
+            if miss > 0:
+                extra[rng.random(m) < miss] = np.nan
+            vals[ungrouped] = extra
+        return pd.Series(vals, dtype=object)
+
+    vals = np.array([gen() for _ in range(n)], dtype=object)
     if miss > 0 and n:
-        rng = np.random.default_rng(seed)
         vals[rng.random(n) < miss] = np.nan
     return pd.Series(vals, dtype=object)
 
 
 def apply_pii_plan(df: pd.DataFrame, plan: Dict[str, tuple], real: pd.DataFrame,
-                   seed: int = 0) -> pd.DataFrame:
+                   seed: int = 0, group_col: Optional[str] = None) -> pd.DataFrame:
     """Apply ``{col: (action, kind)}`` to one synthetic table.
 
     ``fake`` replaces the column's values; ``drop`` removes the column;
     anything else (``shuffle``) leaves the refilled bootstrap untouched.
+
+    ``group_col``, if given and present in ``df`` (e.g. the table's shared
+    entity key on an SCD-versioned table), makes every ``fake`` column
+    entity-consistent -- see :func:`fake_series`. Without it every row is
+    faked independently, which is fine for a table with one row per entity
+    but wrong for one with several history rows per real customer.
     """
+    group_ids = df[group_col] if group_col and group_col in df.columns else None
     for c, (action, kind) in (plan or {}).items():
         if c not in df.columns:
             continue
@@ -142,5 +216,5 @@ def apply_pii_plan(df: pd.DataFrame, plan: Dict[str, tuple], real: pd.DataFrame,
             df = df.drop(columns=[c])
         elif action == "fake":
             df[c] = fake_series(kind, len(df), real[c] if c in real.columns else None,
-                                seed, c).to_numpy()
+                                seed, c, group_ids=group_ids).to_numpy()
     return df

@@ -7,30 +7,245 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
-from .columns import ColumnRoles, _fit_mixed_encoder, _encode
+from .columns import ColumnRoles, _fit_mixed_encoder, _encode, group_diversity_reduction
+
+#: minimum macro-F1 / R^2 lift a target must clear over its noise floor
+#: before its efficacy ratio is trusted as signal rather than noise-over-noise.
+#: Deliberately low -- this only screens out targets with essentially NO real
+#: relationship to the other columns, not weak ones.
+_MIN_SIGNAL_LIFT = 0.05
+#: label-permutation repeats used to estimate the classification noise floor
+#: (see _predictive_signal) -- a flexible tree can overfit pure noise well
+#: past what a majority-class score suggests, so that alone isn't a safe
+#: baseline; a few shuffled-label refits of the SAME tree measure how much
+#: apparent score this exact model/sample-size can manufacture from nothing.
+_SHUFFLE_REPEATS = 5
+#: how close a feature's group_diversity_reduction with the TARGET must sit
+#: to that feature's OWN ceiling (1 - 1/cardinality) before it's treated as a
+#: quasi-identifier for the signal check (see _quasi_identifier_group_col) --
+#: same numeric bar as best_refill_group_column's min_association, but
+#: measured as a RATIO of the feature's own ceiling rather than the raw
+#: score, since a low-cardinality feature (e.g. 2 categories, ceiling 0.5)
+#: can never reach a fixed raw threshold like 0.5 even at perfect
+#: determinism -- the ratio scales correctly regardless of cardinality.
+_QUASI_ID_TOLERANCE = 0.5
 
 
-def auto_select_target(df: pd.DataFrame, roles: ColumnRoles) -> Optional[Tuple[str, str]]:
+def _quasi_identifier_group_col(
+    df: pd.DataFrame, target_col: str, feature_roles: ColumnRoles,
+) -> Optional[str]:
+    """A categorical feature whose group_diversity_reduction with
+    ``target_col`` sits within ``_QUASI_ID_TOLERANCE`` of that feature's own
+    ceiling is a quasi-identifier for it -- e.g. an SCD-versioned table's own
+    entity key, where every OTHER static attribute is basically fixed per
+    entity (an occupation code near-determines its own category, skill
+    level, etc.). A plain random row split lets a model "predict" the target
+    by memorizing that feature's value instead of learning anything general,
+    since multiple rows sharing that value routinely land on both sides of
+    the split. Returns the single BEST such feature (highest ratio to its
+    own ceiling), or ``None`` if nothing qualifies -- the normal case for a
+    table where rows genuinely are independent entities.
+    """
+    best_col, best_ratio = None, _QUASI_ID_TOLERANCE
+    for c in feature_roles.categorical:
+        if c not in df.columns:
+            continue
+        card = df[c].nunique(dropna=True)
+        if card <= 1 or card >= len(df):   # not a real grouping candidate
+            continue
+        ceiling = 1.0 - 1.0 / card
+        if ceiling <= 0:
+            continue
+        ratio = group_diversity_reduction(df, c, target_col) / ceiling
+        if ratio >= best_ratio:
+            best_col, best_ratio = c, ratio
+    return best_col
+
+
+class InsufficientHoldoutError(ValueError):
+    """Raised by sdmetrics_ml_efficacy when the REAL baseline's own holdout
+    split doesn't share enough target classes with its own training split to
+    score reliably (small table, many-class target -- e.g. 131 rows across
+    21 codes leaves an 80/20 holdout with only a handful of rows per class,
+    easily missing several entirely). Per-metric failures already fall back
+    to a NaN row with an explanatory note (see the try/except around each
+    metric below) -- this is different: if even the REAL baseline can't be
+    scored, comparing synthesizers against it is meaningless, so the caller
+    should skip the WHOLE target for this table (folding it into the same
+    efficacy_skipped list auto_select_target's own guards use) rather than
+    publish a table of NaN rows that reads as a cascade of failures."""
+
+
+def _predictive_signal(
+    df: pd.DataFrame, target_col: str, feature_roles: ColumnRoles, task: str,
+) -> Optional[Tuple[float, float]]:
+    """(real_score, noise_floor_score) from a quick train/test split within
+    ``df``, scored with a shallow decision tree -- or ``None`` if there isn't
+    enough data to judge either way.
+
+    This is a cheap screen, not the final TSTR metric (see
+    :func:`sdmetrics_ml_efficacy`): just enough model to tell "some other
+    column predicts this" from "nothing does", before committing a full
+    synthesizer comparison -- or showing a ratio -- to a target that's really
+    just independent noise.
+
+    On a table where multiple rows represent the same underlying entity
+    (an SCD-versioned dimension/reference table -- the normal case for this
+    schema), a plain random row split lets a quasi-identifier feature (e.g.
+    the entity's own versioning key, which near-determines every OTHER
+    static attribute) "predict" the target by memorizing a value it's
+    literally already seen for that same entity in training, not by
+    learning anything general. If :func:`_quasi_identifier_group_col` finds
+    such a feature, the split groups by IT instead (holding out whole
+    entities, never seen in training at all) so the signal check only
+    credits genuine generalization. Verified on OCCUPATION.csv: a random
+    split showed OCCUPATION_CATEGORY_CD "predictable" (macro-F1 0.244 vs a
+    0.087 noise floor, comfortably clearing the signal gate) purely via
+    OCCUPATION_TP_CD memorization; an entity-aware split drops that to
+    0.109 (lift ~0.02, below the gate) -- the honest answer.
+    """
+    from sklearn.metrics import f1_score, r2_score
+    from sklearn.model_selection import GroupShuffleSplit, train_test_split
+    from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
+
+    y = df[target_col]
+    m = y.notna()
+    if m.sum() < 20:
+        return None
+    sub, y = df[m], y[m]
+
+    group_col = _quasi_identifier_group_col(sub, target_col, feature_roles) \
+        if task == "classification" else None
+    try:
+        if group_col:
+            groups = sub[group_col]
+            gss = GroupShuffleSplit(n_splits=1, test_size=0.3, random_state=0)
+            tr_pos, te_pos = next(gss.split(sub, groups=groups))
+            tr_idx, te_idx = sub.index[tr_pos], sub.index[te_pos]
+        else:
+            stratify = y.astype(str) if task == "classification" and y.nunique() > 1 else None
+            tr_idx, te_idx = train_test_split(sub.index, test_size=0.3, random_state=0,
+                                              stratify=stratify)
+    except (ValueError, StopIteration):
+        return None  # e.g. a class with a single member, or too few groups to split -- can't judge safely
+    try:
+        enc, use_cols = _fit_mixed_encoder(sub.loc[tr_idx], feature_roles)
+    except ValueError:
+        return None  # no usable feature columns
+    Xtr = np.nan_to_num(_encode(enc, sub.loc[tr_idx], use_cols))
+    Xte = np.nan_to_num(_encode(enc, sub.loc[te_idx], use_cols))
+    ytr, yte = y.loc[tr_idx], y.loc[te_idx]
+    if task == "classification":
+        if ytr.nunique() < 2:
+            return None
+        ytr_s, yte_s = ytr.astype(str), yte.astype(str)
+        clf = DecisionTreeClassifier(max_depth=6, random_state=0)
+        clf.fit(Xtr, ytr_s)
+        real = float(f1_score(yte_s, clf.predict(Xte), average="macro", zero_division=0))
+        # noise floor: same tree, labels permuted -- what a majority-class
+        # check alone would miss (see _MIN_SIGNAL_LIFT / _SHUFFLE_REPEATS)
+        floor_scores = []
+        ytr_arr = ytr_s.to_numpy()
+        for i in range(_SHUFFLE_REPEATS):
+            shuffled = ytr_arr.copy()
+            np.random.default_rng(1000 + i).shuffle(shuffled)
+            sh_clf = DecisionTreeClassifier(max_depth=6, random_state=0).fit(Xtr, shuffled)
+            floor_scores.append(f1_score(yte_s, sh_clf.predict(Xte),
+                                         average="macro", zero_division=0))
+        base = float(np.mean(floor_scores))
+    else:
+        reg = DecisionTreeRegressor(max_depth=6, random_state=0)
+        reg.fit(Xtr, ytr)
+        real = float(r2_score(yte, reg.predict(Xte)))
+        # a mean-predictor's R^2 is 0 by definition -- no fit needed, and more
+        # stable than a shuffled-label tree floor (which is erratic for R^2)
+        base = 0.0
+    return real, base
+
+
+def target_signal_note(
+    df: pd.DataFrame, target_col: str, roles: ColumnRoles, task: str,
+    min_lift: float = _MIN_SIGNAL_LIFT,
+) -> Optional[str]:
+    """Caution string when ``target_col`` doesn't clear its noise floor by
+    ``min_lift`` -- i.e. its real-data score is close to what a model with no
+    real relationship to predict would score anyway (chance-level guessing
+    for regression, or label-permuted overfitting for classification -- see
+    :func:`_predictive_signal`), so a synthetic-vs-real efficacy ratio for it
+    is mostly noise divided by noise, not a fidelity signal. Returns ``None``
+    when there's real signal (or too little data to tell either way).
+    """
+    feature_roles = ColumnRoles(
+        numeric=[c for c in roles.numeric if c != target_col],
+        categorical=[c for c in roles.categorical if c != target_col],
+    )
+    sig = _predictive_signal(df, target_col, feature_roles, task)
+    if sig is None:
+        return None
+    real, base = sig
+    if (real - base) >= min_lift:
+        return None
+    metric = "macro F1" if task == "classification" else "R²"
+    return (f"weak real-data signal for '{target_col}' ({metric} {real:.3f} real vs "
+            f"{base:.3f} noise floor) — efficacy ratios for this target may reflect "
+            f"noise more than fidelity")
+
+
+def auto_select_target(
+    df: pd.DataFrame, roles: ColumnRoles, min_rows: int = 30,
+) -> Optional[Tuple[str, str]]:
     """Pick a modelling target: (column, task) where task in {classification, regression}.
 
     Prefers a categorical column with 2-20 classes (classification); otherwise
     falls back to a numeric column with reasonable variance (regression).
+
+    Returns ``None`` for tables too small or too thin to model meaningfully.
+    A dimension/lookup table (an id column plus a name/desc column, both
+    skipped by classify_columns, and maybe one small categorical left) can
+    otherwise auto-pick that one remaining categorical as a target with
+    nothing left to predict it FROM, or hand TSTR/TRTR a holdout of a
+    handful of rows where the score is mostly noise. Guards: the table needs
+    ``min_rows`` rows (a holdout split that small isn't a meaningful
+    comparison), a candidate target needs at least one OTHER modelable column
+    left over to use as a feature, and -- since neither of those catches a
+    target that's simply *independent* of everything else in the table --
+    :func:`_predictive_signal` must clear a real lift over a naive baseline
+    (skipped, not blocked, on ties/too-little-data, so this never turns a
+    previously-picked target into "no target").
     """
+    if len(df) < min_rows:
+        return None
+
+    def _has_features(target_col: str) -> bool:
+        return any(c != target_col for c in roles.modelable)
+
+    def _feature_roles(target_col: str) -> ColumnRoles:
+        return ColumnRoles(
+            numeric=[c for c in roles.numeric if c != target_col],
+            categorical=[c for c in roles.categorical if c != target_col],
+        )
+
+    def _has_signal(target_col: str, task: str) -> bool:
+        sig = _predictive_signal(df, target_col, _feature_roles(target_col), task)
+        return sig is None or (sig[0] - sig[1]) >= _MIN_SIGNAL_LIFT
+
     for col in roles.categorical:
         nun = df[col].nunique(dropna=True)
-        if 2 <= nun <= 20:
+        if 2 <= nun <= 20 and _has_features(col) and _has_signal(col, "classification"):
             return col, "classification"
-    # regression fallback: numeric column with the most variance
-    best, best_var = None, -1.0
+    # regression fallback: numeric columns ranked by variance, highest first;
+    # first one with real signal wins (skip ones nothing predicts)
+    candidates = []
     for col in roles.numeric:
+        if not _has_features(col):
+            continue
         v = pd.to_numeric(df[col], errors="coerce")
         if v.notna().sum() < 20:
             continue
-        var = float(v.var())
-        if var > best_var:
-            best, best_var = col, var
-    if best is not None:
-        return best, "regression"
+        candidates.append((col, float(v.var())))
+    for col, _ in sorted(candidates, key=lambda x: -x[1]):
+        if _has_signal(col, "regression"):
+            return col, "regression"
     return None
 
 
@@ -306,6 +521,14 @@ def sdmetrics_ml_efficacy(
         train_labels = set(tr[target].dropna().astype(str).unique())
         test_src = test[test[target].astype(str).isin(train_labels)].copy()
         tr, test_src, n_aligned = _align_categories(tr, test_src)
+        if task == "classification":
+            # sdmetrics' Binary*/Multiclass*Classifier only remap labels to
+            # boolean when the target dtype is 'object' -- a numeric-coded
+            # binary target (e.g. PREF_LANG_TP_CD = 703793/703794) skips that
+            # remap and falls through to sklearn's f1_score with the default
+            # pos_label=1, which crashes since neither class IS 1.
+            tr[target] = tr[target].astype(str)
+            test_src[target] = test_src[target].astype(str)
         base_note = ""
         if len(test_src) < len(test):
             base_note = f"dropped {len(test)-len(test_src)} holdout rows with unseen target class"
@@ -313,6 +536,17 @@ def sdmetrics_ml_efficacy(
             base_note = (base_note + "; " if base_note else "") + \
                 f"aligned {n_aligned} feature col(s) with unseen/missing categories to train"
         enough = len(test_src) >= 5
+        if src == "real" and not enough:
+            # "real" is always the first source (dict insertion order, see
+            # `sources` above) -- if even the REAL baseline's own train/
+            # holdout split can't be scored, no synthesizer comparison
+            # against it means anything either; bail out before producing
+            # ANY rows (real or synthetic) instead of a table full of NaNs.
+            raise InsufficientHoldoutError(
+                f"{len(test)} holdout rows have a value for '{target}', but only "
+                f"{len(test_src)} of those share a class the real training split also has"
+                + (f" ({nun} classes total)" if task == "classification" else "")
+                + " -- too few to score reliably")
 
         def _add(metric, score, note):
             rows.append({"table": table_name, "target": target, "task": task,
@@ -364,5 +598,85 @@ def sdmetrics_ml_efficacy(
     if gaps:
         out = pd.concat([out, pd.DataFrame(gaps)], ignore_index=True)
     return out
+
+
+def real_feature_importance(
+    train_real: pd.DataFrame, roles: ColumnRoles, target: str, task: str,
+    max_train_rows: int = 20000,
+) -> Optional[List[Tuple[str, float]]]:
+    """Which of a target's own feature columns actually drive its
+    predictability, fit on REAL data alone -- ground truth, not a TSTR/TRTR
+    comparison. Kept deliberately separate from :func:`sdmetrics_ml_efficacy`'s
+    tidy score table rather than added as more rows there: several callers
+    (the Utility score, the efficacy comparison charts) treat every row of
+    that table as a comparable real-vs-synthetic score, and an importance
+    number isn't one.
+
+    A wide table with dozens of modelable columns makes it hard to tell
+    which ones are worth fixing first when synthetic utility looks off --
+    this narrows that down to the columns actually driving the target,
+    ranked, so the rest can be set aside.
+
+    Fit with ``max_depth=6`` (shallow, matching the noise-floor check in
+    :func:`_predictive_signal`) rather than the unbounded tree
+    ``sdmetrics_ml_efficacy`` uses for its own accuracy/precision/recall --
+    an unbounded tree spreads nonzero importance across nearly every column
+    via deep, idiosyncratic splits, which is the opposite of narrowing
+    anything down; a shallow tree only credits the few splits that actually
+    reduced impurity the most, so most columns land at exactly 0.
+
+    One-hot-encoded categorical columns are reported as ONE aggregated
+    number per ORIGINAL column (summed across that column's own one-hot
+    slots) -- "GENDER_TP_CD" as a single figure, not fragmented into
+    "GENDER_TP_CD_F"/"GENDER_TP_CD_M"/"GENDER_TP_CD_U" separately.
+
+    Returns ``(column, importance)`` pairs sorted descending (importances
+    sum to ~1, sklearn's own convention), or ``None`` if there aren't
+    enough usable feature columns or rows to fit reliably.
+    """
+    from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
+
+    feature_roles = ColumnRoles(
+        numeric=[c for c in roles.numeric if c != target],
+        categorical=[c for c in roles.categorical if c != target],
+    )
+    if not feature_roles.modelable:
+        return None
+    df = train_real.dropna(subset=[target]) if target in train_real.columns else train_real.iloc[0:0]
+    if len(df) > max_train_rows:
+        df = df.sample(max_train_rows, random_state=0)
+    if len(df) < 20:
+        return None
+    try:
+        enc, use_cols = _fit_mixed_encoder(df, feature_roles)
+    except ValueError:
+        return None
+    X = np.nan_to_num(_encode(enc, df, use_cols))
+    if task == "classification":
+        y = df[target].astype(str)
+        if y.nunique() < 2:
+            return None
+        model = DecisionTreeClassifier(max_depth=6, random_state=0)
+    else:
+        y = pd.to_numeric(df[target], errors="coerce")
+        keep = y.notna().to_numpy()
+        X, y = X[keep], y[keep]
+        if len(y) < 20:
+            return None
+        model = DecisionTreeRegressor(max_depth=6, random_state=0)
+    model.fit(X, y)
+
+    cat_by_len = sorted(feature_roles.categorical, key=len, reverse=True)
+    agg: Dict[str, float] = {}
+    for fname, imp in zip(enc.get_feature_names_out(), model.feature_importances_):
+        prefix, rest = fname.split("__", 1)
+        if prefix == "num":
+            col = rest
+        else:
+            # "cat__COL_VALUE" -> COL; longest-name-first avoids a shorter
+            # column name matching as a false prefix of a longer one
+            col = next((c for c in cat_by_len if rest == c or rest.startswith(c + "_")), rest)
+        agg[col] = agg.get(col, 0.0) + float(imp)
+    return sorted(agg.items(), key=lambda kv: -kv[1])
 
 

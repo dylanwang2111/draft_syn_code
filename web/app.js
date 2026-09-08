@@ -14,9 +14,17 @@ function apiFetch(url,opts={}){
   return fetch(url,o);
 }
 const SDTYPES=["categorical","numerical","datetime","boolean","id","unknown"];
-const SYNTHS=["HMA","GaussianCopula","CTGAN","TVAE","CopulaGAN"];
-const GAN_SYNTHS=new Set(["CTGAN","TVAE","CopulaGAN"]);
-const PALETTE={real:"#555f5c",HMA:"#1f77b4",GaussianCopula:"#2ca02c",CTGAN:"#d62728",TVAE:"#9467bd",CopulaGAN:"#ff7f0e"};
+const SYNTHS=["HMA","GaussianCopula","CTGAN","TVAE","CopulaGAN","TabSyn"];
+const GAN_SYNTHS=new Set(["CTGAN","TVAE","CopulaGAN","TabSyn"]);
+// When a relationship is declared, every synthesizer honors it: HMA fits
+// tables jointly, the other five fit independently and get their foreign
+// keys relinked afterward (see synth_eval.link). Same referential-integrity
+// guarantee either way, so they're not split into separate UI tiers.
+const PALETTE={real:"#555f5c",HMA:"#1f77b4",GaussianCopula:"#2ca02c",CTGAN:"#d62728",TVAE:"#9467bd",CopulaGAN:"#ff7f0e",TabSyn:"#17becf"};
+// how much real data to hold back for privacy/utility testing -- a fixed
+// best-practice value (the standard 20-30% test-split range), not something
+// worth exposing as a tunable knob
+const HOLDOUT_FRAC=0.25;
 let DATA=null, detected={}, selectedTable=null;
 let selectedSynths=new Set(["HMA","GaussianCopula"]);
 
@@ -24,6 +32,10 @@ const fmt=(v,d=3)=>(v==null||Number.isNaN(v))?"—":(+v).toFixed(d);
 const pct=v=>(v==null)?"—":(100*v).toFixed(1)+"%";
 const meterColor=v=>`hsl(${Math.max(0,Math.min(1,v))*105},58%,45%)`;
 const pill=s=>`<span class="pill ${s}">${s}</span>`;
+const fmtSecs=s=>{ if(s==null||Number.isNaN(s)) return "—";
+  if(s<60) return `${s<10?s.toFixed(1):Math.round(s)}s`;
+  const m=Math.floor(s/60), r=Math.round(s%60);
+  return `${m}m${r?` ${r}s`:""}`; };
 const esc=s=>String(s).replace(/</g,"&lt;");
 const setStatus=(c,t)=>{const d=$("#status-dot");d.className="status-dot"+(c?" "+c:"");d.title=t||c||"idle";};
 
@@ -47,7 +59,7 @@ $("#btn-theme").addEventListener("click",()=>{
 });
 
 const BACKEND_HELP="Can't reach the backend.\n\nOpen this dashboard THROUGH the server, not as a file:\n\n"
-  +"    uvicorn server:app --port 8000\n\nthen visit http://localhost:8000 (address must start with http://).";
+  +"    uvicorn backend.server:app --port 8000\n\nthen visit http://localhost:8000 (address must start with http://).";
 if(location.protocol==="file:") setTimeout(()=>alert(BACKEND_HELP),300);
 
 /* ---------------- collapsible left panels ---------------- */
@@ -92,17 +104,18 @@ function init(payload){
   syncEntity(); renderStructureMirror(); updateSummaries();
   selectTable(Object.keys(DATA.tables)[0]);
   activateTab("pane-schema");
+  if(typeof chatOnDataLoaded==="function") chatOnDataLoaded();
 }
 /* compact state chips shown in each collapsed panel header */
 function updateSummaries(){
   if(!DATA) return;
-  const ek=MODEL.hub.key, nrel=MODEL.rels.length;
-  $("#sum-structure").textContent = ek ? ("key: "+ek) : nrel ? (nrel+" link"+(nrel>1?"s":"")) : "independent";
+  const nh=MODEL.hubs.length, nrel=MODEL.rels.length;
+  $("#sum-structure").textContent = nh ? ("key: "+MODEL.hubs.map(h=>h.key).join(", ")) : nrel ? (nrel+" link"+(nrel>1?"s":"")) : "independent";
   const nc=$$(".con-row").length;
   $("#sum-constraints").textContent = nc ? (nc+" rule"+(nc>1?"s":"")) : "none";
   $("#sum-synths").textContent=[...selectedSynths].join(", ")||"none";
   const sp=$("#sum-pii"); if(sp) sp.textContent=piiSummary();
-  $("#sum-params").textContent="×"+(+$("#in-scale").value).toFixed(2).replace(/0$/,"")+" · holdout "+Math.round(100*$("#in-holdout").value)+"%";
+  $("#sum-params").textContent="×"+(+$("#in-scale").value).toFixed(2).replace(/0$/,"");
 }
 
 /* ---------------- left: seed list ---------------- */
@@ -126,8 +139,8 @@ function removeTable(t){
   if(!Object.keys(DATA.tables).length){ location.reload(); return; }
   // prune the data model of anything referencing the removed table
   MODEL.rels=MODEL.rels.filter(r=>r.parent_table_name!==t&&r.child_table_name!==t);
-  MODEL.hub.children=MODEL.hub.children.filter(c=>c!==t);
-  if(MODEL.hub.key && !keyTables(MODEL.hub.key).length) MODEL.hub={key:"",children:[]};
+  MODEL.hubs.forEach(h=>{ h.children=h.children.filter(c=>c!==t); });
+  MODEL.hubs=MODEL.hubs.filter(h=>h.children.length && keyTables(h.key).length);
   delete MODEL.pos[t];
   renderSeedList(); renderSchemaBlocks(); renderRecipe();
   buildHubBar(); afterModelChange();
@@ -146,8 +159,9 @@ function renderSchemaBlocks(){
   const host=$("#schema-blocks"); host.innerHTML="";
   for(const [t,info] of Object.entries(DATA.tables)){
     detected[t]={}; info.columns.forEach(c=>detected[t][c.name]=c.sdtype);
+    const pii=info.pii||{};
     const rows=info.columns.map(c=>`
-      <tr><td class="mono">${c.name}</td>
+      <tr><td class="mono">${c.name}${pii[c.name]?`<span class="pii-flag" title="Detected PII: ${esc(pii[c.name])} — this column will be faked in the synthetic output">PII</span>`:""}</td>
         <td><select data-table="${t}" data-col="${c.name}" class="sdtype-sel">
           ${SDTYPES.map(s=>`<option ${s===c.sdtype?"selected":""}>${s}</option>`).join("")}</select></td>
         <td class="num">${c.distinct.toLocaleString()}</td><td class="num">${c.missing_pct}%</td>
@@ -160,7 +174,8 @@ function renderSchemaBlocks(){
     el.innerHTML=`<div class="blk-head"><h3>${t}</h3>
         <span class="dim">${info.rows.toLocaleString()} rows · ${info.columns.length} columns</span></div>
       <p class="note">Auto-detected sdtypes — fix any wrong call with the dropdown
-        (<span style="color:var(--red)">red</span> = your override). id / datetime / unknown are excluded from privacy &amp; ML metrics.</p>
+        (<span style="color:var(--red)">red</span> = your override). id / datetime / unknown are excluded from privacy &amp; ML metrics.
+        <span class="pii-flag" style="margin-left:4px">PII</span> = auto-flagged as personal info, will be faked in the synthetic output.</p>
       <table class="grid"><thead><tr><th>column</th><th>sdtype</th><th>distinct</th><th>missing</th><th>example</th></tr></thead>
       <tbody>${rows}</tbody></table>
       <div class="pk-row">PRIMARY KEY <select id="pk-${t}"><option value="">(none)</option>
@@ -177,20 +192,35 @@ function renderSchemaBlocks(){
 }
 
 /* ===================== data model (PowerBI-style canvas) =====================
-   MODEL is the single source of truth for relationships + the entity-key hub.
-   The left "Structure & keys" panel and the run config both read from it. */
-let MODEL={pos:{}, size:{}, rels:[], hub:{key:"", children:[]}};
-const hubName=()=>MODEL.hub.key?`${MODEL.hub.key}_HUB`:"";
+   MODEL is the single source of truth for relationships + the entity-key hubs.
+   The left "Structure & keys" panel and the run config both read from it.
+   MODEL.hubs is a list of independent {key, children} hubs -- a table can be
+   a child of more than one hub at once (two different columns, no conflict),
+   matching synth_eval.entity.build_entity_hub's multi-hub support. */
+let MODEL={pos:{}, size:{}, rels:[], hubs:[]};
+const hubName=hub=>hub&&hub.key?`${hub.key}_HUB`:"";
+const hubByName=name=>MODEL.hubs.find(h=>hubName(h)===name);
 function colStat(t,col){ return (DATA.tables[t]&&DATA.tables[t].columns||[]).find(c=>c.name===col); }
 function isUnique(t,col){ const c=colStat(t,col); const n=DATA.tables[t]&&DATA.tables[t].rows;
   return !!(c&&n&&c.distinct>=n); }
+/* candidate keys are matched after normalizing a leading "X_" (this schema's
+   extension-field convention, e.g. PERSON.X_OCCUPATION_TP_CD / OCCUPATION.
+   OCCUPATION_TP_CD are the same logical key) -- same rule as the backend's
+   synth_eval.entity._normalize_key_name, so a column doesn't need the exact
+   same literal name in every table to be offered as a hub key. The value
+   used everywhere (dropdown, payloads) is always the canonical (normalized)
+   name; the backend resolves each table's own local variant from that. */
+const normKey=c=>/^x_/i.test(c)?c.slice(2):c;
 function sharedKeys(){ const s={};
-  for(const v of Object.values(DATA.tables)) for(const c of v.columns) s[c.name]=(s[c.name]||0)+1;
+  for(const v of Object.values(DATA.tables)){
+    const seen=new Set(v.columns.map(c=>normKey(c.name)));
+    for(const n of seen) s[n]=(s[n]||0)+1;
+  }
   return Object.keys(s).filter(k=>s[k]>=2).sort(); }
-function keyTables(key){ return Object.entries(DATA.tables).filter(([,v])=>v.columns.some(c=>c.name===key)).map(([t])=>t); }
+function keyTables(key){ return Object.entries(DATA.tables).filter(([,v])=>v.columns.some(c=>normKey(c.name)===key)).map(([t])=>t); }
 
 function initModel(seedRels){
-  MODEL={pos:{}, size:{}, rels:(seedRels||[]).slice(), hub:{key:"", children:[]}};
+  MODEL={pos:{}, size:{}, rels:(seedRels||[]).slice(), hubs:[]};
   layoutNodes(true);
   buildHubBar();
   renderModel();
@@ -208,7 +238,7 @@ function initModel(seedRels){
    ------------------------------------------------------------------------- */
 const DM={GRID:8, GAP:24, COLGAP:58, PAD:20, W:186, HEAD:34, ROW:23, MAXH:220};
 const snap=v=>Math.round(v/DM.GRID)*DM.GRID;
-const nodeNames=()=>[...Object.keys(DATA?DATA.tables:{}), ...(hubName()?[hubName()]:[])];
+const nodeNames=()=>[...Object.keys(DATA?DATA.tables:{}), ...MODEL.hubs.map(hubName)];
 
 /* measured box when the card is on screen, estimated (columns × row height)
    when it isn't — layout runs before the first render */
@@ -217,7 +247,7 @@ function cardBox(name){
   const el=c&&c.querySelector(`.dm-card[data-node="${cssEsc(name)}"]`);
   if(el&&el.offsetWidth) return {w:el.offsetWidth, h:el.offsetHeight};
   const sz=MODEL.size[name]||{};
-  const ncol = name===hubName() ? 1 : ((DATA&&DATA.tables[name]?DATA.tables[name].columns.length:3));
+  const ncol = hubByName(name) ? 1 : ((DATA&&DATA.tables[name]?DATA.tables[name].columns.length:3));
   return {w: sz.w||DM.W,
           h: DM.HEAD + Math.min(sz.h||DM.MAXH, Math.max(30, ncol*DM.ROW)) + 2};
 }
@@ -264,7 +294,7 @@ function tidyLayout(names){
   const edge=(p,c)=>{ (kids[p]=kids[p]||[]).push(c); (parents[c]=parents[c]||[]).push(p); };
   MODEL.rels.forEach(r=>{ if(names.includes(r.parent_table_name)&&names.includes(r.child_table_name))
     edge(r.parent_table_name,r.child_table_name); });
-  if(MODEL.hub.key) MODEL.hub.children.forEach(t=>{ if(names.includes(t)) edge(hubName(),t); });
+  MODEL.hubs.forEach(h=>{ if(names.includes(hubName(h))) h.children.forEach(t=>{ if(names.includes(t)) edge(hubName(h),t); }); });
 
   const depth={}; names.forEach(n=>depth[n]=0);
   for(let pass=0; pass<names.length; pass++){          // bounded: also breaks cycles
@@ -298,13 +328,13 @@ function tidyLayout(names){
   });
 }
 
-/* the hub feeds its children — park it to their left, centred on them, and
+/* a hub feeds its children — park it to their left, centred on them, and
    slide the rest of the canvas right if it would fall off the left edge */
-function placeHub(){
-  const h=hubName(); if(!h||!DATA) return;
+function placeHub(hub){
+  const h=hubName(hub); if(!h||!DATA) return;
   delete MODEL.pos[h];
   const b=cardBox(h);
-  const kidBoxes=MODEL.hub.children.filter(t=>MODEL.pos[t]).map(t=>boxAt(t,MODEL.pos[t]));
+  const kidBoxes=hub.children.filter(t=>MODEL.pos[t]).map(t=>boxAt(t,MODEL.pos[t]));
   if(!kidBoxes.length){ MODEL.pos[h]=freeSpot(h,takenBoxes(h)); return; }
   const left=Math.min(...kidBoxes.map(k=>k.x));
   const cy=kidBoxes.reduce((s,k)=>s+k.y+k.h/2,0)/kidBoxes.length;
@@ -321,7 +351,7 @@ function afterModelChange(){ renderModel(); syncEntity(); renderStructureMirror(
 
 function linkedSet(){ const s=new Set();
   for(const r of MODEL.rels){ s.add(r.parent_table_name+"::"+r.parent_primary_key); s.add(r.child_table_name+"::"+r.child_foreign_key); }
-  if(MODEL.hub.key){ s.add(hubName()+"::"+MODEL.hub.key); for(const t of MODEL.hub.children) s.add(t+"::"+MODEL.hub.key); }
+  for(const h of MODEL.hubs){ s.add(hubName(h)+"::"+h.key); for(const t of h.children) s.add(t+"::"+h.key); }
   return s; }
 
 function renderModel(){
@@ -331,11 +361,10 @@ function renderModel(){
   layoutNodes(false);   // place any new node in free space *before* the cards are rebuilt
   canvas.querySelectorAll(".dm-card").forEach(c=>c.remove());
   const linked=linkedSet();
-  const nodes=[...Object.keys(DATA.tables)];
-  if(hubName()) nodes.push(hubName());
+  const nodes=[...Object.keys(DATA.tables), ...MODEL.hubs.map(hubName)];
   for(const name of nodes){
-    const hub = name===hubName();
-    const cols = hub ? [MODEL.hub.key] : DATA.tables[name].columns.map(c=>c.name);
+    const hub = hubByName(name);
+    const cols = hub ? [hub.key] : DATA.tables[name].columns.map(c=>c.name);
     const el=document.createElement("div");
     el.className="dm-card"+(hub?" hubnode":""); el.dataset.node=name;
     const pos=MODEL.pos[name]||(MODEL.pos[name]=freeSpot(name,takenBoxes(name)));
@@ -345,7 +374,7 @@ function renderModel(){
     el.innerHTML=`<div class="dm-head" data-drag="${esc(name)}">${esc(name)}
         <span class="tag">${hub?"derived hub":(DATA.tables[name].rows.toLocaleString()+" rows")}</span></div>
       <div class="dm-cols"${colsStyle}>${cols.map(c=>{
-        const iskey = hub || linked.has(name+"::"+c) || (MODEL.hub.key&&c===MODEL.hub.key);
+        const iskey = !!hub || linked.has(name+"::"+c);
         return `<div class="dm-col ${iskey?"iskey linked":""}"><span>${esc(c)}</span>
           <span class="dm-port" data-port="${esc(name)}::${esc(c)}" data-t="${esc(name)}" data-col="${esc(c)}"></span></div>`;
       }).join("")}</div><div class="dm-resize" data-resize="${esc(name)}"></div>`;
@@ -396,8 +425,8 @@ function drawLinks(){
   let out="";
   MODEL.rels.forEach((r,i)=>{ const cm=relCard(r)==="1-1"?"1":"∗";
     out+=seg(r.parent_table_name,r.parent_primary_key,r.child_table_name,r.child_foreign_key,"","1",cm,i); });
-  if(MODEL.hub.key){ for(const t of MODEL.hub.children)
-    out+=seg(hubName(),MODEL.hub.key,t,MODEL.hub.key,"hub","1","∗",null); }
+  MODEL.hubs.forEach(h=>{ for(const t of h.children)
+    out+=seg(hubName(h),h.key,t,h.key,"hub","1","∗",null); });
   svg.innerHTML=out;
   svg.querySelectorAll('path[data-rel]').forEach(p=>p.addEventListener("click",e=>{
     const i=+p.dataset.rel;
@@ -612,7 +641,8 @@ async function validateModel(){
   box.innerHTML=`<div class="dm-vrow">validating…</div>`;
   try{
     const r=await apiFetch("/api/validate_model",{method:"POST",headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({relationships:MODEL.rels, entity_key:MODEL.hub.key||"", entity_children:MODEL.hub.children})});
+      body:JSON.stringify({relationships:MODEL.rels, entity_keys:MODEL.hubs.map(h=>h.key),
+        entity_children:Object.fromEntries(MODEL.hubs.map(h=>[h.key,h.children]))})});
     const j=await r.json();
     if(j.error){ box.innerHTML=`<div class="dm-vrow err">${esc(j.error)}</div>`; return; }
     if(!j.results.length){ box.innerHTML=`<div class="dm-vrow vdetail">Nothing to validate — no links or hub set.</div>`; return; }
@@ -624,50 +654,55 @@ $("#dm-validate-btn").addEventListener("click",validateModel);
 
 /* ---- entity-key hub generator ---- */
 function buildHubBar(){
-  const keys=sharedKeys();
+  const used=new Set(MODEL.hubs.map(h=>h.key));
+  const keys=sharedKeys().filter(k=>!used.has(k));
   $("#dm-hub-key").innerHTML=`<option value="">(choose a shared key…)</option>`+
-    keys.map(k=>`<option value="${esc(k)}" ${k===MODEL.hub.key?"selected":""}>${esc(k)} (in ${keyTables(k).length} tables)</option>`).join("");
+    keys.map(k=>`<option value="${esc(k)}">${esc(k)} (in ${keyTables(k).length} tables)</option>`).join("");
   renderHubChilds();
+  renderHubList();
   updateHubButtons();
 }
 function renderHubChilds(){
   const key=$("#dm-hub-key").value; const host=$("#dm-hub-childs");
   if(!key){ host.innerHTML=`<span class="dm-childchip off">choose a key first</span>`; return; }
-  const tabs=keyTables(key);
-  const chosen = MODEL.hub.key===key ? new Set(MODEL.hub.children) : new Set(tabs);
-  host.innerHTML=tabs.map(t=>`<span class="dm-childchip ${chosen.has(t)?"on":""}" data-t="${esc(t)}">${esc(t)}</span>`).join("");
+  host.innerHTML=keyTables(key).map(t=>`<span class="dm-childchip on" data-t="${esc(t)}">${esc(t)}</span>`).join("");
   host.querySelectorAll(".dm-childchip").forEach(ch=>ch.addEventListener("click",()=>{ ch.classList.toggle("on"); updateHubButtons(); }));
 }
 function chosenChilds(){ return [...$("#dm-hub-childs").querySelectorAll(".dm-childchip.on")].map(c=>c.dataset.t); }
 function updateHubButtons(){
-  const key=$("#dm-hub-key").value; const n=chosenChilds().length;
+  const key=$("#dm-hub-key").value, n=chosenChilds().length;
   $("#dm-hub-gen").disabled = !(key && n>=1);
-  $("#dm-hub-gen").textContent = MODEL.hub.key===key ? "Update hub" : "Generate hub";
-  $("#dm-hub-clear").style.display = MODEL.hub.key ? "inline-block" : "none";
+}
+function renderHubList(){
+  const host=$("#dm-hub-list");
+  host.innerHTML=MODEL.hubs.map((h,i)=>`<span class="dm-hubchip">${esc(h.key)} → ${h.children.length} table${h.children.length!==1?"s":""}
+      <button class="dm-hubchip-x" data-i="${i}" title="remove this hub">✕</button></span>`).join("");
+  host.querySelectorAll(".dm-hubchip-x").forEach(b=>b.addEventListener("click",()=>{
+    const h=MODEL.hubs[+b.dataset.i]; delete MODEL.pos[hubName(h)];
+    MODEL.hubs.splice(+b.dataset.i,1);
+    buildHubBar(); afterModelChange();
+  }));
 }
 $("#dm-hub-key").addEventListener("change",()=>{ renderHubChilds(); updateHubButtons(); });
 $("#dm-hub-gen").addEventListener("click",()=>{
   const key=$("#dm-hub-key").value, children=chosenChilds(); if(!key||!children.length) return;
-  MODEL.hub={key, children}; placeHub();
-  afterModelChange(); updateHubButtons();
-});
-$("#dm-hub-clear").addEventListener("click",()=>{
-  delete MODEL.pos[hubName()]; MODEL.hub={key:"", children:[]};
+  const hub={key, children};
+  MODEL.hubs.push(hub); placeHub(hub);
   buildHubBar(); afterModelChange();
 });
 
 /* ---- left-panel read-only mirror + entity-key sync ---- */
 function syncEntity(){ const sel=$("#in-entity");
-  if(MODEL.hub.key && ![...sel.options].some(o=>o.value===MODEL.hub.key))
-    sel.insertAdjacentHTML("beforeend",`<option value="${esc(MODEL.hub.key)}">${esc(MODEL.hub.key)}</option>`);
-  sel.value=MODEL.hub.key||""; updateScdVisibility();
+  for(const h of MODEL.hubs) if(![...sel.options].some(o=>o.value===h.key))
+    sel.insertAdjacentHTML("beforeend",`<option value="${esc(h.key)}">${esc(h.key)}</option>`);
+  sel.value=(MODEL.hubs[0]&&MODEL.hubs[0].key)||""; updateScdVisibility(); refreshScdAuto();
 }
 function renderStructureMirror(){
   const host=$("#structure-mirror"); if(!host) return;
   let h="";
-  if(MODEL.hub.key){
-    h+=`<div class="sm-row"><span class="sm-lbl">entity key</span><span class="sm-chip key">${esc(MODEL.hub.key)}</span>
-      <span class="sm-lbl">→ ${MODEL.hub.children.length} table${MODEL.hub.children.length!==1?"s":""}</span></div>`;
+  for(const hub of MODEL.hubs){
+    h+=`<div class="sm-row"><span class="sm-lbl">entity key</span><span class="sm-chip key">${esc(hub.key)}</span>
+      <span class="sm-lbl">→ ${hub.children.length} table${hub.children.length!==1?"s":""}</span></div>`;
   }
   if(MODEL.rels.length){
     h+=`<div class="sm-row"><span class="sm-lbl">links</span></div>`;
@@ -751,6 +786,14 @@ function collectPii(){
   });
   return out;
 }
+function collectScd(){
+  const out={};
+  $$("#scd-fields [data-t]").forEach(r=>{
+    const eff=r.querySelector(".scd-eff").value, end=r.querySelector(".scd-end").value;
+    if(eff && end) out[r.dataset.t]={effective:eff, end:end, current:r.querySelector(".scd-cur").value||null};
+  });
+  return out;
+}
 function piiSummary(){
   const rows=$$("#pii-rows .pii-row");
   if(!rows.length) return "none detected";
@@ -795,9 +838,11 @@ function renderAdvisor(profile){
   // The reasoning is long and only needed once — park it behind a hover marker and
   // keep the panel to the headline plus anything actionable (warnings).
   const why=(r.reasons||[]).join(" ");
-  let h=`<div class="strat-head"><span class="tier-badge tier-${r.tier}">${TIER_LABEL[r.tier]||("TIER "+r.tier)}</span>
-    <span class="strat-name">${STRATEGY_LABEL[r.strategy]||r.strategy}</span>
-    ${why?ihelp(why+" — a suggestion from the profiler; you can override it below, and you can always set an entity key yourself if you know a business key that ties an entity's rows together."):""}</div>`;
+  let h=`<div class="strat-head">
+    <div class="strat-title"><span class="strat-name">${STRATEGY_LABEL[r.strategy]||r.strategy}</span>
+      ${why?ihelp(why+" This is a suggestion from the profiler: you can override it below, and you can always set an entity key yourself if you know a business key that ties an entity's rows together."):""}</div>
+    <span class="tier-badge tier-${r.tier}">${TIER_LABEL[r.tier]||("TIER "+r.tier)}</span>
+  </div>`;
   const warns=r.warnings||[];
   if(warns.length){
     h+=`<ul class="strat-list">`;
@@ -814,24 +859,31 @@ function renderAdvisor(profile){
   const apply=$("#btn-apply-rels");
   if(apply) apply.addEventListener("click",()=>{ MODEL.rels=RECOMMENDED_RELS.slice();
     afterModelChange(); openModel(false);
-    apply.className="mini-btn done"; apply.textContent="✓ applied — see Data Model"; apply.disabled=true; });
+    apply.className="mini-btn done"; apply.textContent="✓ applied, see Data Model"; apply.disabled=true; });
   $("#btn-goto-key").addEventListener("click",()=>openModel(true));
   updateSummaries();
 }
 
 /* ---------------- recipe ---------------- */
 function renderRecipe(){
-  $("#synth-chips").innerHTML=SYNTHS.map(s=>`<span class="chip ${selectedSynths.has(s)?"on":""}" data-s="${s}">
-    <span class="dot" style="background:${PALETTE[s]}"></span>${s}</span>`).join("");
+  const chip=s=>`<span class="chip ${selectedSynths.has(s)?"on":""}" data-s="${s}">
+    <span class="dot" style="background:${PALETTE[s]}"></span>${s}</span>`;
+  // one flat list -- when a relationship is declared, every synthesizer
+  // honors it (HMA by fitting tables jointly, the rest by relinking foreign
+  // keys afterward), so there's no single/multi-table split worth showing
+  $("#synth-chips").innerHTML=`<div class="chips">${SYNTHS.map(chip).join("")}</div>`;
   $$("#synth-chips .chip").forEach(ch=>ch.addEventListener("click",()=>{
     const s=ch.dataset.s;
     selectedSynths.has(s)?selectedSynths.delete(s):selectedSynths.add(s);
-    ch.classList.toggle("on"); $("#btn-run").disabled=!selectedSynths.size; updateEpochsVisibility(); updateSummaries();
+    ch.classList.toggle("on"); $("#btn-run").disabled=!selectedSynths.size;
+    updateEpochsVisibility(); updateTabsynVisibility(); updateSummaries();
   }));
   updateEpochsVisibility();
+  updateTabsynVisibility();
   $("#target-fields").innerHTML=Object.entries(DATA.tables).map(([t,v])=>`
     <div class="tgt-row"><span title="${t}">${t}</span>
-      <select id="target-${t}"><option value="auto">(auto)</option>
+      <select id="target-${t}" title="(auto) picks a column to predict for ML-efficacy scoring; (none) skips this table entirely -- use it for dimension/lookup tables with nothing worth modeling">
+        <option value="auto">(auto)</option><option value="none">(none)</option>
         ${v.targets.map(c=>`<option>${c}</option>`).join("")}</select></div>`).join("");
   // CategoricalCAP sensitive column: what the attribute-inference attack tries
   // to guess. (auto) = the most balanced categorical, picked server-side.
@@ -840,32 +892,83 @@ function renderRecipe(){
       <select id="cap-${t}" title="column the attribute-inference attack tries to guess — (auto) picks the most balanced categorical">
         <option value="auto">(auto)</option>
         ${(v.categoricals||[]).map(c=>`<option>${c}</option>`).join("")}</select></div>`).join("");
+  // auto-detected max_categorical_card per table (90% of that table's own row
+  // count, see se.auto_categorical_threshold) -- shown so leaving the field
+  // blank isn't a black box; a table with fewer rows auto-detects to a lower
+  // number, which is expected, not a mistake
+  const acc=$("#auto-cat-card-hint");
+  if(acc){
+    const rows=Object.entries(DATA.tables).map(([t,v])=>`${esc(t)} ${v.auto_max_categorical_card}`);
+    acc.textContent="blank uses, per table: "+rows.join(" · ");
+  }
   // hidden entity-key store — the Data Model tab (hub generator) sets its value;
-  // options list every shared candidate key so syncEntity() can select any of them
-  const shared={};
-  for(const v of Object.values(DATA.tables)) for(const c of v.columns) shared[c.name]=(shared[c.name]||0)+1;
-  const cands=Object.keys(shared).filter(c=>shared[c]>=2).sort();
+  // options list every shared candidate key (see sharedKeys()) so syncEntity()
+  // can select any of them.
   $("#in-entity").innerHTML=`<option value=""></option>`+
-    cands.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join("");
-  // SCD timeline columns: all column names (date-ish first), effective/end pre-selected
-  const allCols=[...new Set(Object.values(DATA.tables).flatMap(v=>v.columns.map(c=>c.name)))];
-  const dateish=c=>/(_dt|_date|eff|end|start|expiry|since|left)/i.test(c);
-  const ordered=allCols.slice().sort((a,b)=>(dateish(b)-dateish(a))||a.localeCompare(b));
-  const effSug=ordered.find(c=>/eff|effective|start|since|from/i.test(c))||"";
-  const endSug=ordered.find(c=>/(^|_)end|expire|expiry|left|thru/i.test(c))||"";
-  const opt=(ph,sel)=>`<option value="">${ph}</option>`+
-    ordered.map(c=>`<option value="${esc(c)}" ${c===sel?"selected":""}>${esc(c)}</option>`).join("");
-  $("#in-scd-eff").innerHTML=opt("effective-date column…",effSug);
-  $("#in-scd-end").innerHTML=opt("end-date column…",endSug);
-  $("#in-scd-cur").innerHTML=opt("current-flag column (optional)…","");
+    sharedKeys().map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join("");
+  // SCD timeline columns: one row per table, its own columns only. Server-side
+  // auto-detection (se.detect_scd_window_pair) picks these off each table's
+  // real data already -- these selects are a manual override for when it
+  // misses, so they default to blank ("let auto-detect handle it"), never a
+  // pre-selected guess that would silently out-rank a working detector.
+  renderScdFields();
   updateScdVisibility();
+  refreshScdAuto();
   $("#btn-run").disabled=!selectedSynths.size;
 }
 function updateScdVisibility(){ $("#field-scd").style.display=$("#in-entity").value?"block":"none"; }
+// per-table SCD selects: option text shows what auto-detect actually found
+// (DATA.scdAuto, refreshed by refreshScdAuto below) so leaving a row on
+// "(auto)" isn't a black box -- rebuilt on every call, so any selection the
+// user already made is captured first and re-applied after.
+function renderScdFields(){
+  const prev={};
+  $$("#scd-fields [data-t]").forEach(r=>{
+    prev[r.dataset.t]={eff:r.querySelector(".scd-eff").value, end:r.querySelector(".scd-end").value,
+      cur:r.querySelector(".scd-cur").value};
+  });
+  const auto=(DATA&&DATA.scdAuto)||{};
+  $("#scd-fields").innerHTML=Object.entries(DATA.tables).map(([t,v])=>{
+    const cols=v.columns.map(c=>c.name).slice().sort((a,b)=>a.localeCompare(b));
+    let effPh="(auto) effective…", endPh="(auto) end…";
+    if(t in auto){
+      const a=auto[t];
+      effPh = a ? `(auto: ${esc(a.effective)})` : "(auto: none found)";
+      endPh = a ? `(auto: ${esc(a.end)})` : "(auto: none found)";
+    }
+    const p=prev[t]||{};
+    const opt=(ph,sel)=>`<option value="">${ph}</option>`+
+      cols.map(c=>`<option value="${esc(c)}" ${c===sel?"selected":""}>${esc(c)}</option>`).join("");
+    return `<div class="tgt-row" style="grid-template-columns:96px 1fr 1fr 1fr" data-t="${esc(t)}">
+      <span title="${esc(t)}">${esc(t)}</span>
+      <select class="scd-eff">${opt(effPh,p.eff)}</select>
+      <select class="scd-end">${opt(endPh,p.end)}</select>
+      <select class="scd-cur">${opt("current flag (optional)…",p.cur)}</select></div>`;
+  }).join("");
+}
+let _scdAutoKey=null;
+async function refreshScdAuto(){
+  if(!DATA) return;
+  const key=$("#in-entity").value;
+  if(!key){ DATA.scdAuto={}; _scdAutoKey=null; renderScdFields(); return; }
+  if(key===_scdAutoKey) return;   // already fetched for this key, rows already reflect it
+  _scdAutoKey=key;
+  try{
+    const r=await apiFetch("/api/scd_preview",{method:"POST",headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({entity_key:key})});
+    const j=await r.json();
+    if(key!==$("#in-entity").value) return;   // entity key changed again while this was in flight
+    DATA.scdAuto=j.tables||{};
+  }catch(e){ DATA.scdAuto={}; }
+  renderScdFields();
+}
 function updateEpochsVisibility(){
   $("#field-epochs").style.display=[...selectedSynths].some(s=>GAN_SYNTHS.has(s))?"block":"none";
 }
-[["epochs",v=>v],["scale",v=>(+v).toFixed(2).replace(/0$/,"")],["holdout",v=>v]].forEach(([k,f])=>{
+function updateTabsynVisibility(){
+  $("#field-tabsyn-arch").style.display=selectedSynths.has("TabSyn")?"block":"none";
+}
+[["epochs",v=>v],["scale",v=>(+v).toFixed(2).replace(/0$/,"")]].forEach(([k,f])=>{
   $(`#in-${k}`).addEventListener("input",e=>{$(`#out-${k}`).textContent=f(e.target.value); updateSummaries();});
 });
 
@@ -889,7 +992,7 @@ function showSection(id){
   $$(".rep-navbtn").forEach(b=>b.classList.toggle("active",b.dataset.sec===id));
   requestAnimationFrame(flushVisiblePlots);   // render any charts now visible
 }
-$("#rep-nav").addEventListener("click",e=>{ const b=e.target.closest(".rep-navbtn"); if(b) showSection(b.dataset.sec); });
+$("#rep-nav").addEventListener("click",e=>{ const b=e.target.closest(".rep-navbtn"); if(b&&b.dataset.sec) showSection(b.dataset.sec); });
 /* fold the report side-nav to a right-edge icon rail (hover expands to labels) */
 (function(){
   const nav=$("#rep-nav"), fold=$("#rep-fold");
@@ -913,20 +1016,99 @@ $("#rep-nav").addEventListener("click",e=>{ const b=e.target.closest(".rep-navbt
   apply();
   btn.addEventListener("click",toggle); rail.addEventListener("click",toggle);
 })();
+
+/* drag-to-resize: .left and #chatdock both use this, a plain px width on
+   the element (persisted per panel) that CSS !important collapse rules
+   still win over -- see .app.leftfold .left / .chatdock.collapsed */
+function makeResizer(handle,target,{min,max,storageKey,invert,onEnd}){
+  let startX=0,startW=0,curW=0,dragging=false;
+  const clamp=w=>Math.max(min,Math.min(max,w));
+  let saved=null; try{ saved=+localStorage.getItem(storageKey); }catch(e){}
+  if(saved>=min && saved<=max) target.style.width=saved+"px";
+  handle.addEventListener("mousedown",e=>{
+    dragging=true; startX=e.clientX; startW=curW=target.getBoundingClientRect().width;
+    handle.classList.add("active"); document.body.classList.add("resizing-x");
+    target.style.transition="none";   // 1:1 with the mouse, no lag; also avoids
+    e.preventDefault();               // reading a mid-transition width below
+  });
+  window.addEventListener("mousemove",e=>{
+    if(!dragging) return;
+    const dx=(e.clientX-startX)*(invert?-1:1);
+    curW=clamp(startW+dx);
+    target.style.width=curW+"px";
+  });
+  window.addEventListener("mouseup",()=>{
+    if(!dragging) return;
+    dragging=false; handle.classList.remove("active"); document.body.classList.remove("resizing-x");
+    target.style.transition="";       // restore the CSS transition for future programmatic changes
+    try{ localStorage.setItem(storageKey,Math.round(curW)); }catch(e){}
+    if(onEnd) onEnd();
+  });
+}
+makeResizer($("#resize-left"),$(".left"),{min:280,max:720,storageKey:"synthlab-left-w",
+  onEnd:()=>{ if(DATA) setTimeout(()=>{ if($("#pane-model").classList.contains("active")) drawLinks(); },50); }});
+makeResizer($("#resize-chat"),$("#chatdock"),{min:320,max:960,storageKey:"synthlab-chat-w",invert:true});
+
 $("#tabbar").addEventListener("click",e=>{
   const b=e.target.closest(".tab"); if(!b||b.classList.contains("locked")) return;
   activateTab(b.dataset.pane);
 });
+/* "How it Works" docs modal, opened from the Synthesizers panel link, and by
+   the chat assistant's explain_synthesizer tool (openDocsModal, exposed
+   globally so chat.js can call it -- same modal, one definition) when the
+   user asks what a synthesizer is or how it works, instead of it writing
+   its own explanation from scratch every time */
+function openDocsModal(synth){
+  $("#docs-backdrop").classList.add("show");
+  if(synth && synth!=="all"){
+    const card=document.getElementById(`doc-${synth.toLowerCase()}`);
+    if(card){
+      card.scrollIntoView({behavior:"smooth",block:"start"});
+      card.classList.add("doc-card-highlight");
+      setTimeout(()=>card.classList.remove("doc-card-highlight"),1600);
+    }
+  }
+}
+function closeDocsModal(){ $("#docs-backdrop").classList.remove("show"); }
+(function(){
+  const backdrop=$("#docs-backdrop");
+  $("#link-how-works").addEventListener("click",e=>{ e.preventDefault(); openDocsModal(); });
+  $("#docs-close").addEventListener("click",closeDocsModal);
+  backdrop.addEventListener("click",e=>{ if(e.target===backdrop) closeDocsModal(); });
+  document.addEventListener("keydown",e=>{ if(e.key==="Escape") closeDocsModal(); });
+})();
 
 /* ---------------- run + poll ---------------- */
-$("#btn-run").addEventListener("click",async()=>{
-  if(!DATA) return;
+/* reads the live Schema tab -- used by the manual Synthesize button and
+   by the chat assistant (sent with every message so a link drawn there
+   and one described in words end up in the same plan) */
+function collectSchema(){
+  if(!DATA) return {};
   const schema={};
   for(const t of Object.keys(DATA.tables)){
     const sdtypes={};
     $$(`.sdtype-sel[data-table="${t}"]`).forEach(s=>{ if(s.value!==detected[t][s.dataset.col]) sdtypes[s.dataset.col]=s.value; });
     schema[t]={sdtypes, primary_key:$(`#pk-${t}`).value||null};
   }
+  return schema;
+}
+/* reads the TabSyn architecture fields -- blank stays unset so
+   TabSynSynthesizer's own class defaults apply, same "blank = auto"
+   convention as max_categorical_card above */
+function collectTabsynParams(){
+  const ids={d_token:"in-tabsyn-d-token", d_latent:"in-tabsyn-d-latent", nhead:"in-tabsyn-nhead",
+    vae_layers:"in-tabsyn-vae-layers", denoiser_hidden:"in-tabsyn-denoiser-hidden",
+    denoiser_depth:"in-tabsyn-denoiser-depth", sample_steps:"in-tabsyn-sample-steps"};
+  const out={};
+  for(const [k,id] of Object.entries(ids)){
+    const v=($(`#${id}`)||{}).value;
+    if(v) out[k]=+v;
+  }
+  return out;
+}
+$("#btn-run").addEventListener("click",async()=>{
+  if(!DATA) return;
+  const schema=collectSchema();
   const targets={}; Object.keys(DATA.tables).forEach(t=>targets[t]=$(`#target-${t}`).value);
   const cap_sensitive={};
   Object.keys(DATA.tables).forEach(t=>{
@@ -934,19 +1116,30 @@ $("#btn-run").addEventListener("click",async()=>{
   });
   const cfg={schema, relationships:MODEL.rels.slice(), targets, cap_sensitive, constraints:collectConstraints(),
     pii:collectPii(),
-    entity_key:MODEL.hub.key||"", entity_children:MODEL.hub.children.slice(),
-    scd_effective:$("#in-scd-eff").value||"", scd_end:$("#in-scd-end").value||"", scd_current:$("#in-scd-cur").value||"",
+    entity_keys:MODEL.hubs.map(h=>h.key), entity_children:Object.fromEntries(MODEL.hubs.map(h=>[h.key,h.children.slice()])),
+    scd:collectScd(),
     synths:[...selectedSynths],
-    epochs:+$("#in-epochs").value, scale:+$("#in-scale").value, holdout:+$("#in-holdout").value};
+    epochs:+$("#in-epochs").value, scale:+$("#in-scale").value, holdout:HOLDOUT_FRAC,
+    max_categorical_card:($("#in-max-cat-card")||{}).value?+$("#in-max-cat-card").value:null,
+    min_target_rows:+($("#in-min-target-rows")||{}).value||30,
+    close_percentile:+($("#in-close-percentile")||{}).value||5,
+    tabsyn_params:collectTabsynParams()};
   let r;
   try{ r=await apiFetch("/api/synthesize",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(cfg)}); }
   catch(e){ alert(BACKEND_HELP); return; }
   if(!r.ok){ alert((await r.json()).error||"failed to start"); return; }
+  beginJobUI();
+  poll();
+});
+/* shared by the manual Synthesize button and the chat assistant's
+   run_synthesis tool -- one job UI, whichever side started it */
+let JOB_START=0;
+function beginJobUI(){
   setRunningUI(true); setStatus("run","synthesizing");
   $("#console").classList.add("show"); $("#console").innerHTML="";
   $("#jobbar").classList.add("show"); $("#jobbar-fill").style.width="0%"; $("#jobbar-lbl").textContent="starting…";
-  poll();
-});
+  JOB_START=Date.now();
+}
 /* toggle the toolbar between Synthesize (idle) and Cancel (running) */
 function setRunningUI(running){
   $("#btn-run").style.display = running ? "none" : "";
@@ -965,10 +1158,18 @@ function setJobBar(pct,status){
   pct=Math.max(0,Math.min(100, pct||0));
   $("#jobbar-fill").style.width=pct+"%";
   const label=status==="done"?"complete":status==="error"?"failed":status==="cancelled"?"cancelled":"synthesizing…";
-  $("#jobbar-lbl").textContent=`${label} ${pct.toFixed(0)}%`;
+  let t="";
+  if(status==="running"&&JOB_START){
+    const el=Math.floor((Date.now()-JOB_START)/1000);
+    t=` · ${Math.floor(el/60)}m${(el%60).toString().padStart(2,"0")}s`;
+  }
+  $("#jobbar-lbl").textContent=`${label} ${pct.toFixed(0)}%${t}`;
 }
-async function poll(){
-  let j; try{ j=await (await apiFetch("/api/progress")).json(); }catch(e){ setStatus("err","lost backend"); return; }
+/* onDone(res, err), if given, fires once with the fetched results (after
+   renderReport already ran) or an error string -- lets the chat assistant
+   narrate the same run the jobbar/report just showed, without polling twice */
+async function poll(onDone){
+  let j; try{ j=await (await apiFetch("/api/progress")).json(); }catch(e){ setStatus("err","lost backend"); if(onDone) onDone(null,"lost backend"); return; }
   const con=$("#console");
   con.innerHTML=j.log.map((l,i)=>{
     const cls=l.startsWith("⚠")?"warn":l.startsWith("✗")||l.startsWith("■")?"err":l.startsWith("Done")?"ok":l.startsWith("⏳")?"":"";
@@ -977,14 +1178,17 @@ async function poll(){
   }).join("");
   con.scrollTop=con.scrollHeight;
   setJobBar(j.pct, j.status);
-  if(j.status==="running"){ setTimeout(poll,1500); return; }
+  if(j.status==="running"){ setTimeout(()=>poll(onDone),1500); return; }
   setRunningUI(false);
   if(j.status==="done"){ setJobBar(100,"done"); setStatus("done","complete");
-    renderReport(await (await apiFetch("/api/results")).json());
-    setTimeout(()=>{$("#console").classList.remove("show"); $("#jobbar").classList.remove("show");},1500); }
+    const res=await (await apiFetch("/api/results")).json();
+    renderReport(res);
+    setTimeout(()=>{$("#console").classList.remove("show"); $("#jobbar").classList.remove("show");},1500);
+    if(onDone) onDone(res,null); }
   else if(j.status==="cancelled"){ setStatus("","cancelled");
-    setTimeout(()=>{$("#console").classList.remove("show"); $("#jobbar").classList.remove("show");},1600); }
-  else { setStatus("err","failed — see log"); }
+    setTimeout(()=>{$("#console").classList.remove("show"); $("#jobbar").classList.remove("show");},1600);
+    if(onDone) onDone(null,"cancelled"); }
+  else { setStatus("err","failed — see log"); if(onDone) onDone(null, j.error||"failed"); }
 }
 
 /* ---------------- report ---------------- */
@@ -1072,7 +1276,6 @@ function flushMeters(scope){ const sel=(scope?scope+" ":"")+".m-fill";
 
 /* ---------------- interactive charts (Plotly, PNG fallback) ---------------- */
 const HAS_PLOTLY=typeof window.Plotly!=="undefined";
-const RDYLGN=[[0,"#a50026"],[0.25,"#f46d43"],[0.5,"#fee08b"],[0.75,"#a6d96a"],[1,"#1a9850"]];
 let PLOT_QUEUE=[];            // pending {id,type,data,extra} to render after innerHTML
 const PLOTLY_REG=[];         // {id, heatmap} of rendered charts, for theme restyle
 function safeId(s){return "pl_"+s.replace(/[^A-Za-z0-9]/g,"_");}
@@ -1081,8 +1284,20 @@ function themeColors(){
   const cs=getComputedStyle(document.documentElement);
   const g=(n,d)=>(cs.getPropertyValue(n)||d).trim();
   return {ink:g("--ink","#122c42"), line:g("--line","#d5e2f0"),
-          soft:g("--line-soft","#e7eef7")};
+          soft:g("--line-soft","#e7eef7"),
+          fail:g("--fail","#e31837"), warn:g("--warn","#cf8a12"), pass:g("--pass","#1a8f5a")};
 }
+// score heatmap colorscale, built from the SAME fail/warn/pass tokens every
+// verdict badge and delta badge already uses elsewhere in the report -- not a
+// separate palette. Also fixes a real legibility gap: the generic RdYlGn this
+// replaced used a muted brick-red (#a50026) at the low end, which in dark mode
+// sits close enough to the null-cell grey (--line, shown through blank/
+// not-evaluated cells) to read as borderline colorblind-unsafe (measured via
+// the dataviz skill's validator: CVD separation ΔE 7.2, in the "needs
+// secondary encoding" floor band). --fail is a much more saturated red and
+// clears that same check at ΔE 25.6 -- a "red" cell now reads unambiguously
+// as red next to a grey "not evaluated" one, in both themes.
+const scoreScale=c=>[[0,c.fail],[0.5,c.warn],[1,c.pass]];
 
 /* heatmap placeholder (shapes/pairs); PNG fig fallback.
    `cap` is the caption; `idkey` (defaults to cap) makes the DOM id unique when
@@ -1111,8 +1326,25 @@ function renderHeatmap(el,kind,data,c){
   const z=data.z, nCol=x.length, nRow=y.length;
   const width=Math.max(560, 26*nCol+150);
   const height=(kind==="pairs")?Math.max(360,26*nRow+150):(80+52*nRow+Math.min(160,7*maxLen(x)));
-  const trace={type:"heatmap", z, x, y, zmin:0, zmax:1, colorscale:RDYLGN, xgap:1, ygap:1, hoverongaps:false,
-    hovertemplate:(kind==="shapes"?"col %{x}<br>%{y}: %{z:.3f}<extra></extra>":"%{x} × %{y}: %{z:.3f}<extra></extra>"),
+  // a blank shapes cell can mean "not evaluated" (e.g. this column never
+  // reached sdmetrics at all -- no Error entry exists for it either, since
+  // nothing was ever attempted) OR "sdmetrics tried and couldn't even
+  // compute a similarity" (e.g. a sparse real column whose synthetic side
+  // came back 100% null -- data.err carries that reason). Always build
+  // per-cell hover text for shapes when err data is present, NOT only when
+  // some OTHER cell happens to have a captured error -- gating on that
+  // silently left the far more common "not evaluated" case with no hover
+  // at all, indistinguishable from a rendering bug.
+  const rawErr=(kind==="shapes")?(data.err||null):null;
+  const text=rawErr ? z.map((row,i)=>row.map((v,j)=>{
+    if(v!=null) return `col ${x[j]}<br>${y[i]}: ${v.toFixed(3)}`;
+    const e=rawErr[i]?.[j];
+    return e ? `col ${x[j]}<br>${y[i]}: not computable<br>${e}` : `col ${x[j]}<br>${y[i]}: not evaluated`;
+  })) : null;
+  const trace={type:"heatmap", z, x, y, zmin:0, zmax:1, colorscale:scoreScale(c), xgap:1, ygap:1,
+    hoverongaps:!!text, ...(text?{text}:{}),
+    hovertemplate:(text?"%{text}<extra></extra>"
+      :kind==="shapes"?"col %{x}<br>%{y}: %{z:.3f}<extra></extra>":"%{x} × %{y}: %{z:.3f}<extra></extra>"),
     colorbar:{title:{text:kind==="shapes"?"shape":"pair sim",side:"right"},thickness:10,len:0.9}};
   const layout={width, height, margin:{l:130,r:20,t:10,b:110},
     paper_bgcolor:"rgba(0,0,0,0)", plot_bgcolor:c.line,
@@ -1186,11 +1418,299 @@ function restylePlotly(){
     const upd={"font.color":c.ink, "plot_bgcolor": heatmap ? c.line : "rgba(0,0,0,0)"};
     if(heatmap){ upd["xaxis.gridcolor"]=c.soft; upd["yaxis.gridcolor"]=c.soft; }
     else{ for(const a of ["xaxis","xaxis2","xaxis3","yaxis","yaxis2","yaxis3"]) upd[a+".gridcolor"]=c.soft; }
-    try{ window.Plotly.relayout(el, upd); }catch(e){}
+    try{
+      window.Plotly.relayout(el, upd);
+      // colorscale lives on the trace, not the layout -- relayout above
+      // won't touch it, so a theme toggle would otherwise leave cells
+      // colored with the OTHER theme's fail/warn/pass while the chrome
+      // around them switches.
+      if(heatmap) window.Plotly.restyle(el, {colorscale:[scoreScale(c)]}, [0]);
+    }catch(e){}
   }
 }
 
+/* ---------------- standalone report export ---------------- */
+function inlineStyles(){
+  let css="";
+  for(const sheet of document.styleSheets){
+    try{ for(const rule of sheet.cssRules) css+=rule.cssText+"\n"; }
+    catch(e){ /* cross-origin sheet (Google Fonts) -- skip, the <link> tags still try to load it live */ }
+  }
+  return css;
+}
+/* Build the standalone report document (all sections, charts pre-rendered as
+   static SVG so nothing needs live JS to display) as an HTML string. Shared by
+   the PDF export below; caller must have already forced every .rep-sec
+   visible + flushVisiblePlots() + waited a couple frames so charts exist. */
+function buildReportDoc(extraCss){
+  const clone=$("#pane-report .rep-body").cloneNode(true);
+  clone.querySelectorAll("select").forEach(s=>s.disabled=true);
+  clone.querySelectorAll(".rep-sec").forEach(sec=>{
+    const label=(NAV_LABELS[VIEW]||{})[sec.id];
+    if(label){ const h=document.createElement("h2"); h.className="rep-export-h2"; h.textContent=label; sec.prepend(h); }
+  });
+  const now=new Date();
+  const stamp=now.toISOString().slice(0,16).replace("T"," ")+" UTC";
+  const theme=document.documentElement.getAttribute("data-theme")||"";
+  const fontLinks=[...document.querySelectorAll('link[href*="fonts.g"]')].map(l=>l.outerHTML).join("\n");
+  const html=`<!doctype html><html${theme?` data-theme="${esc(theme)}"`:""}><head><meta charset="utf-8">
+<title>Synth/Lab report — ${esc(stamp)}</title>
+${fontLinks}
+<style>${inlineStyles()}
+/* the live app is a fixed-viewport SPA -- html,body{height:100%;overflow:hidden}
+   from the inlined stylesheet is load-bearing THERE (an inner container does
+   the actual scrolling), but this export has no such inner container, so
+   without this override the whole exported page is stuck unscrollable */
+html,body{height:auto !important;overflow:visible !important}
+.rep-sec{display:block !important}
+body{max-width:1100px;margin:0 auto;padding:28px}
+.rep-export-h2{font-family:var(--disp);font-size:20px;margin:34px 0 14px;padding-top:18px;border-top:1px solid var(--line)}
+.rep-export-h2:first-of-type{border-top:none;margin-top:0;padding-top:0}
+/* browsers drop background colors and mute text on print by default ("optimize
+   for ink") -- this is what keeps the pills/meters/heatmaps in color in the PDF */
+*{ -webkit-print-color-adjust:exact !important; print-color-adjust:exact !important; color-adjust:exact !important; }
+${extraCss||""}
+</style></head>
+<body><p class="dim" style="font-size:12px;margin-bottom:18px">Synth/Lab report, generated ${esc(stamp)} · ${esc(VIEW)} view · synthesizers: ${esc((LAST_RES.synths||[]).join(", "))} · tables: ${esc((LAST_RES.tables||[]).join(", "))}</p>
+${clone.innerHTML}
+</body></html>`;
+  return {html, now};
+}
+/* print-only CSS shared by the PDF export: a normal Letter page, content
+   flows continuously (forcing a page break before every section made the
+   PDF choppier and harder to read, not easier -- reverted). Headings stay
+   attached to what follows them, and tables/cards/charts are told not to
+   split across a page boundary where the content allows it -- the browser
+   still overrides that for anything too tall to fit one page regardless. */
+const PDF_PAGE_CSS=`@media print{
+  @page{ size:letter; margin:0.6in }
+  .rep-export-h2{ break-after:avoid; page-break-after:avoid }
+  table, .hm-wrap, .exec, .lb-card{ break-inside:avoid; page-break-inside:avoid }
+}`;
+/* Downloads the report as a standalone, self-contained HTML file -- charts
+   already rendered to static SVG, styles inlined, opens and reads fine with
+   no server and no network. */
+async function downloadReportHtml(){
+  if(!LAST_RES) return;
+  const btn=$("#btn-download-html"), txt=btn&&btn.querySelector(".txt");
+  const orig=txt&&txt.textContent;
+  if(btn){ btn.disabled=true; if(txt) txt.textContent="Preparing…"; }
+  const wasActive=[...document.querySelectorAll(".rep-sec.active")].map(s=>s.id);
+  try{
+    $$(".rep-sec").forEach(s=>s.classList.add("active"));
+    flushVisiblePlots();
+    await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
+
+    const {html, now}=buildReportDoc();
+    const blob=new Blob([html],{type:"text/html"});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");
+    a.href=url; a.download=`synthlab-report-${now.toISOString().slice(0,10)}.html`;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  } catch(e){
+    alert("Could not prepare the HTML report: "+e);
+  } finally {
+    $$(".rep-sec").forEach(s=>s.classList.toggle("active",wasActive.includes(s.id)));
+    if(btn){ btn.disabled=false; if(txt) txt.textContent=orig; }
+  }
+}
+/* Downloads the report as a PDF via the browser's native print-to-PDF,
+   rendered into a detached iframe (so only the report prints, not the app
+   chrome around it), page-separated per metric section (see PDF_PAGE_CSS). */
+async function downloadReportPdf(){
+  if(!LAST_RES) return;
+  const btn=$("#btn-download-pdf"), txt=btn&&btn.querySelector(".txt");
+  const orig=txt&&txt.textContent;
+  if(btn){ btn.disabled=true; if(txt) txt.textContent="Preparing…"; }
+  const wasActive=[...document.querySelectorAll(".rep-sec.active")].map(s=>s.id);
+  let frame;
+  try{
+    // show every section so its charts are genuinely visible (offsetParent
+    // truthy) when flushVisiblePlots draws them -- Plotly renders lazily on
+    // visibility, so a still-hidden tab would otherwise export with blank charts
+    $$(".rep-sec").forEach(s=>s.classList.add("active"));
+    flushVisiblePlots();
+    await new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)));
+
+    const {html}=buildReportDoc(PDF_PAGE_CSS);
+    frame=document.createElement("iframe");
+    frame.style.cssText="position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden";
+    document.body.appendChild(frame);
+    const doc=frame.contentDocument;
+    doc.open(); doc.write(html); doc.close();
+
+    await new Promise(r=>setTimeout(r,400));   // let fonts/layout settle in the iframe
+    frame.contentWindow.addEventListener("afterprint",()=>frame.remove());
+    frame.contentWindow.focus();
+    frame.contentWindow.print();
+  } catch(e){
+    if(frame) frame.remove();
+    alert("Could not prepare the PDF: "+e);
+  } finally {
+    $$(".rep-sec").forEach(s=>s.classList.toggle("active",wasActive.includes(s.id)));
+    if(btn){ btn.disabled=false; if(txt) txt.textContent=orig; }
+  }
+}
+/* single "Export" button in the sidebar reveals a small flyout with PDF/HTML
+   on hover. The flyout is appended to <body>, not nested under the button,
+   so .rep-nav's own overflow:hidden (needed for its collapse-to-rail
+   animation) can't clip it -- position:fixed + coords computed from the
+   button's own rect anchor it in place. */
+(function setupExportMenu(){
+  const btn=$("#btn-export");
+  if(!btn) return;
+  const menu=document.createElement("div");
+  menu.className="rep-export-menu";
+  menu.innerHTML=`
+    <button type="button" class="rep-export-opt" id="btn-download-pdf">
+      <svg class="ic" viewBox="0 0 24 24"><rect x="4" y="2.5" width="16" height="19" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>PDF</button>
+    <button type="button" class="rep-export-opt" id="btn-download-html">
+      <svg class="ic" viewBox="0 0 24 24"><polyline points="8 6 3 12 8 18"/><polyline points="16 6 21 12 16 18"/></svg>HTML</button>`;
+  document.body.appendChild(menu);
+  let hideT=null;
+  const show=()=>{
+    clearTimeout(hideT);
+    menu.style.display="flex";
+    const r=btn.getBoundingClientRect();
+    menu.style.right=(window.innerWidth-r.left+6)+"px";
+    const menuH=menu.offsetHeight||76;
+    menu.style.top=Math.min(Math.max(8,r.top),window.innerHeight-menuH-8)+"px";
+  };
+  const scheduleHide=()=>{ hideT=setTimeout(()=>{ menu.style.display="none"; },150); };
+  btn.addEventListener("mouseenter",show);
+  btn.addEventListener("focus",show);
+  btn.addEventListener("mouseleave",scheduleHide);
+  menu.addEventListener("mouseenter",()=>clearTimeout(hideT));
+  menu.addEventListener("mouseleave",scheduleHide);
+  menu.querySelector("#btn-download-pdf").addEventListener("click",()=>{ menu.style.display="none"; downloadReportPdf(); });
+  menu.querySelector("#btn-download-html").addEventListener("click",()=>{ menu.style.display="none"; downloadReportHtml(); });
+})();
+
+/* ============================ business view ============================
+   The report speaks two languages: a plain-language "business" view (default)
+   and the full "technical" view.  VIEW drives both; LAST_RES lets the toggle
+   re-render from stored results without re-fetching. */
+let VIEW="business", LAST_RES=null;
+const VERDICT={ready:{label:"Ready",cls:"ready"}, review:{label:"Review",cls:"review"},
+               notready:{label:"Not ready",cls:"notready"}};
+// score → verdict, using a "good" and an "ok" threshold
+const scoreVerdict=(v,good,ok)=>(v==null||Number.isNaN(v))?null:(v>=good?"ready":v>=ok?"review":"notready");
+// safety is a GATE, not a threshold: take the worst of the privacy checks that
+// already carry PASS/WARN/FAIL verdicts (a single FAIL is a red flag)
+function safetyVerdict(res,s){
+  let worst="ready"; const tabs=(res.privacy||{})[s]||{};
+  for(const t in tabs){ const vs=tabs[t].verdicts||{};
+    for(const k in vs){ const st=vs[k].status;
+      if(st==="FAIL") return "notready"; if(st==="WARN") worst="review"; } }
+  return worst;
+}
+const worstVerdict=l=>l.includes("notready")?"notready":l.includes("review")?"review":(l.length?"ready":null);
+const verdictBadge=(k,big)=>k?`<span class="verdict ${VERDICT[k].cls}${big?" lg":""}">${VERDICT[k].label}</span>`:"";
+// the three business dimensions for one synthesizer
+function bizDims(res,s){
+  const sum=(res.summary||{})[s]||{};
+  const fid=num((sum.fidelity||{}).score), util=num((sum.utility||{}).score), priv=num((sum.privacy||{}).score);
+  return [
+    {name:"Realism", tech:"Fidelity", q:"Does it look like real data?", score:fid, verdict:scoreVerdict(fid,0.8,0.6)},
+    {name:"Safety", tech:"Privacy", q:"Could it be traced to a real customer?", score:priv, verdict:safetyVerdict(res,s)},
+    {name:"Usefulness", tech:"Utility", q:"Can teams use it like real data?", score:util, verdict:scoreVerdict(util,0.85,0.7)},
+  ];
+}
+const bizPct=d=>d.score!=null?Math.round(d.score*100)+"%":"—";
+function bizDimRow(d){
+  const pct=d.score!=null?Math.round(d.score*100):0;
+  return `<div class="bizdim"><div class="bizdim-name">${d.name} <i class="lbl-tech">(${d.tech})</i><small>${esc(d.q)}</small></div>
+    <div class="bizdim-track"><div class="bizdim-fill" style="width:${pct}%;background:${meterColor(d.score||0)}"></div></div>
+    <div class="bizdim-val">${bizPct(d)}</div>${verdictBadge(d.verdict)}</div>`;
+}
+// compact variant for the narrow per-generator cards: name + score + verdict
+function bizDimMini(d){
+  return `<div class="bizdim-mini"><span>${d.name} <i class="lbl-tech">(${d.tech})</i></span>
+    <span class="bm-r"><span class="bm-pct">${bizPct(d)}</span>${verdictBadge(d.verdict)}</span></div>`;
+}
+// concrete go/no-go per use case, from the dimension verdicts
+function bizUseCases(dims){
+  const [realism,safety,useful]=dims;
+  return [
+    {label:"Dev / test environments", verdict:realism.verdict,
+      reason: realism.verdict==="ready"?"realistic enough to build and test against":"resembles real data — check the flagged fields"},
+    {label:"Vendor / partner sharing", verdict:safety.verdict,
+      reason: safety.verdict==="ready"?"no privacy red flags in the safety checks":"review the privacy notes before sharing"},
+    {label:"Training ML models", verdict:worstVerdict([useful.verdict,realism.verdict]),
+      reason: useful.verdict==="ready"?"models train about as well as on real data":"usable, but less than real data"},
+  ];
+}
+const useCaseChip=u=>`<div class="uc-chip ${VERDICT[u.verdict].cls}">
+  <div class="uc-top">${VERDICT[u.verdict].cls==="ready"?"✓":VERDICT[u.verdict].cls==="review"?"!":"✕"} <b>${esc(u.label)}</b></div>
+  <div class="uc-reason">${esc(u.reason)}</div></div>`;
+// one factual line on why a generator ranks where it does
+function bizWhy(res,s,lb){
+  const ct=(res.cross_table||{})[s];
+  // "crossable" = kept the entity consistent across ALL table pairs (no unaligned)
+  const crossable = ct && ct.score!=null && !ct.note && !(ct.unaligned&&ct.unaligned.length);
+  const my=bizDims(res,s);
+  const bestFid=Math.max(...lb.map(r=>bizDims(res,r.synthesizer)[0].score||0));
+  const bestUtil=Math.max(...lb.map(r=>bizDims(res,r.synthesizer)[2].score||0));
+  const leads=[];
+  if(my[0].score!=null && my[0].score>=bestFid-1e-9) leads.push("realism");
+  if(crossable) leads.push("links across tables");
+  if(my[2].score!=null && my[2].score>=bestUtil-1e-9) leads.push("usefulness");
+  if(leads.length) return "Leads on "+leads.slice(0,2).join(" and ")+".";
+  if(crossable) return "Keeps customers consistent across tables.";
+  if(s==="HMA" && res.relationships_modeled) return "Models every table jointly, so links hold by construction.";
+  if((res.linked_synths||[]).includes(s)) return "Foreign keys relinked after fitting, so referential integrity holds.";
+  return "Single-table — links across tables aren't preserved.";
+}
+// one plain-English recommendation sentence built from the verdicts
+function recommendation(res,s,dims){
+  const [realism,safety,useful]=dims;
+  const overall=worstVerdict(dims.map(d=>d.verdict));
+  const usefulPct=useful.score!=null?Math.round(useful.score*100)+"%":"—";
+  if(overall==="notready"){
+    const bad=dims.filter(d=>d.verdict==="notready").map(d=>d.name.toLowerCase());
+    return `<b>Not ready to use as-is.</b> ${bad.join(" and ")} ${bad.length>1?"need":"needs"} `
+      + `attention — review the flagged checks before sharing or training on this data.`;
+  }
+  const realPhrase=realism.verdict==="ready"?"behaves like your real data":"roughly matches your real data";
+  const safePhrase=safety.verdict==="ready"?"carries no privacy red flags":"has privacy notes worth a look";
+  const close=overall==="ready"
+    ? "Recommended for dev/test environments, vendor sharing, and model training."
+    : "Fine for exploration; review the flagged items before production use.";
+  return `This synthetic data <b>${realPhrase}</b>, <b>${safePhrase}</b>, and is about `
+    + `<b>${usefulPct}</b> as useful as real data for analytics. ${close}`;
+}
+const NAV_LABELS={
+  business:{"sec-overview":"Summary","sec-quality":"Realism","sec-shapes":"Fields match",
+    "sec-pairs":"Field relationships","sec-ri":"Records link up",
+    "sec-utility":"Usefulness","sec-privacy":"Safety"},
+  technical:{"sec-overview":"Leaderboard","sec-quality":"Fidelity","sec-shapes":"Column Shapes",
+    "sec-pairs":"Column Pair Trends","sec-ri":"Referential Integrity",
+    "sec-utility":"Utility","sec-privacy":"Privacy"}};
+function applyNavLabels(){
+  const m=NAV_LABELS[VIEW]||NAV_LABELS.technical;
+  document.querySelectorAll("#rep-nav .rep-navbtn").forEach(b=>{
+    const sec=b.dataset.sec, txt=b.querySelector(".txt");
+    if(sec&&txt&&m[sec]){ txt.textContent=m[sec]; b.setAttribute("title",m[sec]); }
+  });
+}
+(function wireViewToggle(){
+  const tg=document.getElementById("view-toggle"); if(!tg) return;
+  tg.addEventListener("click",e=>{
+    const btn=e.target.closest(".vt-btn"); if(!btn||btn.dataset.view===VIEW) return;
+    VIEW=btn.dataset.view;
+    tg.querySelectorAll(".vt-btn").forEach(b=>b.classList.toggle("active",b===btn));
+    const hint=document.getElementById("view-hint");
+    if(hint) hint.setAttribute("data-tip", VIEW==="business"
+      ? "Plain-language summary. Switch to Technical for the full metrics."
+      : "Full metrics and formulas. Switch to Business for the plain-language view.");
+    if(LAST_RES){ const cur=(document.querySelector(".rep-sec.active")||{}).id||"sec-overview";
+      renderReport(LAST_RES); showSection(cur); }
+  });
+})();
+
 function renderReport(res){
+  LAST_RES=res;
   lockReportTabs(false);
   const P=n=>res.palette[n]||PALETTE[n]||"#888";
   const dot=n=>`<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${P(n)};margin-right:7px"></span>`;
@@ -1212,19 +1732,80 @@ function renderReport(res){
   $("#synth-list").innerHTML=sl; $("#synthetic-panel").style.display="block";
   $("#synth-count").textContent=count; $("#synth-count").className="count";
 
+  applyNavLabels();
+
+  /* --- Time breakdown: prep / generate / privacy filter / postprocess / report --- */
+  function phaseBreakdownHtml(res){
+    const ph=res.phase_seconds||{};
+    if(!ph.total) return "";
+    const order=[["prep","setup","--faint"],["generate","train + synthesize","--blue"],
+      ["resample","privacy filter","--navy"],["postprocess","PII + refill","--sky"],
+      ["report","score + report","--blue-deep"]];
+    const total=ph.total||order.reduce((s,[k])=>s+(ph[k]||0),0);
+    const segs=order.filter(([k])=>(ph[k]||0)>0);
+    const bar=segs.map(([k,label,color])=>{
+      const pct=Math.max(0,(ph[k]||0)/total*100);
+      return `<div style="flex:${pct||0.0001} 0 0;background:var(${color})" title="${esc(label)}: ${fmtSecs(ph[k])} (${pct.toFixed(0)}%)"></div>`;
+    }).join("");
+    const legend=segs.map(([k,label,color])=>
+      `<span style="display:inline-flex;align-items:center;gap:5px;margin-right:14px;font-size:11px;color:var(--muted)">
+        <span style="width:8px;height:8px;border-radius:2px;background:var(${color});display:inline-block"></span>
+        ${esc(label)}: ${fmtSecs(ph[k])}</span>`).join("");
+    return `<div class="panel" style="margin-top:18px">
+      <div class="blk-head"><h3 style="font-size:15px">Time breakdown${ihelp(
+        "prep = split/schema setup before any fitting. train + synthesize = fit + sample, per "
+        + "synthesizer, summed. privacy filter = the reject-and-resample check on top of that. "
+        + "PII + refill = faking sensitive columns and resampling id/date/audit columns. "
+        + "score + report = every quality/privacy/utility metric plus the comparison figures.")}</h3>
+        <span class="dim" style="margin-left:auto;font-family:var(--mono);font-size:12px">total ${fmtSecs(ph.total)}</span></div>
+      <div style="display:flex;height:10px;border-radius:5px;overflow:hidden;background:var(--panel-2);margin-bottom:10px">${bar}</div>
+      <div>${legend}</div>
+    </div>`;
+  }
+
   /* --- Leaderboard (overview) --- */
   const lb=[...res.leaderboard].sort((a,b)=>(b.overall??0)-(a.overall??0));
+  if(VIEW==="business"){
+    const top=lb[0], tDims=bizDims(res,top.synthesizer);
+    const tOverall=worstVerdict(tDims.map(d=>d.verdict));
+    const useCases=bizUseCases(tDims);
+    let bh=`<div class="exec ${tOverall||""}">
+      <div class="exec-top"><h3>Trust assessment</h3>${verdictBadge(tOverall,true)}
+        <span class="winner">best generator: ${dot(top.synthesizer)}${esc(top.synthesizer)}</span></div>
+      <p class="exec-rec">${recommendation(res,top.synthesizer,tDims)}</p>
+      <div class="bizdims">${tDims.map(bizDimRow).join("")}</div>
+      <div class="uc-label">Ready for</div>
+      <div class="uc-row">${useCases.map(useCaseChip).join("")}</div></div>`;
+    if(lb.length>1){
+      bh+=`<p class="biz-note">Every generator we tried, ranked by overall trust:</p>
+        <div class="podium">${lb.map((r,i)=>{
+          const ds=bizDims(res,r.synthesizer), ov=worstVerdict(ds.map(d=>d.verdict));
+          const secs=(res.gen_seconds||{})[r.synthesizer];
+          return `<div class="lb-card ${i===0?"first":""}"><div class="rank">${i+1}</div>
+            <div class="lb-name"><span class="dot" style="background:${P(r.synthesizer)}"></span>${esc(r.synthesizer)}</div>
+            <div style="margin:9px 0 10px">${verdictBadge(ov,true)}</div>
+            <p class="lb-why">${esc(bizWhy(res,r.synthesizer,lb))}</p>
+            <div class="bizdims mini">${ds.map(bizDimMini).join("")}</div>
+            <p class="dim" style="font-size:11px;margin-top:8px" title="wall-clock time to fit and generate">⏱ ${fmtSecs(secs)} to generate</p></div>`;
+        }).join("")}</div>`;
+    }
+    $("#sec-overview").innerHTML=bh;
+    flushMeters("#sec-overview");
+  } else {
   $("#sec-overview").innerHTML=`<div class="podium">${lb.map((r,i)=>`
     <div class="lb-card ${i===0?"first":""}"><div class="rank">${i+1}</div>
       <div class="lb-name"><span class="dot" style="background:${P(r.synthesizer)}"></span>${r.synthesizer}</div>
       <div class="big-score">${fmt(r.overall)}<small> /1 overall</small></div>
-      ${meter("fidelity",r.fidelity)}${meter("privacy",r.privacy)}${meter("utility · TSTR",r.utility_tstr)}</div>`).join("")}</div>
+      ${meter("fidelity",r.fidelity)}${meter("privacy",r.privacy)}${meter("utility · TSTR",r.utility_tstr)}
+      <p class="dim" style="font-size:11px;margin-top:8px" title="wall-clock time to fit and generate">⏱ ${fmtSecs((res.gen_seconds||{})[r.synthesizer])} to generate</p></div>`).join("")}</div>
     <p class="note"><b>overall</b> = mean of the three dimensions${ihelp(
       "fidelity = the column statistics (sdmetrics QualityReport)"
       + (hasStruct ? ", two parts to one part referential integrity (cardinality shape similarity)" : "")
-      + ". privacy = the mean of MIA protection, NewRowSynthesis and CategoricalCAP. "
-      + "utility = the TSTR/TRTR ratio. Each dimension is broken down on its own tab; see METRICS.md.")}</p>`;
+      + ". privacy = the mean of MIA protection, NewRowSynthesis, CategoricalCAP and nearest-record protection. "
+      + "utility = the TSTR/TRTR ratio. Each dimension is broken down on its own tab; see docs/METRICS.md.")}</p>`;
   flushMeters("#sec-overview");
+  }
+  $("#sec-overview").insertAdjacentHTML("beforeend", phaseBreakdownHtml(res));
 
   /* --- Fidelity (score strip + summary table + combined Overall/Shapes/Pairs figure) --- */
   const shapesData=res.figures.shapes_data||{}, pairsData=res.figures.pairs_data||{};
@@ -1250,12 +1831,21 @@ function renderReport(res){
           + "Link tables in the Data Model tab to have referential integrity counted here too.")}`})
     +head("QualityReport","Per synthesizer per table. Overall is the mean of column shapes and column pair trends.")
     +`<table class="rep"><thead><tr><th>synthesizer</th><th>table</th><th style="text-align:right">column shapes</th>
-    <th style="text-align:right">column pair trends</th><th style="text-align:right">overall</th></tr></thead><tbody>`;
-  for(const s of res.synths) for(const [t,v] of Object.entries(res.quality[s]||{}))
-    qy+=`<tr><td class="mono">${dot(s)}${s}</td>
-      <td class="mono dim">${t}</td><td class="score-cell">${fmt(v.column_shapes)}</td>
-      <td class="score-cell">${fmt(v.column_pair_trends)}</td>
-      <td class="score-cell" style="color:${meterColor(v.overall)}">${fmt(v.overall)}</td></tr>`;
+    <th style="text-align:right">column pair trends</th><th style="text-align:right">overall</th>
+    <th style="text-align:right" title="Referential integrity (cardinality shape similarity) — how closely child-rows-per-parent matches real. It is ONE score per synthesizer (not per table), spanning the synthesizer's rows here, and it feeds fidelity at 1/3 weight. n/a when no relationships are defined. See the Referential Integrity tab.">ref. integrity</th></tr></thead><tbody>`;
+  for(const s of res.synths){
+    const entries=Object.entries(res.quality[s]||{});
+    const ri=num(((((res.summary||{})[s]||{}).fidelity)||{}).structure);
+    entries.forEach(([t,v],i)=>{
+      qy+=`<tr><td class="mono">${dot(s)}${s}</td>
+        <td class="mono dim">${t}</td><td class="score-cell">${fmt(v.column_shapes)}</td>
+        <td class="score-cell">${fmt(v.column_pair_trends)}</td>
+        <td class="score-cell" style="color:${meterColor(v.overall)}">${fmt(v.overall)}</td>`;
+      if(i===0) qy+=`<td class="score-cell" rowspan="${entries.length}"
+        style="border-left:1px solid var(--line); color:${ri==null?"var(--faint)":meterColor(ri)}">${ri==null?"n/a":fmt(ri)}</td>`;
+      qy+=`</tr>`;
+    });
+  }
   qy+=`</tbody></table>`+qualityBlock(res.figures.quality_data, res.figures.quality);
   $("#sec-quality").innerHTML=qy;
 
@@ -1269,7 +1859,10 @@ function renderReport(res){
     +head("Column Shapes",
       "Does each column's distribution match real? KS complement for numeric columns, "
       + "total-variation complement for categorical. 1 = identical."
-      + (HAS_PLOTLY ? " Hover a cell for the exact score; drag to zoom." : ""),
+      + (HAS_PLOTLY ? " Hover a cell for the exact score; drag to zoom." : "")
+      + " A blank cell can mean two different things: not evaluated, or the synthetic "
+      + "data for that column came back unscoreable (e.g. a sparse real column whose "
+      + "synthetic side had zero non-null values) — hover a blank cell to see which.",
       "Per column, per synthesizer.");
   const shapeFigs=res.figures.shapes||{};
   if(Object.keys(shapeFigs).length || Object.keys(shapesData).length)
@@ -1341,10 +1934,18 @@ function renderReport(res){
         + "coverage is NOT supposed to be 1 — each synthesizer should match the real value, and the badge "
         + "shows how many points away from real it landed."
         + (res.synths.includes("HMA")
-            ? " HMA was fitted WITH these relationships, so it preserves them by construction; single-table "
-              + "synthesizers reference a hub derived from their own output."
-            : " No multi-table model was selected, so no synthesizer here learned these relationships — "
-              + "referential integrity is being measured, not enforced."))
+            ? " HMA was fitted WITH these relationships, so it preserves them by construction."
+            : "")
+        + ((res.linked_synths||[]).length
+            ? ` ${(res.linked_synths||[]).join(", ")} ${(res.linked_synths||[]).length>1?"were":"was"} fitted `
+              + "per table independently, then had foreign keys relinked to real synthetic parent rows "
+              + "afterward: referential integrity holds, but (unlike HMA) cross-table correlations weren't "
+              + "modeled."
+            : "")
+        + (!res.synths.includes("HMA") && !(res.linked_synths||[]).length
+            ? " No multi-table model was selected, so no synthesizer here learned these relationships: "
+              + "referential integrity is being measured, not enforced."
+            : ""))
       +`<table class="rep"><thead><tr><th>synthesizer</th><th>relationship</th>
         <th style="text-align:right">fk coverage</th><th style="text-align:right">parent coverage</th><th>status</th></tr></thead>
       <tbody>${[...ri].sort((a,b)=>
@@ -1363,23 +1964,79 @@ function renderReport(res){
       }).join("")}</tbody></table>`;
     const card=res.cardinality||{}; const cnames=Object.keys(card);
     if(cnames.length){
+      const cbase=res.cardinality_baseline;   // what a real holdout scores against real training rows
       riH+=head("Cardinality similarity",
           "The distribution of child rows per parent (including parents with none), synthetic vs real. "
           + "1 = identical. This catches a synthesizer that over- or under-generates child rows even when "
-          + "forward coverage is a perfect 1. Shape compares the whole distribution; statistic compares its mean.")
+          + "forward coverage is a perfect 1. Shape compares the whole distribution; statistic compares its mean."
+          + (cbase?.shape!=null
+            ? " The grey 'real (holdout)' row is the achievable ceiling for THIS data's own parent-child "
+              + "fan-out: a real, unseen slice of rows scored against the real training rows, using the exact "
+              + "same metric. A lopsided real distribution (a few common parents absorbing most children, most "
+              + "parents rare) won't hit 1.0 even here — judge synthesizers against this row, not against 1.0."
+            : ""))
         +`<table class="rep"><thead><tr><th>synthesizer</th><th style="text-align:right">shape similarity</th>
           <th style="text-align:right">statistic similarity</th></tr></thead><tbody>`;
       const cell=v=>v==null?`<span class="dim">—</span>`:`<span style="color:${meterColor(v)}">${fmt(v)}</span>`;
+      if(cbase?.shape!=null)
+        riH+=`<tr><td class="mono dim">${dot("real")}real (holdout)</td>
+          <td class="score-cell">${cell(cbase.shape)}</td><td class="score-cell">${cell(cbase.statistic)}</td></tr>`;
       for(const s of cnames){ const e=card[s];
-        riH+=`<tr><td class="mono">${dot(s)}${esc(s)}</td><td class="score-cell">${cell(e.shape)}</td>
+        const gap=(cbase?.shape!=null && e.shape!=null) ? cbase.shape-e.shape : null;
+        const gapBadge=gap==null ? "" :
+          `<span class="delta-badge ${gap<=0.05?"ok":gap<=0.15?"warn":"bad"}" title="real-holdout ceiling: ${fmt(cbase.shape)}">
+            ${gap<=0.005?"= ceiling":(gap>0?"↓ ":"↑ ")+Math.abs(gap).toFixed(2)}</span>`;
+        riH+=`<tr><td class="mono">${dot(s)}${esc(s)}</td><td class="score-cell">${cell(e.shape)}${gapBadge}</td>
           <td class="score-cell">${cell(e.statistic)}</td></tr>`; }
       riH+=`</tbody></table>`;
     }
   }
+  /* --- SCD timeline duration fidelity: unconditional on relationships being
+     defined -- a single standalone entity-versioned table can have this
+     without any cross-table link existing at all. --- */
+  const scdFid=res.scd_duration_fidelity||{};
+  const scdTables=Object.keys(scdFid);
+  if(scdTables.length){
+    riH+=head("SCD timeline duration fidelity",
+      "The repair above only guarantees a correctly-ordered, non-overlapping timeline per entity — it does "
+      + "NOT guarantee the SPACING between one entity's own successive versions looks real, since that "
+      + "spacing comes from wherever the effective dates came from (independent per-row generation, often "
+      + "regrouped into entities after the fact), which repair has no visibility into. This compares real vs. "
+      + "synthetic closed-version duration (end − start) with a KS test, shown here as 1 − KS statistic so "
+      + "higher still means closer to real: 1.0 = the two duration distributions are indistinguishable, lower "
+      + "means this entity's own version spacing has drifted from real even though the timeline itself is "
+      + "structurally valid.")
+      +`<table class="rep"><thead><tr><th>table</th><th>synthesizer</th>
+        <th style="text-align:right">duration similarity</th>
+        <th style="text-align:right">real median (days)</th>
+        <th style="text-align:right">synthetic median (days)</th></tr></thead><tbody>`;
+    for(const t of scdTables){
+      for(const s of Object.keys(scdFid[t])){
+        const e=scdFid[t][s], sim=1-e.ks_stat;
+        riH+=`<tr><td class="mono dim">${esc(t)}</td><td class="mono">${dot(s)}${esc(s)}</td>
+          <td class="score-cell"><span style="color:${meterColor(sim)}">${fmt(sim)}</span></td>
+          <td class="score-cell">${fmt(e.real_median_days,0)}</td>
+          <td class="score-cell">${fmt(e.synth_median_days,0)}</td></tr>`;
+      }
+    }
+    riH+=`</tbody></table>`;
+  }
   $("#sec-ri").innerHTML=riH;
 
   /* --- Utility (ML efficacy · TSTR) --- */
-  if(!res.efficacy.length){ $("#sec-utility").innerHTML=`<h4 class="block-title">Utility · ML efficacy</h4><p class="note">No usable modelling target found.</p>`; }
+  const effSkipped=res.efficacy_skipped||[];
+  const effSkippedHtml=effSkipped.length
+    ? `<div class="efflog">`+effSkipped.map(s=>
+        `⚠ <b>${esc(s.table)}</b> skipped${s.target?` (target ${esc(s.target)})`:""} — ${esc(s.reason)}`
+      ).join("\n")+`</div>`
+    : "";
+  const effNotes=res.efficacy_notes||[];
+  const effNotesHtml=effNotes.length
+    ? `<div class="effnote">`+effNotes.map(s=>
+        `ⓘ <b>${esc(s.table)}</b>${s.target?` (target ${esc(s.target)})`:""} — ${esc(s.note)}`
+      ).join("\n")+`</div>`
+    : "";
+  if(!res.efficacy.length){ $("#sec-utility").innerHTML=`<h4 class="block-title">Utility · ML efficacy</h4>${effSkippedHtml}${effNotesHtml}<p class="note">No usable modelling target found.</p>`; }
   else{
     let ml=scoreStrip(res,P,v=>{
       const u=v.utility, pt=u.per_table||{};
@@ -1406,7 +2063,8 @@ function renderReport(res){
       +head("ML efficacy (TSTR)",
         "Train on Synthetic, Test on Real. Each model is trained on the real data (the reference) and on "
         + "every synthesizer's output, then tested on the SAME real holdout — which the synthesizers never saw.",
-        "Trained per source, tested on the same real holdout.");
+        "Trained per source, tested on the same real holdout.")
+      +effSkippedHtml+effNotesHtml;
     /* each (table × metric) row is one panel of the utility mean; the "÷ real"
        column after every synthesizer prints that panel's own term, so the
        headline can be added up by hand from the rows on screen. */
@@ -1464,6 +2122,14 @@ function renderReport(res){
             + "the real baseline here, so the ratio was capped at 1.00; hover the cell for the raw value. "
             + "Absolute gaps (real − synth) are in the downloaded CSV.")}</p>`;
       if(notes.size) ml+=`<div class="efflog">`+[...notes].map(n=>"⚠ "+esc(n)).join("\n")+`</div>`;
+      const fi=(res.efficacy_feature_importance||{})[t];
+      if(fi&&fi.features&&fi.features.length){
+        ml+=head("Which fields actually matter for this target",
+          "A shallow decision tree fit on the REAL data alone (not synthetic) — which of this target's own "
+          + "feature columns it actually relies on to predict it. Columns not listed contributed ~0: fixing "
+          + "THEM won't move this target's utility score, so they're not worth chasing first.")
+          + fi.features.slice(0,8).map(f=>meter(esc(f.column),f.importance)).join("");
+      }
     }
     // and the roll-up: the mean over every panel of every table = the headline
     ml+=head("Roll-up",
@@ -1490,8 +2156,8 @@ function renderReport(res){
   /* --- Privacy --- */
   let pv=scoreStrip(res,P,v=>{
     const p=v.privacy;
-    const terms=[["MIA",p.mia_protection],["new-row",p.new_row_synthesis],["CAP",p.categorical_cap]]
-      .filter(([,x])=>num(x)!=null);
+    const terms=[["MIA",p.mia_protection],["new-row",p.new_row_synthesis],["CAP",p.categorical_cap],
+      ["nearest-rec",p.nearest_record_protection]].filter(([,x])=>num(x)!=null);
     return {score:p.score,
       formula: terms.length
         ? `mean( ${terms.map(([lb,x])=>`<b>${fmt(x)}</b> ${lb}`).join(" , ")} ) = <b>${fmt(p.score)}</b>`
@@ -1505,13 +2171,27 @@ function renderReport(res){
         ["CategoricalCAP", p.categorical_cap, {tip:"protection against attribute inference — judged against the real-holdout ceiling below, not an absolute bar"}],
         ["real-holdout ceiling", p.categorical_cap_baseline, {sub:true, raw:true,
           tip:"what a REAL holdout scores under the same attack — the achievable ceiling. When the sensitive field is guessable from the real data's own distribution (imbalance, correlations), even real rows score low; a synthetic score near this ceiling means the generator adds no leakage beyond population statistics."}],
+        ["Nearest-record protection", p.nearest_record_protection, {tip:"clip(closest synthetic-to-real distance ÷ the real-holdout bootstrap ceiling, 0, 1) — 1 means the closest synthetic row is at or beyond that ceiling, no worse than real unseen data gets from pure chance; near 0 means it's landing on top of a real row"}],
       ]};
-    }, {unit:"/1 privacy", note:`Mean of the three protection scores${ihelp(
+    }, {unit:"/1 privacy", note:`Mean of the four protection scores${ihelp(
       "The MIA term is 1 − 2|AUC − 0.5|, not the AUC itself: the raw attacker AUC is shown indented beneath "
       + "it because its ideal is 0.5 (a coin flip), so both a strong attacker (AUC 1.0) and an inverted one "
       + "(AUC 0.0) are penalised. NewRowSynthesis = synthetic rows that are not copies of a real row. "
-      + "CategoricalCAP = protection against attribute inference.")}`})
+      + "CategoricalCAP = protection against attribute inference. Nearest-record protection = the closest "
+      + "synthetic-to-real distance found, graded against how close real records get to each other by pure "
+      + "chance — see the Nearest-record check panel below for the actual matched row pair.")}`})
     +fig(res.figures.privacy,"NewRowSynthesis (ideal 1) · Membership-Inference attacker AUC (ideal 0.5) · CategoricalCAP (ideal 1)");
+  if(VIEW==="business") pv+=`<p class="biz-note">What each check below is asking:</p>
+    <div class="pm-grid">
+      <div class="pm-item"><b>Can someone tell who was in the real data? <span class="pm-tech">(membership inference)</span></b>
+        <span>Tries to guess whether a specific real customer's record was used to build this data. PASS means the guess is no better than a coin flip.</span></div>
+      <div class="pm-item"><b>Are any rows just copies? <span class="pm-tech">(new row synthesis)</span></b>
+        <span>Checks whether synthetic rows are genuinely new or are exact copies of a real record. PASS means the rows aren't copies.</span></div>
+      <div class="pm-item"><b>Can a hidden detail be guessed? <span class="pm-tech">(categorical CAP)</span></b>
+        <span>If someone already knows a bit about a person, this checks whether the synthetic data makes it any easier to guess something else about them, like income or marital status. PASS means it doesn't.</span></div>
+      <div class="pm-item"><b>Is any synthetic row too close to a real one? <span class="pm-tech">(nearest record)</span></b>
+        <span>Finds the synthetic row that sits closest to any real record and checks it's no closer than real records normally sit to each other. PASS means nothing sits suspiciously close.</span></div>
+    </div>`;
   // flatten, then sort synthesizer → table → check so each synth reads as one block
   const pvRows=[];
   for(const [s,tabs] of Object.entries(res.privacy)) for(const [t,rep] of Object.entries(tabs))
@@ -1531,7 +2211,59 @@ function renderReport(res){
       <td class="mono">${dot(r.s)}${esc(r.s)}</td><td class="mono dim">${esc(r.t)}</td><td class="mono">${esc(r.chk)}</td>
       <td>${pill(r.status)}</td><td class="dim" style="font-size:11.5px">${esc(r.detail)}</td></tr>`;
   pv+=`</tbody></table>`;
+
+  // Nearest-record check: pick the first synth/table combo that has an example,
+  // so the panel isn't empty by default -- "nearest_record" above already
+  // covers this as a scored/filterable row; this is the visual drill-down.
+  let nrDefault=null;
+  outer: for(const s of res.synths) for(const t of res.tables){
+    const ex=((((res.privacy||{})[s]||{})[t]||{}).nearest_record_examples||{}).examples||[];
+    if(ex.length){ nrDefault=[s,t]; break outer; }
+  }
+  const renderNearestPair=(s,t)=>{
+    const rep=((res.privacy||{})[s]||{})[t];
+    const nr=rep&&rep.nearest_record_examples, ex=nr&&nr.examples&&nr.examples[0];
+    const cf=((res.close_filter||{})[s]||{})[t];
+    const filterNote=cf&&cf.n_rejected
+      ? `<p class="dim" style="font-size:11.5px;margin:0 0 10px">🛡 reject-and-resample filter: ${cf.n_rejected}
+          of ${cf.n_input} generated rows sat closer to a real record than real records ever sit to each
+          other, dropped and ${cf.n_resampled>=cf.n_rejected?"fully":cf.n_resampled+"/"+cf.n_rejected}
+          refilled from fresh draws${cf.note?` (${esc(cf.note)})`:""}. Rows shown below already reflect this.</p>`
+      : (cf ? `<p class="dim" style="font-size:11.5px;margin:0 0 10px">🛡 reject-and-resample filter: none of
+          ${cf.n_input} generated rows were close enough to a real record to need dropping.</p>` : "");
+    if(!ex) return filterNote+`<p class="dim" style="font-size:12px">no example available for ${esc(s)} · ${esc(t)}</p>`;
+    const cols=Object.keys(ex.synthetic_row), pct=ex.percentile_vs_real_baseline;
+    const pctColor=pct>=50?"var(--pass)":pct>=20?"var(--warn)":"var(--fail)";
+    return filterNote+`<p class="dim" style="font-size:12px;margin:0 0 8px">
+        closest synthetic row found (worst case, not a random sample) — distance ${fmt(ex.distance)}
+        vs a real-to-real baseline of ${fmt(nr.baseline_median)}, sitting at the
+        <b style="color:${pctColor}">${pct}th percentile</b> of how far real records normally sit from
+        each other (50 = typical spacing between two real records, well under 20 = worth a look).</p>
+      <table class="rep"><thead><tr><th></th>${cols.map(c=>`<th>${esc(c)}</th>`).join("")}</tr></thead><tbody>
+        ${[["synthetic",ex.synthetic_row],["nearest real",ex.nearest_real_row]].map(([label,row])=>
+          `<tr><td class="mono dim">${esc(label)}</td>${cols.map(c=>{
+            const match=String(ex.synthetic_row[c])===String(ex.nearest_real_row[c]);
+            return `<td class="mono"${match?` style="color:var(--fail)" title="identical between the two rows"`:""}>${esc(row[c])}</td>`;
+          }).join("")}</tr>`).join("")}
+      </tbody></table>`;
+  };
+  pv+=`<div class="panel" id="nearest-panel" style="margin-top:16px">
+      <div class="blk-head"><h3 style="font-size:15px">Nearest-record check — can a synthetic row be traced back to a real one?</h3></div>
+      <div style="display:flex;gap:10px;margin-bottom:10px">
+        <select id="nr-synth">${res.synths.map(s=>`<option value="${esc(s)}">${esc(s)}</option>`).join("")}</select>
+        <select id="nr-table">${res.tables.map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join("")}</select>
+      </div>
+      <div id="nr-body"></div>
+    </div>`;
   $("#sec-privacy").innerHTML=pv;
+  const nrPanel=$("#sec-privacy").querySelector("#nearest-panel");
+  if(nrPanel){
+    const selS=nrPanel.querySelector("#nr-synth"), selT=nrPanel.querySelector("#nr-table"), body=nrPanel.querySelector("#nr-body");
+    if(nrDefault){ selS.value=nrDefault[0]; selT.value=nrDefault[1]; }
+    const render=()=>{ body.innerHTML=renderNearestPair(selS.value,selT.value); };
+    selS.addEventListener("change",render); selT.addEventListener("change",render);
+    render();
+  }
   // wire the header filters: a row must match every active dropdown to stay visible
   const pvTable=$("#sec-privacy").querySelector("#priv-checks");
   if(pvTable){
@@ -1545,6 +2277,76 @@ function renderReport(res){
     filters.forEach(f=>f.addEventListener("change",apply));
   }
 
+  if(VIEW==="business") applyBizIntros(res);         // plain-language header + at-a-glance verdicts
   flushMeters();                                   // animate every score bar, all sections
   activateTab("pane-report"); showSection("sec-overview");
+}
+// plain-language intro prepended to each metric section in the business view:
+// what the tab answers and how to read it, so a non-technical viewer who drills
+// in past the summary still lands on plain language, not a heatmap.
+const BIZ_INTRO={
+  "sec-quality":{t:"Realism — does it look like real data?",
+    b:"How closely the synthetic data resembles the real data, field by field and overall. In the tables below, higher is closer to real; the referential-integrity column shows how well records link across tables."},
+  "sec-shapes":{t:"Fields match — is each field realistic on its own?",
+    b:"For every column — age, region, status — does the spread of values look like the real one? Green cells match real; red cells are fields the generator reproduced poorly."},
+  "sec-pairs":{t:"Field relationships — do fields move together correctly?",
+    b:"Real data has patterns between fields — older customers are married more often, say. This checks whether those survived. Green kept the pattern, red lost it, blank means there was no real pattern to keep."},
+  "sec-ri":{t:"Records link up — do the tables connect correctly?",
+    b:"Every record should point to a real customer, and each customer should have a realistic number of records. The grey 'real' row is the target — matching it is the goal, not scoring 100%."},
+  "sec-utility":{t:"Usefulness — can teams work with it like real data?",
+    b:"We train the same model twice — once on real data, once on synthetic — and test both on real data held back. A score near 1.0 means the synthetic data is about as useful as the real thing."},
+  "sec-privacy":{t:"Safety — could it be traced to a real person?",
+    b:"The data is attacked three ways: can someone tell who was in the real data, are any rows copied from it, and can a hidden detail be guessed? A PASS means the attack failed — which is what we want."},
+};
+// per-tab dimension score for the at-a-glance strip, and how to judge it
+const TAB_DIM={
+  "sec-quality": {get:(res,s)=>num((((res.summary||{})[s]||{}).fidelity||{}).score), good:0.8, ok:0.6},
+  "sec-shapes":  {get:(res,s)=>num((((res.summary||{})[s]||{}).fidelity||{}).column_shapes), good:0.8, ok:0.6},
+  "sec-pairs":   {get:(res,s)=>num((((res.summary||{})[s]||{}).fidelity||{}).column_pair_trends), good:0.8, ok:0.6},
+  "sec-ri":      {get:(res,s)=>num((((res.summary||{})[s]||{}).fidelity||{}).structure), good:0.8, ok:0.6},
+  "sec-utility": {get:(res,s)=>num((((res.summary||{})[s]||{}).utility||{}).score), good:0.85, ok:0.7},
+  // safety's verdict is a gate (PASS/WARN/FAIL across the attack checks), not a
+  // threshold on the score -- but the score itself still exists (same field
+  // bizDims uses for the exec summary card) and shouldn't show as n/a here
+  "sec-privacy": {safety:true, get:(res,s)=>num((((res.summary||{})[s]||{}).privacy||{}).score)},
+};
+function tabGlance(res,id){
+  const cfg=TAB_DIM[id]; if(!cfg) return "";
+  const pal=n=>(res.palette&&res.palette[n])||PALETTE[n]||"#888";
+  const dt=n=>`<span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${pal(n)};margin-right:7px"></span>`;
+  const rows=(res.synths||[]).map(s=>{
+    const score=cfg.get(res,s);
+    const verdict=cfg.safety ? safetyVerdict(res,s) : scoreVerdict(score,cfg.good,cfg.ok);
+    const val = score!=null ? Math.round(score*100)+"%" : "n/a";
+    return `<div class="glance-row"><span class="glance-name">${dt(s)}${esc(s)}</span>
+      <span class="glance-r"><span class="bm-pct">${val}</span>${verdict?verdictBadge(verdict):`<span class="verdict-na">n/a</span>`}</span></div>`;
+  }).join("");
+  return `<div class="biz-glance">${rows}</div>`;
+}
+function applyBizIntros(res){
+  for(const id in BIZ_INTRO){
+    const sec=document.getElementById(id); if(!sec) continue;
+    let intro=sec.querySelector(".biz-intro");
+    if(!intro){
+      const e=BIZ_INTRO[id];
+      // move the technical content (score cards, formulas, tables, charts) into a
+      // collapsed "Show the numbers" expander, leaving only the plain intro visible.
+      // Built ONCE per page load (moving sec's children into the expander a second
+      // time would just re-move an already-emptied node), unlike the glance table
+      // below, which reflects the latest run and must refresh every time.
+      const details=document.createElement("details"); details.className="biz-expander";
+      details.innerHTML=`<summary><span class="bx-open">Show the numbers</span>`
+        + `<span class="bx-close">Hide the numbers</span></summary>`;
+      const wrap=document.createElement("div"); wrap.className="biz-details";
+      while(sec.firstChild) wrap.appendChild(sec.firstChild);   // listeners move with the nodes
+      details.appendChild(wrap);
+      intro=document.createElement("div"); intro.className="biz-intro";
+      intro.innerHTML=`<h4>${esc(e.t)}</h4><p>${esc(e.b)}</p>`;
+      sec.appendChild(intro);
+      sec.appendChild(details);
+    }
+    const oldGlance=sec.querySelector(".biz-glance");
+    if(oldGlance) oldGlance.remove();
+    intro.insertAdjacentHTML("afterend", tabGlance(res,id));   // at-a-glance verdict per generator, refreshed every render
+  }
 }
